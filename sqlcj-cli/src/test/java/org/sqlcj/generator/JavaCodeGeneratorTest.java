@@ -493,7 +493,12 @@ class JavaCodeGeneratorTest {
             "BYTEA, byte[]",
             "TIME, LocalTime",
             "JSON, String",
-            "JSONB, String"
+            "JSONB, String",
+            "CITEXT, String",
+            "INET, String",
+            "CIDR, String",
+            "MACADDR, String",
+            "MACADDR8, String"
         }
     )
     void shouldGenerateJavaTypeForQueryParameter(
@@ -1017,6 +1022,95 @@ class JavaCodeGeneratorTest {
     }
 
     /**
+     * A {@code citext} and a network address parameter are bound through
+     * {@code org.sqlcj.runtime.UntypedText}, and a column of either is read as
+     * text, exactly as JSON is, because the driver reports each of them as a
+     * type of its own that is not read as a {@code String}. An array of either
+     * is bound as {@code org.sqlcj.runtime.SqlArray} of the type's PostgreSQL
+     * name and read as a list of {@code String}. The generated source compiles,
+     * and both wrappers are written out in full, so the imports are unchanged.
+     */
+    @Test
+    void shouldWrapCitextAndNetworkArgumentsAndReadThemAsText() throws IOException {
+        QueryModel query = new QueryModel(
+            "FindHost",
+            QueryType.ONE,
+            "hosts",
+            """
+                SELECT id, handle, address, network, mac, mac8, handles, bio
+                FROM hosts
+                WHERE handle = ?
+                  AND address = ?
+                  AND network = ?
+                  AND mac = ?
+                  AND mac8 = ?
+                  AND handles = ?
+                  AND bio = ?
+                """,
+            List.of(1, 2, 3, 4, 5, 6, 7),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("handle", ColumnType.CITEXT, true),
+                new QueryColumn("address", ColumnType.INET, true),
+                new QueryColumn("network", ColumnType.CIDR, true),
+                new QueryColumn("mac", ColumnType.MACADDR, true),
+                new QueryColumn("mac8", ColumnType.MACADDR8, true),
+                new QueryColumn("handles", ColumnType.CITEXT, true, null, true),
+                new QueryColumn("bio", ColumnType.TEXT, true)
+            ),
+            List.of(
+                new QueryParameter(1, "handle", ColumnType.CITEXT),
+                new QueryParameter(2, "address", ColumnType.INET),
+                new QueryParameter(3, "network", ColumnType.CIDR),
+                new QueryParameter(4, "mac", ColumnType.MACADDR),
+                new QueryParameter(5, "mac8", ColumnType.MACADDR8),
+                new QueryParameter(6, "handles", ColumnType.CITEXT, null, true),
+                new QueryParameter(7, "bio", ColumnType.TEXT)
+            ),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                "public FindHostResult findHost("
+                    + "String handle, String address, String network, String mac, String mac8,"
+                    + " List<String> handles, String bio)"
+            )
+        );
+
+        assertTrue(
+            source.contains(
+                "java.util.Arrays.asList("
+                    + "new org.sqlcj.runtime.UntypedText(handle), "
+                    + "new org.sqlcj.runtime.UntypedText(address), "
+                    + "new org.sqlcj.runtime.UntypedText(network), "
+                    + "new org.sqlcj.runtime.UntypedText(mac), "
+                    + "new org.sqlcj.runtime.UntypedText(mac8), "
+                    + "new org.sqlcj.runtime.SqlArray(\"citext\", handles), "
+                    + "bio)"
+            )
+        );
+
+        assertTrue(source.contains("resultSet.getObject(1, Long.class)"));
+        assertTrue(source.contains("resultSet.getString(2)"));
+        assertTrue(source.contains("resultSet.getString(3)"));
+        assertTrue(source.contains("resultSet.getString(4)"));
+        assertTrue(source.contains("resultSet.getString(5)"));
+        assertTrue(source.contains("resultSet.getString(6)"));
+        assertTrue(source.contains("org.sqlcj.runtime.SqlArray.getList(resultSet, 7, String.class)"));
+        assertTrue(source.contains("resultSet.getObject(8, String.class)"));
+
+        assertFalse(source.contains("import org.sqlcj.runtime.UntypedText;"));
+        assertFalse(source.contains("import org.sqlcj.runtime.SqlArray;"));
+
+        assertCompiles(file);
+    }
+
+    /**
      * Compiles a repository that binds JSON text in a write and binds and reads
      * it in a query.
      */
@@ -1114,7 +1208,12 @@ class JavaCodeGeneratorTest {
             "BYTEA, byte[]",
             "TIME, LocalTime",
             "JSON, String",
-            "JSONB, String"
+            "JSONB, String",
+            "CITEXT, String",
+            "INET, String",
+            "CIDR, String",
+            "MACADDR, String",
+            "MACADDR8, String"
         }
     )
     void shouldGenerateJavaTypeForResultColumn(ColumnType columnType, String expectedJavaType) {
@@ -3337,7 +3436,12 @@ class JavaCodeGeneratorTest {
             "DECIMAL, numeric, BigDecimal",
             "REAL, float4, Float",
             "DOUBLE_PRECISION, float8, Double",
-            "UUID, uuid, UUID"
+            "UUID, uuid, UUID",
+            "CITEXT, citext, String",
+            "INET, inet, String",
+            "CIDR, cidr, String",
+            "MACADDR, macaddr, String",
+            "MACADDR8, macaddr8, String"
         }
     )
     void shouldBindAndReadArrayColumnsPerElementType(

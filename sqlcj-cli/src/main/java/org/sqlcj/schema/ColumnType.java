@@ -18,6 +18,11 @@ public enum ColumnType {
     BYTEA,
     JSON,
     JSONB,
+    CITEXT,
+    INET,
+    CIDR,
+    MACADDR,
+    MACADDR8,
 
     /**
      * A column of a declared enum type, whose Java type is the enum generated

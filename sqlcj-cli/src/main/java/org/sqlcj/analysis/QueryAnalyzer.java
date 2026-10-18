@@ -394,15 +394,28 @@ public final class QueryAnalyzer {
 
     /**
      * The scalar types PostgreSQL 16 defines no {@code MIN} and no {@code MAX}
-     * for, because it orders no two values of them. An array of such a type is
-     * ordered, so a column of one is excluded only where it is scalar.
+     * for: the types it orders no two values of, and {@code macaddr} and
+     * {@code macaddr8}, which it orders without defining the aggregates. An
+     * array of such a type is ordered, so a column of one is excluded only
+     * where it is scalar.
      */
     private static final Set<ColumnType> UNORDERED_TYPES = Set.of(
         ColumnType.BOOLEAN,
         ColumnType.UUID,
         ColumnType.BYTEA,
         ColumnType.JSON,
-        ColumnType.JSONB
+        ColumnType.JSONB,
+        ColumnType.MACADDR,
+        ColumnType.MACADDR8
+    );
+
+    /**
+     * The scalar types whose {@code MIN} and {@code MAX} PostgreSQL 16 defines
+     * over a type other than the argument's own. A type this table does not
+     * name keeps its own type, as an array of any ordered type does.
+     */
+    private static final Map<ColumnType, ColumnType> EXTREMUM_TYPES = Map.of(
+        ColumnType.CIDR, ColumnType.INET
     );
 
     /**
@@ -1688,6 +1701,11 @@ public final class QueryAnalyzer {
             case BYTEA -> "bytea";
             case JSON -> "json";
             case JSONB -> "jsonb";
+            case CITEXT -> "citext";
+            case INET -> "inet";
+            case CIDR -> "cidr";
+            case MACADDR -> "macaddr";
+            case MACADDR8 -> "macaddr8";
             case ENUM -> column.enumType();
         };
 
@@ -4909,13 +4927,18 @@ public final class QueryAnalyzer {
     /**
      * Requires a text column, because the pattern parameter takes the tested
      * column's type and only a character type makes that type a pattern.
+     * {@code citext} is one, so a pattern of one matches case-insensitively
+     * as PostgreSQL's own {@code citext} {@code LIKE} does.
      */
     private org.sqlcj.schema.Column requireTextColumn(org.sqlcj.schema.Column column) {
-        boolean text = column.type() == ColumnType.VARCHAR || column.type() == ColumnType.TEXT;
+        boolean text = column.type() == ColumnType.VARCHAR
+            || column.type() == ColumnType.TEXT
+            || column.type() == ColumnType.CITEXT;
 
         if (!text || column.array()) {
             throw new UnsupportedOperationException(
-                "A LIKE pattern placeholder requires a VARCHAR or TEXT column, but %s is %s."
+                ("A LIKE pattern placeholder requires a VARCHAR, TEXT, or CITEXT column,"
+                    + " but %s is %s.")
                     .formatted(
                         column.name(),
                         column.array()
@@ -5721,7 +5744,7 @@ public final class QueryAnalyzer {
             return column.array() || !UNORDERED_TYPES.contains(type)
                 ? new org.sqlcj.schema.Column(
                     aggregateName(function, alias, namesResultColumns),
-                    type,
+                    extremumType(type, column.array()),
                     true,
                     null,
                     column.enumType(),
@@ -5742,6 +5765,19 @@ public final class QueryAnalyzer {
                 aggregated,
                 true
             );
+    }
+
+    /**
+     * The type of a {@code MIN} or {@code MAX} of one ordered column, which is
+     * the column's own type except where PostgreSQL 16 defines the aggregate
+     * over another type: a scalar {@code cidr} is compared as the
+     * {@code inet} it converts to, so its extremum is an {@code inet}. An
+     * array keeps its element type, because PostgreSQL orders the array itself.
+     */
+    private ColumnType extremumType(ColumnType type, boolean array) {
+        return array
+            ? type
+            : EXTREMUM_TYPES.getOrDefault(type, type);
     }
 
     /**

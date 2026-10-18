@@ -324,6 +324,32 @@ class PostgresIntegrationTest {
         """;
 
     /**
+     * A snapshot declaring a nullable scalar and a nullable one-dimensional
+     * array column of {@code citext} and of each network address type, so that
+     * one row can carry values of every one of them and another can carry
+     * nulls. {@code citext} comes from an extension, which the schema installs
+     * and the schema parser ignores.
+     */
+    private static final String NETWORK_SCHEMA = """
+        CREATE EXTENSION IF NOT EXISTS citext;
+
+        CREATE TABLE network_values
+        (
+            id        BIGINT PRIMARY KEY,
+            handle    CITEXT,
+            address   INET,
+            network   CIDR,
+            mac       MACADDR,
+            mac8      MACADDR8,
+            handles   CITEXT[],
+            addresses INET[],
+            networks  CIDR[],
+            macs      MACADDR[],
+            mac8s     MACADDR8[]
+        );
+        """;
+
+    /**
      * A snapshot whose enum type is declared and then extended in the order the
      * statements state, so the modeled labels are PostgreSQL's own sort order.
      * The added labels are not used by this DDL itself, which PostgreSQL
@@ -698,6 +724,7 @@ class PostgresIntegrationTest {
         execute("DROP TABLE IF EXISTS readings");
         execute("DROP TABLE IF EXISTS categories");
         execute("DROP TABLE IF EXISTS documents");
+        execute("DROP TABLE IF EXISTS network_values");
         execute("DROP TABLE IF EXISTS user_aliases");
         execute("DROP TABLE IF EXISTS users");
         execute(SCHEMA);
@@ -3103,6 +3130,225 @@ class PostgresIntegrationTest {
                     Optional.class,
                     findMethod.invoke(repository, new Object[] { null })
                 ).isEmpty()
+            );
+        }
+    }
+
+    /**
+     * Proves that {@code citext} and the network address types round trip
+     * through generated code as their PostgreSQL text: one row is written with
+     * a value of every scalar and array column and one with nulls, both are
+     * read back as {@code String} and {@code List<String>} components, and the
+     * parameters are typed by the database rather than as {@code varchar}. A
+     * {@code citext} equality, a {@code LIKE} pattern, and an
+     * {@code = ANY(citext[])} list therefore all match ignoring case, and an
+     * {@code inet} ordering comparison runs, which a parameter bound as
+     * {@code varchar} would be rejected for.
+     */
+    @Test
+    void shouldRoundTripCitextAndNetworkValues() throws Exception {
+        execute(NETWORK_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(
+            NETWORK_SCHEMA,
+            """
+                -- name: InsertNetworkValue :exec
+                INSERT INTO network_values
+                    (id, handle, address, network, mac, mac8,
+                     handles, addresses, networks, macs, mac8s)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);
+
+                -- name: GetNetworkValue :one
+                SELECT id, handle, address, network, mac, mac8,
+                       handles, addresses, networks, macs, mac8s
+                FROM network_values
+                WHERE id = $1;
+
+                -- name: FindByHandle :optional
+                SELECT id
+                FROM network_values
+                WHERE handle = $1;
+
+                -- name: FindByHandlePattern :many
+                SELECT id
+                FROM network_values
+                WHERE handle LIKE $1;
+
+                -- name: FindByAnyHandle :many
+                SELECT id
+                FROM network_values
+                WHERE handle = ANY($1);
+
+                -- name: FindAboveAddress :many
+                SELECT id
+                FROM network_values
+                WHERE address > $1;
+                """
+        );
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Method insertMethod = repository.getClass().getMethod(
+                "insertNetworkValue",
+                Long.class,
+                String.class,
+                String.class,
+                String.class,
+                String.class,
+                String.class,
+                List.class,
+                List.class,
+                List.class,
+                List.class,
+                List.class
+            );
+
+            assertEquals(
+                1,
+                insertMethod.invoke(
+                    repository,
+                    1L,
+                    "Alice",
+                    "192.168.0.10/24",
+                    "10.0.0.0/8",
+                    "08:00:2b:01:02:03",
+                    "08:00:2b:01:02:03:04:05",
+                    Arrays.asList("Alpha", null),
+                    List.of("10.0.0.1"),
+                    List.of("172.16.0.0/12"),
+                    List.of("08:00:2b:01:02:04"),
+                    List.of("08:00:2b:01:02:03:04:06")
+                )
+            );
+
+            assertEquals(
+                1,
+                insertMethod.invoke(
+                    repository,
+                    2L,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                )
+            );
+
+            Method getMethod = repository.getClass().getMethod("getNetworkValue", Long.class);
+
+            Object result = getMethod.invoke(repository, 1L);
+
+            assertEquals(
+                List.of(
+                    "id",
+                    "handle",
+                    "address",
+                    "network",
+                    "mac",
+                    "mac8",
+                    "handles",
+                    "addresses",
+                    "networks",
+                    "macs",
+                    "mac8s"
+                ),
+                recordComponentNames(result)
+            );
+
+            assertEquals(
+                List.of(
+                    Long.class,
+                    String.class,
+                    String.class,
+                    String.class,
+                    String.class,
+                    String.class,
+                    List.class,
+                    List.class,
+                    List.class,
+                    List.class,
+                    List.class
+                ),
+                recordComponentTypes(result)
+            );
+
+            assertEquals("Alice", component(result, "handle"));
+            assertEquals("192.168.0.10/24", component(result, "address"));
+            assertEquals("10.0.0.0/8", component(result, "network"));
+            assertEquals("08:00:2b:01:02:03", component(result, "mac"));
+            assertEquals("08:00:2b:01:02:03:04:05", component(result, "mac8"));
+            assertEquals(Arrays.asList("Alpha", null), component(result, "handles"));
+            assertEquals(List.of("10.0.0.1"), component(result, "addresses"));
+            assertEquals(List.of("172.16.0.0/12"), component(result, "networks"));
+            assertEquals(List.of("08:00:2b:01:02:04"), component(result, "macs"));
+            assertEquals(List.of("08:00:2b:01:02:03:04:06"), component(result, "mac8s"));
+
+            Object nullResult = getMethod.invoke(repository, 2L);
+
+            assertEquals(2L, component(nullResult, "id"));
+            assertNull(component(nullResult, "handle"));
+            assertNull(component(nullResult, "address"));
+            assertNull(component(nullResult, "network"));
+            assertNull(component(nullResult, "mac"));
+            assertNull(component(nullResult, "mac8"));
+            assertNull(component(nullResult, "handles"));
+            assertNull(component(nullResult, "addresses"));
+            assertNull(component(nullResult, "networks"));
+            assertNull(component(nullResult, "macs"));
+            assertNull(component(nullResult, "mac8s"));
+
+            Method findByHandle = repository.getClass().getMethod("findByHandle", String.class);
+
+            assertEquals(
+                1L,
+                component(
+                    assertInstanceOf(
+                        Optional.class,
+                        findByHandle.invoke(repository, "ALICE")
+                    ).orElseThrow(),
+                    "id"
+                )
+            );
+
+            Method findByPattern = repository.getClass().getMethod(
+                "findByHandlePattern",
+                String.class
+            );
+
+            assertEquals(
+                List.of(1L),
+                ids(findByPattern.invoke(repository, "ali%"))
+            );
+
+            Method findByAnyHandle = repository.getClass().getMethod(
+                "findByAnyHandle",
+                List.class
+            );
+
+            assertEquals(
+                List.of(1L),
+                ids(findByAnyHandle.invoke(repository, List.of("ALICE", "nobody")))
+            );
+
+            Method findAboveAddress = repository.getClass().getMethod(
+                "findAboveAddress",
+                String.class
+            );
+
+            assertEquals(
+                List.of(1L),
+                ids(findAboveAddress.invoke(repository, "192.168.0.1/24"))
+            );
+
+            assertEquals(
+                List.of(),
+                ids(findAboveAddress.invoke(repository, "192.168.0.20/24"))
             );
         }
     }
@@ -5619,6 +5865,17 @@ class PostgresIntegrationTest {
         }
 
         return names;
+    }
+
+    /** Reads the {@code id} component of every row of a generated list result. */
+    private List<Object> ids(Object rows) throws Exception {
+        List<Object> ids = new ArrayList<>();
+
+        for (Object row : (List<?>) rows) {
+            ids.add(component(row, "id"));
+        }
+
+        return ids;
     }
 
     /** Reads the {@code name} component of every row of a generated list result. */

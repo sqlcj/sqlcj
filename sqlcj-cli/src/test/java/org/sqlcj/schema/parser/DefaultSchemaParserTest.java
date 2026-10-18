@@ -384,7 +384,17 @@ class DefaultSchemaParserTest {
             "JSON, JSON",
             "json, JSON",
             "JSONB, JSONB",
-            "jsonb, JSONB"
+            "jsonb, JSONB",
+            "CITEXT, CITEXT",
+            "citext, CITEXT",
+            "INET, INET",
+            "inet, INET",
+            "CIDR, CIDR",
+            "cidr, CIDR",
+            "MACADDR, MACADDR",
+            "macaddr, MACADDR",
+            "MACADDR8, MACADDR8",
+            "macaddr8, MACADDR8"
         }
     )
     void shouldParsePostgresTypeSpellings(String sqlType, ColumnType expectedType) {
@@ -576,7 +586,12 @@ class DefaultSchemaParserTest {
             "'numeric(10, 2)[3]', DECIMAL",
             "REAL[], REAL",
             "DOUBLE PRECISION[], DOUBLE_PRECISION",
-            "uuid[], UUID"
+            "uuid[], UUID",
+            "citext[], CITEXT",
+            "inet[], INET",
+            "cidr[], CIDR",
+            "macaddr[], MACADDR",
+            "macaddr8[], MACADDR8"
         }
     )
     void shouldModelOneDimensionalArrayColumns(String sqlType, ColumnType elementType) {
@@ -3509,7 +3524,7 @@ class DefaultSchemaParserTest {
                     sized    public.stage_setting[4],
                     nested   public.stage_setting[][],
                     external reporting.stage_setting,
-                    legacy   public.citext[]
+                    legacy   public.hstore[]
                 );
 
                 ALTER TABLE stages ADD COLUMN added public.stage_setting[];
@@ -3526,10 +3541,50 @@ class DefaultSchemaParserTest {
                 new Column("sized", ColumnType.ENUM, true, null, "stage_setting", true),
                 new Column("nested", null, true, "PUBLIC.STAGE_SETTING[][]"),
                 new Column("external", null, true, "REPORTING.STAGE_SETTING"),
-                new Column("legacy", null, true, "PUBLIC.CITEXT[]"),
+                new Column("legacy", null, true, "PUBLIC.HSTORE[]"),
                 new Column("added", ColumnType.ENUM, true, null, "stage_setting", true)
             ),
             table(schema, "stages").columns()
+        );
+    }
+
+    /**
+     * {@code citext} is an extension type, which {@code pg_dump} writes
+     * qualified with the schema it was installed in, so a declaration of it is
+     * modeled under its unqualified and its {@code public}-qualified name
+     * alike, scalar and array alike, through every path that types a column. A
+     * name qualified with any other schema never resolves and is recorded with
+     * its declared text, as any other unmapped type is.
+     */
+    @Test
+    void shouldModelPublicQualifiedCitextColumnTypes() {
+        Schema schema = parser.parse(
+            """
+                CREATE TABLE hosts (
+                    handle   public.citext NOT NULL,
+                    quoted   "public"."citext",
+                    handles  public.citext[],
+                    sized    public.citext[4],
+                    nested   public.citext[][],
+                    external reporting.citext
+                );
+
+                ALTER TABLE hosts ADD COLUMN added public.citext[];
+                ALTER TABLE hosts ALTER COLUMN quoted TYPE "public"."citext"[];
+                """
+        );
+
+        assertEquals(
+            List.of(
+                new Column("handle", ColumnType.CITEXT, false),
+                new Column("quoted", ColumnType.CITEXT, true, null, null, true),
+                new Column("handles", ColumnType.CITEXT, true, null, null, true),
+                new Column("sized", ColumnType.CITEXT, true, null, null, true),
+                new Column("nested", null, true, "PUBLIC.CITEXT[][]"),
+                new Column("external", null, true, "REPORTING.CITEXT"),
+                new Column("added", ColumnType.CITEXT, true, null, null, true)
+            ),
+            table(schema, "hosts").columns()
         );
     }
 

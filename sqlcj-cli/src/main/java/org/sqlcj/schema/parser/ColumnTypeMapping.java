@@ -75,6 +75,10 @@ public final class ColumnTypeMapping {
         if (arrayDimensions <= 1) {
             ColumnType type = columnType(typeName);
 
+            if (type == null) {
+                type = extensionType(elementText);
+            }
+
             if (type != null) {
                 if (!array || isArrayElementType(type)) {
                     return new MappedType(
@@ -226,7 +230,34 @@ public final class ColumnTypeMapping {
             case "BYTEA" -> ColumnType.BYTEA;
             case "JSON" -> ColumnType.JSON;
             case "JSONB" -> ColumnType.JSONB;
+            case "CITEXT" -> ColumnType.CITEXT;
+            case "INET" -> ColumnType.INET;
+            case "CIDR" -> ColumnType.CIDR;
+            case "MACADDR" -> ColumnType.MACADDR;
+            case "MACADDR8" -> ColumnType.MACADDR8;
             default -> null;
         };
+    }
+
+    /**
+     * The mapped type a qualified declared element type names, or {@code null}
+     * when it names none. An extension type belongs to the schema it was
+     * installed in, which {@code pg_dump} writes as a qualifier, so
+     * {@code citext} is resolved in the one namespace sqlcj models, exactly as
+     * an enum type's name is: {@code public.citext} is the type {@code citext}
+     * and a name qualified with any other schema never resolves. A built-in
+     * type is never qualified by {@code pg_dump}, so only {@code citext} is
+     * resolved this way.
+     */
+    private ColumnType extensionType(String elementText) {
+        String modeledName = SchemaNamespace.modeledTypeName(elementText);
+
+        if (modeledName == null) {
+            return null;
+        }
+
+        return typeName(modeledName).equals("CITEXT")
+            ? ColumnType.CITEXT
+            : null;
     }
 }
