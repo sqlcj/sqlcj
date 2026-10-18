@@ -339,3 +339,13 @@ SELECT t.title,
        p.name
 FROM tasks t
          NATURAL JOIN (SELECT id AS project_id, name FROM projects) p;
+
+-- name: ListProjectsWithLatestTask :many
+SELECT p.name,
+       latest.title
+FROM projects p
+         JOIN LATERAL (SELECT t.title
+                       FROM tasks t
+                       WHERE t.project_id = p.id
+                       ORDER BY t.id DESC
+                       LIMIT 1) latest ON TRUE;

@@ -4909,6 +4909,458 @@ class QueryAnalyzerTest {
         );
     }
 
+    /**
+     * An inner {@code LATERAL} joined source is a derived source whose body
+     * reads the sources written before it as the level enclosing it, so a
+     * correlated column of its projection keeps the type and the nullability
+     * that outer column states.
+     */
+    @Test
+    void shouldAnalyzeAnInnerLateralBodyCorrelatedToAnEarlierSource() {
+        String sql = """
+            SELECT u.id, latest.user_name, latest.total
+            FROM users u
+                     JOIN LATERAL (SELECT u.name AS user_name, o.total
+                                   FROM orders o
+                                   WHERE o.user_id = u.id
+                                   ORDER BY o.id DESC
+                                   LIMIT 1) latest ON TRUE
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListLatestOrders", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertNull(model.rowTable());
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("user_name", ColumnType.VARCHAR, true),
+                new QueryColumn("total", ColumnType.DECIMAL, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A {@code LATERAL} source written after a comma reads the earlier join
+     * groups, and one joined onto its group reads those groups and the earlier
+     * sources of its own group, the derived source a comma item states
+     * included.
+     */
+    @Test
+    void shouldReadAnEarlierGroupAndItsOwnGroupInsideALateralBody() {
+        String sql = """
+            SELECT u.id, lone.total, pair.lone_total, pair.user_name
+            FROM users u,
+                 LATERAL (SELECT o.total
+                          FROM orders o
+                          WHERE o.user_id = u.id) lone
+                     JOIN LATERAL (SELECT lone.total AS lone_total,
+                                          u.name     AS user_name
+                                   FROM profiles p
+                                   WHERE p.user_id = u.id) pair ON TRUE
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUserTotals", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("total", ColumnType.DECIMAL, true),
+                new QueryColumn("lone_total", ColumnType.DECIMAL, true),
+                new QueryColumn("user_name", ColumnType.VARCHAR, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A {@code RIGHT} or a {@code FULL} join reads its own joined source before
+     * the sources on its left, as PostgreSQL does, so a {@code LATERAL} body
+     * joined that way sees none of them and a reference to one is an unknown
+     * qualifier.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = { "RIGHT", "FULL" })
+    void shouldRejectALeftSideReferenceInsideARightOrFullJoinedLateralBody(String joinSide) {
+        String sql = """
+            SELECT u.id, pair.user_name
+            FROM users u
+                     %s JOIN LATERAL (SELECT u.name AS user_name
+                                      FROM profiles p) pair ON TRUE
+            """.formatted(joinSide);
+
+        Query query = new Query("ListUserNames", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, joinSchema)
+        );
+
+        assertEquals("Unknown source qualifier in query: u", exception.getMessage());
+    }
+
+    /**
+     * An uncorrelated {@code LATERAL} source joined with a {@code RIGHT} or a
+     * {@code FULL} join is accepted and takes that kind's own nullability: the
+     * earlier source of its group is null-extended either way, and its own
+     * columns only in a {@code FULL} join.
+     */
+    @ParameterizedTest
+    @CsvSource({ "RIGHT,false", "FULL,true" })
+    void shouldAnalyzeAnUncorrelatedRightOrFullJoinedLateralSource(
+        String joinSide,
+        boolean joinedNullable
+    ) {
+        String sql = """
+            SELECT u.id, pair.profile_id
+            FROM users u
+                     %s JOIN LATERAL (SELECT p.id AS profile_id
+                                      FROM profiles p) pair ON TRUE
+            """.formatted(joinSide);
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListProfileIds", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, true),
+                new QueryColumn("profile_id", ColumnType.BIGINT, joinedNullable)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A {@code LATERAL} source written as the first {@code FROM} item of a
+     * predicate subquery reads the levels enclosing that subquery, because its
+     * own level holds no source written before it.
+     */
+    @Test
+    void shouldAnalyzeAFirstItemLateralSourceInsideExists() {
+        String sql = """
+            SELECT u.id
+            FROM users u
+            WHERE EXISTS (SELECT latest.total
+                          FROM LATERAL (SELECT o.total
+                                        FROM orders o
+                                        WHERE o.user_id = u.id) latest
+                          WHERE latest.total = :minTotal)
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListOrderingUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "minTotal", ColumnType.DECIMAL)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * A {@code LATERAL} source of an {@code UPDATE ... FROM} clause reads the
+     * sources of that clause written before it, and its columns are in scope of
+     * the update's {@code WHERE} and {@code RETURNING} as any derived source's
+     * are.
+     */
+    @Test
+    void shouldAnalyzeALateralSourceOfAnUpdateFromClause() {
+        String sql = """
+            UPDATE users u
+            SET name = $1
+            FROM profiles p,
+                 LATERAL (SELECT o.total
+                          FROM orders o
+                          WHERE o.user_id = p.user_id
+                            AND p.nickname = $2) lone
+            WHERE u.id = p.user_id
+              AND lone.total = $3
+            RETURNING u.id, lone.total
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("RenameOrderingUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("total", ColumnType.DECIMAL, true)
+            ),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "nickname", ColumnType.VARCHAR),
+                new QueryParameter(3, "total", ColumnType.DECIMAL)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 2, 3), model.bindingParameterIndexes());
+    }
+
+    /**
+     * A {@code LATERAL} source of a {@code DELETE ... USING} clause reads the
+     * sources of that clause written before it, as an update's does.
+     */
+    @Test
+    void shouldAnalyzeALateralSourceOfADeleteUsingClause() {
+        String sql = """
+            DELETE FROM users u
+            USING profiles p,
+                  LATERAL (SELECT o.total
+                           FROM orders o
+                           WHERE o.user_id = p.user_id
+                             AND p.nickname = $1) lone
+            WHERE u.id = p.user_id
+              AND lone.total = $2
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("DeleteOrderingUsers", QueryType.EXEC, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "nickname", ColumnType.VARCHAR),
+                new QueryParameter(2, "total", ColumnType.DECIMAL)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 2), model.bindingParameterIndexes());
+    }
+
+    /**
+     * A write's target is in no join group, so a {@code LATERAL} source of an
+     * {@code UPDATE ... FROM} or a {@code DELETE ... USING} clause never sees
+     * it, as PostgreSQL scopes it, and a reference to it is an unknown
+     * qualifier.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "EXEC|UPDATE users u SET name = $1"
+                + " FROM LATERAL (SELECT u.name AS n FROM profiles p) lone"
+                + " WHERE lone.n = $2",
+            "EXEC|DELETE FROM users u"
+                + " USING LATERAL (SELECT u.name AS n FROM profiles p) lone"
+                + " WHERE lone.n = $1"
+        }
+    )
+    void shouldRejectAWriteTargetReferenceInsideALateralSource(QueryType type, String sql) {
+        Query query = new Query("TouchUsers", type, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, joinSchema)
+        );
+
+        assertEquals("Unknown source qualifier in query: u", exception.getMessage());
+    }
+
+    /**
+     * A placeholder of a {@code LATERAL} body is typed and named from the
+     * column it compares, an outer level's column included, exactly as a
+     * predicate subquery's placeholder is.
+     */
+    @Test
+    void shouldTypeALateralBodyPlaceholderFromAnOuterColumn() {
+        String sql = """
+            SELECT u.id, lone.total
+            FROM users u
+                     JOIN LATERAL (SELECT o.total
+                                   FROM orders o
+                                   WHERE o.user_id = u.id
+                                     AND u.name = :owner) lone ON TRUE
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListOwnerTotals", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "owner", ColumnType.VARCHAR)),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1), model.bindingParameterIndexes());
+    }
+
+    /**
+     * Every occurrence binds in the textual order of the query across an outer
+     * join condition, the body of a {@code LATERAL} source, the condition of
+     * its own join, and the outer {@code WHERE}, whatever order the analysis
+     * resolves them in.
+     */
+    @Test
+    void shouldBindLateralBodyParametersInTextualOrder() {
+        String sql = """
+            SELECT u.id, lone.total
+            FROM users u
+                     JOIN profiles p ON p.user_id = u.id AND p.nickname = $2
+                     JOIN LATERAL (SELECT o.total
+                                   FROM orders o
+                                   WHERE o.user_id = u.id
+                                     AND o.total = $3) lone ON lone.total > $4
+            WHERE u.name = $1
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListOrderedTotals", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "nickname", ColumnType.VARCHAR),
+                new QueryParameter(3, "total", ColumnType.DECIMAL),
+                new QueryParameter(4, "total", ColumnType.DECIMAL)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(2, 3, 4, 1), model.bindingParameterIndexes());
+    }
+
+    /**
+     * A {@code LEFT JOIN LATERAL} reads its own body as a row that may be
+     * absent, so every column the body exposes is nullable, the correlated
+     * ones included.
+     */
+    @Test
+    void shouldReadColumnsOfALeftJoinedLateralBodyAsNullable() {
+        String sql = """
+            SELECT u.id, lone.profile_id, lone.user_name
+            FROM users u
+                     LEFT JOIN LATERAL (SELECT p.id AS profile_id, u.name AS user_name
+                                        FROM profiles p
+                                        WHERE p.user_id = u.id) lone ON TRUE
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUserProfiles", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("profile_id", ColumnType.BIGINT, true),
+                new QueryColumn("user_name", ColumnType.VARCHAR, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * The level a {@code LATERAL} body reads is the sources as they stand where
+     * the source is written, so an outer column read from a source an earlier
+     * {@code RIGHT} join null-extended is nullable, while one read from a
+     * source that join leaves alone is not.
+     */
+    @Test
+    void shouldReadANullExtendedOuterColumnOfALateralBodyAsNullable() {
+        String sql = """
+            SELECT lone.user_id, lone.profile_id
+            FROM users u
+                     RIGHT JOIN profiles p ON p.user_id = u.id
+                     JOIN LATERAL (SELECT u.id AS user_id, p.id AS profile_id
+                                   FROM orders o) lone ON TRUE
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUserProfileIds", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("user_id", ColumnType.BIGINT, true),
+                new QueryColumn("profile_id", ColumnType.BIGINT, false)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A set operation is the body of a {@code LATERAL} source as it is of any
+     * derived source, and every branch reads the level enclosing the source, so
+     * each of them may type a placeholder from an outer column.
+     */
+    @Test
+    void shouldAnalyzeACorrelatedSetOperationLateralBody() {
+        String sql = """
+            SELECT u.id, lone.total
+            FROM users u
+                     JOIN LATERAL (SELECT o.total
+                                   FROM orders o
+                                   WHERE o.user_id = u.id
+                                     AND u.name = :owner
+                                   UNION ALL
+                                   SELECT q.total
+                                   FROM orders q
+                                   WHERE q.id = u.id
+                                     AND u.name = :owner) lone ON TRUE
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListOwnerTotals", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("total", ColumnType.DECIMAL, true)
+            ),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "owner", ColumnType.VARCHAR)),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1), model.bindingParameterIndexes());
+    }
+
     @Test
     void shouldRetainOneParameterForRepeatedIndex() {
         String sql = """
@@ -9747,9 +10199,11 @@ class QueryAnalyzerTest {
     /**
      * The derived-source forms outside this subset are rejected with their own
      * diagnostic: a data-modifying {@code WITH} item, a
-     * subquery source without an alias, a column list on a subquery alias, a
+     * subquery source without an alias, a column list on a subquery alias,
+     * either of them on a {@code LATERAL} source, which exposes its columns the
+     * same way, a
      * body that states no supported query at all, which is classified inside
-     * its own parentheses, a {@code LATERAL} source, which is classified first,
+     * its own parentheses,
      * a doubly parenthesized source, which states a source kind of its own, a
      * column list on a {@code WITH} name that names more columns than its body
      * returns, an aggregate past such a list, which the list names no column
@@ -9781,8 +10235,10 @@ class QueryAnalyzerTest {
                 + "|A subquery in FROM requires an alias, such as (SELECT ...) AS recent.",
             "MANY|SELECT u.id FROM users u JOIN (SELECT user_id FROM orders) ON TRUE"
                 + "|A subquery in FROM requires an alias, such as (SELECT ...) AS recent.",
-            "MANY|SELECT s.id FROM LATERAL (SELECT id FROM users) s"
-                + "|LATERAL is not supported.",
+            "MANY|SELECT u.id FROM users u JOIN LATERAL (SELECT u.id) ON TRUE"
+                + "|A subquery in FROM requires an alias, such as (SELECT ...) AS recent.",
+            "MANY|SELECT l.m FROM users u JOIN LATERAL (SELECT u.id) AS l(m) ON TRUE"
+                + "|A column list on l is not supported; alias the columns in its SELECT instead.",
             "MANY|SELECT s.id FROM ((SELECT id FROM users)) s"
                 + "|Only table sources are supported.",
             "MANY|WITH recent (a, b, c) AS (SELECT id, total FROM orders) SELECT * FROM recent"

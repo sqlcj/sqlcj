@@ -78,9 +78,8 @@ configuration entry.
 ### Sources
 
 - The `FROM` item must be a table of that schema, a `WITH` clause in scope, or a
-  subquery, optionally with an alias. A `LATERAL` source is rejected as
-  `LATERAL is not supported.`, before the source is resolved, and a doubly
-  parenthesized source, such as `FROM ((SELECT ...)) s`, as
+  subquery, optionally with an alias and optionally `LATERAL`. A doubly
+  parenthesized source, such as `FROM ((SELECT ...)) s`, is rejected as
   `Only table sources are supported.`
 - A `FROM` or `JOIN` source whose unqualified name matches a `WITH` clause in
   scope reads that clause and not the table of the same name, as PostgreSQL
@@ -106,6 +105,28 @@ configuration entry.
   `A subquery in FROM requires an alias, such as (SELECT ...) AS recent.`, and
   sees no source of the query around it, as PostgreSQL scopes a subquery that is
   not `LATERAL`.
+- A `LATERAL` subquery is that same derived source, with the same alias and
+  column-list rules, except that its body reads, as the one level enclosing it,
+  the sources of its own clause written before it: the earlier join groups and,
+  unless a `RIGHT` or a `FULL` join joins it, the earlier sources of its own
+  group, the column a `USING` list or `NATURAL` merged there included; beyond
+  that level come the levels enclosing its own query, so a `LATERAL` source
+  inside a predicate subquery also reads the outer query. A write's target is in
+  no join group, so a `LATERAL` source of an `UPDATE ... FROM` or a
+  `DELETE ... USING` clause never reads it. Its correlated columns — in its
+  projection, its join conditions, its `WHERE`, and an aggregate — resolve and
+  its placeholders are typed through that scope exactly as a correlated
+  predicate subquery's are, and a correlated column read from a null-extended
+  source is nullable like any other. A `LEFT` or a `FULL JOIN LATERAL` reads its
+  body as a row that may be absent, so every column the body exposes is
+  nullable. A source the body cannot see is reported as the
+  `Unknown source qualifier in query: <q>` or
+  `Column not found in sources ...` it is, as PostgreSQL rejects it, and a
+  wildcard in the body's projection expands the body's own sources alone, as
+  every projection's does. A `WITH` list inside the body keeps the scope every
+  `WITH` list has. `LATERAL f(...)`, a function call, is no modeled source at
+  all and keeps `Only table sources are supported.` in a `FROM` clause and
+  `Only table join sources are supported.` in a join.
 - A column list on a `WITH` name, such as `WITH recent (n) AS (...)`, renames
   the body's result columns by position, on a read and on a write alike: each
   name renames the column of its own position, which keeps the type, enum type,
@@ -155,13 +176,13 @@ configuration entry.
   group, and a `JOIN` of any kind joins the group it is written onto, because
   PostgreSQL binds a `JOIN` more tightly than a comma. `WHERE` and the
   projection read every group of the level as one scope.
-- Every other join is rejected: a `LATERAL` join source is reported as the same
-  unsupported source as a `FROM` item of that kind, before the join kind, while
-  every other joined source is resolved after it, and every remaining
-  modifier — a bare `OUTER`, `SEMI`, `APPLY`, `STRAIGHT`, `GLOBAL`, a join
-  hint, and `NATURAL CROSS JOIN`, which the parser reads and PostgreSQL does
-  not have — is rejected as
-  `Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported.`
+- Every other join is rejected: the join kind is classified before its source,
+  so every remaining modifier — a bare `OUTER`, `SEMI`, `APPLY`, `STRAIGHT`,
+  `GLOBAL`, a join hint, and `NATURAL CROSS JOIN`, which the parser reads and
+  PostgreSQL does not have — is rejected as
+  `Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported.`,
+  whatever source it joins, and a joined source outside the subset is reported
+  after it.
 - An inner, left, right, and full join each carry exactly one `ON` condition,
   which may be any boolean expression, including `ON TRUE`, or a `USING` list
   or `NATURAL`, which state their join columns instead. A `CROSS JOIN` and a
@@ -925,9 +946,12 @@ its author's `name`.
   join: JSqlParser does not read a join there, so `USING a JOIN b` fails to
   parse.
 - Each added source is a table of the entry's schema, a `WITH` clause of the
-  write in scope, or an aliased subquery, resolved exactly as a read's source
-  is, so a `LATERAL` source, a doubly parenthesized source, and a subquery
-  without an alias keep their diagnostics.
+  write in scope, or an aliased subquery, `LATERAL` or not, resolved exactly as
+  a read's source is, so a doubly parenthesized source and a subquery without
+  an alias keep their diagnostics. A `LATERAL` source reads the sources of its
+  own clause written before it and never the target, which is in no join group,
+  so a reference to the target is rejected as
+  `Unknown source qualifier in query: <name>`.
 - A join condition inside `FROM` sees only the sources of the join group it is
   written onto, up to and including its own joined source, because PostgreSQL
   binds a `JOIN` more tightly than a comma. The target is in no join group, so
@@ -1566,7 +1590,8 @@ query name, and its header line.
   operation other than the leftmost names no result column, and a position a
   column list on a `WITH` name renames is named by that list, so an aggregate
   and a cast in either place may omit the alias each requires elsewhere.
-- A `FROM` or `JOIN` source outside the subset: a `LATERAL` source, a doubly
+- A `FROM` or `JOIN` source outside the subset: a `LATERAL` function call, a
+  doubly
   parenthesized source, a subquery source without an alias, a column list on a
   subquery alias, a column list on a `WITH` name that names more columns than
   its body returns, and a derived source two of whose columns expose one name,
@@ -2047,6 +2072,38 @@ Reads:
   reads the merged column first and in its wider type and a
   `FULL JOIN ... USING` reads the present side's value for an unmatched row on
   each side.
+- `QueryAnalyzerTest.shouldAnalyzeAnInnerLateralBodyCorrelatedToAnEarlierSource`,
+  `QueryAnalyzerTest.shouldReadAnEarlierGroupAndItsOwnGroupInsideALateralBody`,
+  `QueryAnalyzerTest.shouldRejectALeftSideReferenceInsideARightOrFullJoinedLateralBody`,
+  `QueryAnalyzerTest.shouldAnalyzeAnUncorrelatedRightOrFullJoinedLateralSource`,
+  `QueryAnalyzerTest.shouldAnalyzeAFirstItemLateralSourceInsideExists`,
+  `QueryAnalyzerTest.shouldAnalyzeALateralSourceOfAnUpdateFromClause`,
+  `QueryAnalyzerTest.shouldAnalyzeALateralSourceOfADeleteUsingClause`,
+  `QueryAnalyzerTest.shouldRejectAWriteTargetReferenceInsideALateralSource`,
+  `QueryAnalyzerTest.shouldTypeALateralBodyPlaceholderFromAnOuterColumn`,
+  `QueryAnalyzerTest.shouldBindLateralBodyParametersInTextualOrder`,
+  `QueryAnalyzerTest.shouldReadColumnsOfALeftJoinedLateralBodyAsNullable`,
+  `QueryAnalyzerTest.shouldReadANullExtendedOuterColumnOfALateralBodyAsNullable`,
+  and `QueryAnalyzerTest.shouldAnalyzeACorrelatedSetOperationLateralBody` cover
+  the `LATERAL` scope rule: the body of an inner, a comma-separated, and a
+  joined `LATERAL` source reading the earlier groups and the earlier sources of
+  its own group, the left side of a `RIGHT` or a `FULL` join it cannot see
+  beside the uncorrelated form of each, the enclosing query a `LATERAL` first
+  `FROM` item of a predicate subquery reads, the `UPDATE ... FROM` and
+  `DELETE ... USING` clauses whose sources it reads and whose target it never
+  does, a placeholder typed from an outer column, the textual binding order
+  across an outer condition, the body, its own condition, and `WHERE`, the
+  nullability a `LEFT JOIN LATERAL` and a null-extended outer source state, and
+  a correlated set-operation body, while
+  `QueryAnalyzerTest.shouldRejectExcludedDerivedSourceForm` covers the missing
+  alias and the alias column list of a `LATERAL` source;
+  `SqlcjCompilerIntegrationTest.shouldGenerateCompilableJavaForLateralJoins`
+  compiles a repository over an inner, a left, a comma-separated, an
+  `UPDATE ... FROM`, and a `DELETE ... USING` `LATERAL` source, and
+  `PostgresIntegrationTest.shouldExecuteGeneratedLateralJoinsAgainstPostgres`
+  executes an inner and a left `LATERAL` join with a body placeholder against
+  PostgreSQL 16, where a team the body matches no row of is absent from the
+  inner join and reads `null` columns in the left one.
 - `QueryAnalyzerTest.shouldAnalyzeJoinConditionOfAnyBooleanExpression`,
   `QueryAnalyzerTest.shouldReadFilteredLeftJoinedColumnsAsNullable`,
   `QueryAnalyzerTest.shouldResolveJoinConditionParameterInTextualBindingOrder`,
@@ -2415,7 +2472,7 @@ Unsupported queries and internal errors:
   covers the whole located diagnostic line, and the absence of generated
   output, of each rejected input: the `VALUES`, `TABLE`, `MERGE`, `TRUNCATE`,
   `EXPLAIN`, `EXECUTE`, `CREATE TABLE`, and `SET` statements, a window and a
-  concatenation projection, a computed `RETURNING` item, the `LATERAL` join, a
+  concatenation projection, a computed `RETURNING` item, a
   `CROSS JOIN` with an `ON` condition and one with a `USING` list, a `NATURAL`
   join with an `ON` condition, a bare `OUTER JOIN`, a column list on a
   subquery alias, a subquery source without an alias, a recursive `WITH` clause
@@ -2609,19 +2666,21 @@ Reference service:
   whose `TasksRow t` is `null` for a project without tasks, against
   PostgreSQL 16 through the generated repository.
 - `ReferenceServiceIntegrationTest.shouldExecuteTheGeneratedJoinKindQueries`
-  executes the six join entries the reference service's query catalogue
+  executes the seven join entries the reference service's query catalogue
   gained — its `RIGHT JOIN` and `FULL JOIN` of projects and tasks, each of
   which reads a `null` title for a project without tasks, its `CROSS JOIN` of
   organizations and projects, which returns every pair, its comma-separated
   list of tasks and projects, which returns the joined rows alone, its
   `JOIN memberships USING (organization_id)`, which reads the merged
-  organization id of its own member, and its `NATURAL JOIN` of tasks and a
-  projects subquery, which merges the project id — against PostgreSQL 16
-  through the generated repository.
+  organization id of its own member, its `NATURAL JOIN` of tasks and a
+  projects subquery, which merges the project id, and its
+  `JOIN LATERAL`, whose body reads the latest task of the project it is
+  correlated to and returns no row for a project without tasks — against
+  PostgreSQL 16 through the generated repository.
 - `ReferenceServiceIntegrationTest.shouldRejectEachUnsupportedCatalogueQuery`
   covers the whole located diagnostic line, and the absence of generated
   output, of every entry of the reference service's unsupported query
-  catalogue: the `LATERAL` join, a data-modifying CTE, an uncast
+  catalogue: a data-modifying CTE, an uncast
   `lower(:email)`, and a placeholder beside a subscripted column, and
   `ReferenceServiceIntegrationTest.shouldCatalogueExactlyTheUnsupportedQueryFiles`
   covers that the catalogue directory holds exactly those queries.

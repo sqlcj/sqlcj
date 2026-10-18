@@ -1435,6 +1435,122 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
+     * A repository generated from the {@code LATERAL} joins compiles: an inner
+     * one reads its body's correlated columns, a left one boxes every column
+     * its body exposes, a comma-separated one reads the item before it, and an
+     * {@code UPDATE ... FROM} and a {@code DELETE ... USING} each type a
+     * placeholder inside their own {@code LATERAL} body.
+     */
+    @Test
+    void shouldGenerateCompilableJavaForLateralJoins() throws IOException {
+        Path schemaFile = tempDir.resolve("schema.sql");
+        Path queriesFile = tempDir.resolve("queries.sql");
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path classesDirectory = tempDir.resolve("classes");
+
+        Files.writeString(schemaFile, JOIN_SCHEMA);
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: ListLatestOrders :many
+                SELECT u.id, latest.user_name, latest.total
+                FROM users u
+                JOIN LATERAL (SELECT u.name AS user_name, o.total
+                              FROM orders o
+                              WHERE o.user_id = u.id
+                              ORDER BY o.id DESC
+                              LIMIT 1) latest ON TRUE;
+
+                -- name: ListOptionalLatestOrders :many
+                SELECT u.id, latest.profile_id
+                FROM users u
+                LEFT JOIN LATERAL (SELECT p.id AS profile_id
+                                   FROM profiles p
+                                   WHERE p.user_id = u.id
+                                     AND p.nickname = $1) latest ON TRUE;
+
+                -- name: ListCommaLateralProfiles :many
+                SELECT u.id, latest.nickname
+                FROM users u,
+                     LATERAL (SELECT p.nickname
+                              FROM profiles p
+                              WHERE p.user_id = u.id) latest;
+
+                -- name: RenameOrderingUsers :exec
+                UPDATE users u
+                SET name = $1
+                FROM profiles p,
+                     LATERAL (SELECT o.total
+                              FROM orders o
+                              WHERE o.user_id = p.user_id
+                                AND p.nickname = $2) lone
+                WHERE u.id = p.user_id
+                  AND lone.total = $3;
+
+                -- name: DeleteOrderingUsers :exec
+                DELETE FROM users u
+                USING profiles p,
+                      LATERAL (SELECT o.total
+                               FROM orders o
+                               WHERE o.user_id = p.user_id
+                                 AND p.nickname = $1) lone
+                WHERE u.id = p.user_id
+                  AND lone.total = $2;
+                """
+        );
+
+        new SqlcjCompiler().compile(
+            usersConfig(schemaFile, queriesFile, generatedDirectory)
+        );
+
+        String source = Files.readString(
+            generatedDirectory.resolve("generated/UsersRepository.java")
+        );
+
+        assertEquals(
+            List.of("Long id", "String userName", "BigDecimal total"),
+            recordComponents(source, "ListLatestOrdersResult")
+        );
+
+        assertEquals(
+            List.of("Long id", "Long profileId"),
+            recordComponents(source, "ListOptionalLatestOrdersResult")
+        );
+
+        assertEquals(
+            List.of("Long id", "String nickname"),
+            recordComponents(source, "ListCommaLateralProfilesResult")
+        );
+
+        assertTrue(
+            source.contains(
+                "public List<ListOptionalLatestOrdersResult>"
+                    + " listOptionalLatestOrders(String nickname)"
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                "public int renameOrderingUsers(String name, String nickname, BigDecimal total)"
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                "public int deleteOrderingUsers(String nickname, BigDecimal total)"
+            ),
+            source
+        );
+
+        assertCompiles(generatedDirectory, classesDirectory);
+
+        assertTrue(Files.exists(classesDirectory.resolve("generated/UsersRepository.class")));
+    }
+
+    /**
      * A top-level set operation generates compilable Java: its result record
      * takes the leftmost branch's column names and the types its branches
      * resolve to, its trailing {@code LIMIT} is one method parameter, a
@@ -2888,13 +3004,6 @@ class SqlcjCompilerIntegrationTest {
                 ":many",
                 "SELECT u.id FROM users u OUTER JOIN profiles p ON p.user_id = u.id",
                 "Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported."
-            ),
-            Arguments.of(
-                ":many",
-                "SELECT u.id FROM users u"
-                    + " JOIN LATERAL (SELECT p.nickname FROM profiles p WHERE p.user_id = u.id) l"
-                    + " ON TRUE",
-                "LATERAL is not supported."
             ),
             Arguments.of(
                 ":many",

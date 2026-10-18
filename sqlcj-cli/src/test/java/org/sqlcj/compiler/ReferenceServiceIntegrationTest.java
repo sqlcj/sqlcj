@@ -100,11 +100,6 @@ class ReferenceServiceIntegrationTest {
      */
     private static final List<UnsupportedQuery> UNSUPPORTED_QUERIES = List.of(
         new UnsupportedQuery(
-            "lateral_join.sql",
-            "ListProjectsWithLatestTask",
-            "LATERAL is not supported."
-        ),
-        new UnsupportedQuery(
             "data_modifying_cte.sql",
             "DeleteDoneTasks",
             "A data-modifying statement in WITH is not supported; "
@@ -1152,8 +1147,11 @@ class ReferenceServiceIntegrationTest {
      * which reads a {@code null} title for a project without tasks, the cross
      * join, which pairs every organization with every project, the
      * comma-separated list, which returns the joined rows alone, the
-     * {@code USING} join, which reads its merged organization id, and the
-     * {@code NATURAL} join of a subquery source, which merges the project id.
+     * {@code USING} join, which reads its merged organization id, the
+     * {@code NATURAL} join of a subquery source, which merges the project id,
+     * and the {@code LATERAL} join, whose body reads the latest task of the
+     * project it is correlated to and returns no row for a project without
+     * tasks.
      *
      * <p>All of them read every organization, project, and task of the
      * database, which the other tests of this class share, so this one asserts
@@ -1306,6 +1304,23 @@ class ReferenceServiceIntegrationTest {
                 List.of(),
                 projectTitles(naturallyJoined, JOIN_PROJECTS.get(1)),
                 "the NATURAL join merges the project id, so an unjoined project returns no row"
+            );
+
+            List<?> laterallyJoined = (List<?>) invoke(
+                repository,
+                "listProjectsWithLatestTask"
+            );
+
+            assertEquals(
+                List.of("Join Test Task"),
+                projectTitles(laterallyJoined, JOIN_PROJECTS.get(0)),
+                "the LATERAL body reads the latest task of the project it is correlated to"
+            );
+
+            assertEquals(
+                List.of(),
+                projectTitles(laterallyJoined, JOIN_PROJECTS.get(1)),
+                "the LATERAL join returns no row for a project without tasks"
             );
         }
     }
