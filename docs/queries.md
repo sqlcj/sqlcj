@@ -360,9 +360,11 @@ GROUP BY r.author_id;
   and each is nullable, because each reads `NULL` over no row, over a
   `NOT NULL` column included.
 - `MIN` and `MAX` take their column's own type, its enum type, its array
-  spelling, and its blank-padded spelling included. PostgreSQL 16 defines
-  neither for a scalar `BOOLEAN`, `UUID`, `BYTEA`, `JSON`, or `JSONB` column,
-  so a `MIN` or `MAX` of one is rejected.
+  spelling, and its blank-padded spelling included, except that one of a scalar
+  `CIDR` column is an `INET`, because PostgreSQL 16 defines the aggregate over
+  `INET` alone and compares a `CIDR` as the `INET` it converts to. PostgreSQL 16
+  defines neither for a scalar `BOOLEAN`, `UUID`, `BYTEA`, `JSON`, `JSONB`,
+  `MACADDR`, or `MACADDR8` column, so a `MIN` or `MAX` of one is rejected.
 - `SUM` and `AVG` take one scalar numeric column and generate the type
   PostgreSQL 16 defines for it:
 
@@ -451,8 +453,10 @@ write's `WHERE` alike. A cast states the type of such a placeholder, as in
 `WHERE labels[1] = $1::text`, and the subscript itself reaches the database as
 written.
 
-A `LIKE` or `ILIKE` pattern placeholder requires a `VARCHAR` or `TEXT` column
-and takes that column's type, so it is a `String` method parameter. sqlcj passes
+A `LIKE` or `ILIKE` pattern placeholder requires a `VARCHAR`, `TEXT`, or
+`CITEXT` column and takes that column's type, so it is a `String` method
+parameter, and a pattern of a `CITEXT` column matches ignoring case, as
+PostgreSQL's own `citext` `LIKE` does. sqlcj passes
 the pattern through unchanged, so the caller supplies the `%` and `_` wildcards
 in the argument, as in `"Al%"`. A negated `NOT LIKE` or `NOT ILIKE`, another
 keyword such as `SIMILAR TO`, an `ESCAPE` clause, a `BINARY` modifier, a
@@ -1382,7 +1386,8 @@ included.
 - A `:exec` query generates no result record and returns `int`.
 - Every generated method passes the repository class name and the query name to
   the executor, as the first two arguments of its call, so a runtime failure
-  names the query the application called. A `JSON` or `JSONB` argument is passed
+  names the query the application called. A `JSON`, `JSONB`, `CITEXT`, `INET`,
+  `CIDR`, `MACADDR`, or `MACADDR8` argument is passed
   as `new org.sqlcj.runtime.UntypedText(<parameter>)`, written out in full, so
   that the runtime binds its text without a declared SQL type; see
   [Supported Column Types](postgresql.md#supported-column-types).
@@ -1871,6 +1876,20 @@ Reads:
   `PostgresIntegrationTest.shouldExecuteGeneratedTextAndNullPredicatesAgainstPostgres`
   executes `LIKE`, a case-insensitive `ILIKE`, `IS NULL`, and `IS NOT NULL`
   reads against PostgreSQL 16.
+- `QueryAnalyzerTest.shouldTypeAComparisonParameterOfACitextOrNetworkColumn`,
+  `QueryAnalyzerTest.shouldTypeAnInListOfACitextColumn`,
+  `QueryAnalyzerTest.shouldTypeALikePatternOfACitextColumn`,
+  `QueryAnalyzerTest.shouldTypeAListParameterOfACitextOrNetworkColumn`,
+  `QueryAnalyzerTest.shouldTypeACitextOrNetworkCast`,
+  `QueryAnalyzerTest.shouldTypeExtremumAggregateOfACitextOrNetworkColumn`,
+  `QueryAnalyzerTest.shouldRejectExtremumAggregateOfAMacAddressColumn`,
+  `QueryAnalyzerTest.shouldResolveOneCitextOrNetworkTypeWithItself`,
+  `QueryAnalyzerTest.shouldMergeAJoinColumnOfOneCitextType`, and
+  `QueryAnalyzerTest.shouldRejectACitextOrNetworkTypePairedWithAnotherType`
+  cover a `citext` and a network address column in a comparison, an `IN` list, a
+  `LIKE` pattern, an `= ANY` list, a cast, a `MIN` and a `MAX`, a set operation,
+  and a merged join column, with the `MIN` and `MAX` of `macaddr` and
+  `macaddr8` and the pairs with another type that stay rejected.
 - `QueryAnalyzerTest.shouldResolveRangeBoundParametersFromTestedColumn`,
   `QueryAnalyzerTest.shouldResolveNegatedRangeBoundParameters`,
   `QueryAnalyzerTest.shouldResolveRangeBoundParametersInTextualBindingOrder`,

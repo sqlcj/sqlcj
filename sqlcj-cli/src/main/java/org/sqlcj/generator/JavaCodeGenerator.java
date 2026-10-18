@@ -1047,7 +1047,9 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * Renders one executor argument. A JSON parameter is wrapped in
+     * Renders one executor argument. A parameter of a type the database types
+     * itself from text — {@code JSON}, {@code JSONB}, {@code citext}, and the
+     * network address types — is wrapped in
      * {@code org.sqlcj.runtime.UntypedText} so that the runtime binds its text
      * without a declared SQL type and the database types it from the context of
      * its placeholder. An enum parameter is wrapped the same way, around the
@@ -1125,6 +1127,11 @@ public final class JavaCodeGenerator implements CodeGenerator {
             case REAL -> "float4";
             case DOUBLE_PRECISION -> "float8";
             case UUID -> "uuid";
+            case CITEXT -> "citext";
+            case INET -> "inet";
+            case CIDR -> "cidr";
+            case MACADDR -> "macaddr";
+            case MACADDR8 -> "macaddr8";
             default -> throw new IllegalStateException(
                 "Column type has no array element type: " + parameter.type()
             );
@@ -1136,7 +1143,13 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * types itself rather than through the JDBC type of {@code String}.
      */
     private boolean isUntypedText(ColumnType type) {
-        return type == ColumnType.JSON || type == ColumnType.JSONB;
+        return type == ColumnType.JSON
+            || type == ColumnType.JSONB
+            || type == ColumnType.CITEXT
+            || type == ColumnType.INET
+            || type == ColumnType.CIDR
+            || type == ColumnType.MACADDR
+            || type == ColumnType.MACADDR8;
     }
 
     private String generateReturnType(QueryModel query, JavaNames.QueryNames names) {
@@ -1232,8 +1245,9 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * A JSON column is read with {@code getString}, because a driver reports it
-     * as a type of its own for which {@code getObject(position, String.class)}
+     * A {@code JSON}, {@code citext}, or network address column is read with
+     * {@code getString}, because a driver reports it as a type of its own for
+     * which {@code getObject(position, String.class)}
      * is not defined. An enum column reads its label the same way and resolves
      * it to the generated constant; an array column reads its elements through
      * {@code org.sqlcj.runtime.SqlArray}, which reads each element as a scalar

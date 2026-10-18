@@ -303,6 +303,9 @@ accepted and map exactly like their unparameterized spellings.
 | `BYTEA` | `byte[]` | A record compares an array component by reference, so two row records holding equal bytes are not `equals`. |
 | `JSON` | `String` | The JSON text itself. PostgreSQL stores it as written, so it reads back exactly as written. sqlcj never parses, validates, or normalizes it. |
 | `JSONB` | `String` | The JSON text itself. PostgreSQL stores a decomposed value, so the text reads back as PostgreSQL renders it rather than as written, and `=` compares by value. sqlcj never parses, validates, or normalizes it. |
+| `CITEXT` | `String` | The text itself. PostgreSQL compares, matches, and orders a `citext` ignoring case, so an equality, a `LIKE`, an `ILIKE`, and an `= ANY(citext[])` over such a column are case-insensitive. The type comes from the `citext` extension, which belongs to the schema it was installed in, so the name is resolved in the one namespace sqlcj models: `public.citext` and `"public"."citext"` are the type `citext`, and a name qualified with any other schema never resolves. |
+| `INET`, `CIDR` | `String` | PostgreSQL's own text of the value, its netmask included, as in `192.168.0.10/24` and `10.0.0.0/8`. `java.net.InetAddress` holds no netmask, so the text is the exact value. |
+| `MACADDR`, `MACADDR8` | `String` | PostgreSQL's own text of the address, as in `08:00:2b:01:02:03`. |
 | The name of an enum type the schema declares | The generated Java enum of that type | Matched without SQL identifier delimiters and case-insensitively, as PostgreSQL resolves an unquoted type name. A `public`-qualified name resolves as its unqualified name, so `public.mood` and `"public"."mood"` are the type `mood`, and a name qualified with any other schema never resolves. See [Enum Types](#enum-types). |
 | A one-dimensional array of any spelling above except `BYTEA`, `JSON`, and `JSONB`, written `type[]` or `type[n]` | `java.util.List<T>` of the element's Java type | The declared size is ignored, as PostgreSQL ignores it. See [Array Types](#array-types). |
 
@@ -319,18 +322,21 @@ and `java.util.UUID` as needed; the remaining types need no import, and
 enum belongs to the generated package, so it is used by its simple name and
 needs no import either. Each result column is read at its one-based position in
 the selected-column list, with `resultSet.getObject(position, JavaType.class)`,
-or with `resultSet.getString(position)` for a `JSON` or `JSONB` column, which
-the driver reports as a type of its own rather than as a character type. An
+or with `resultSet.getString(position)` for a `JSON`, `JSONB`, `CITEXT`,
+`INET`, `CIDR`, `MACADDR`, or `MACADDR8` column, which the driver reports as a
+type of its own rather than as a character type. An
 enum column reads its label the same way and resolves it with
 `<EnumType>.fromLabel(...)`, and an array column is read with
 `org.sqlcj.runtime.SqlArray.getList(...)`.
 
-A `JSON` or `JSONB` argument is passed to the executor as
+A `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`, or `MACADDR8` argument
+is passed to the executor as
 `new org.sqlcj.runtime.UntypedText(value)`, written out in full so that the
 generated imports are unchanged, and `JdbcQueryExecutor` binds that text with
 `java.sql.Types.OTHER`. PostgreSQL then types the text from the context of its
-placeholder, which is what a `json` or `jsonb` column or comparison needs: text
-bound as `varchar` is rejected there. An enum argument is passed the same way,
+placeholder, which is what a column or comparison of one of those types needs:
+text bound as `varchar` is rejected for an `inet` and resolves a `citext`
+comparison as a case-sensitive `text` one. An enum argument is passed the same way,
 around the label of its constant, because a label bound as `varchar` is
 rejected where an enum is expected. An array argument is wrapped in
 `org.sqlcj.runtime.SqlArray` the same way; see [Array Types](#array-types).
@@ -488,8 +494,8 @@ generates `List<String> tags` and `List<StageSetting> past`.
 - An array is a type of its own: a placeholder index used once as an array and
   once as a value of its element type is rejected, like any other conflicting
   index.
-- A `LIKE`/`ILIKE` pattern placeholder still requires a scalar `VARCHAR` or
-  `TEXT` column, so an array column is rejected there.
+- A `LIKE`/`ILIKE` pattern placeholder still requires a scalar `VARCHAR`,
+  `TEXT`, or `CITEXT` column, so an array column is rejected there.
 - A reference written with a subscript or a slice, such as `tags[1]`,
   `tags[1:2]`, or `s.tags[1]`, reads one element or one range rather than the
   column, so it is not a direct column anywhere: it types no result column and
@@ -506,7 +512,8 @@ An array argument is passed to the executor as
 full so that the generated imports are unchanged, where `<element type>` is
 PostgreSQL's own name of the element type: `int4`, `int8`, `int2`, `bool`,
 `varchar`, `bpchar`, `text`, `date`, `time`, `timestamp`, `timestamptz`,
-`numeric`, `float4`, `float8`, `uuid`, or the declared name of an enum type. A
+`numeric`, `float4`, `float8`, `uuid`, `citext`, `inet`, `cidr`, `macaddr`,
+`macaddr8`, or the declared name of an enum type. A
 `CHAR` or `CHARACTER` element is named `bpchar`, PostgreSQL's own name of the
 blank-padded character type, because PostgreSQL compares a `bpchar` array only
 with another one; `VARCHAR` and `CHARACTER VARYING` elements are named
@@ -519,7 +526,9 @@ enum carries the labels of its constants instead, as
 connection the operation runs on and binds it with
 `PreparedStatement.setArray`. An array column is read with
 `org.sqlcj.runtime.SqlArray.getList(resultSet, position, <Type>.class)`, which
-reads each element as a scalar of that type is read; an array of an enum is read
+reads each element as a scalar of that type is read, a `String` element with
+`getString`, for the same reason a scalar of one of those types is; an array of
+an enum is read
 as `org.sqlcj.runtime.SqlArray.getList(resultSet, position, String.class,
 <EnumType>::fromLabel)`. Both go through the JDBC `java.sql.Array` API alone, so
 neither the runtime nor the generated code depends on a driver.
@@ -875,7 +884,8 @@ Null handling does not depend on the column type:
   accepts null elements,
 - `JdbcQueryExecutor` binds each argument positionally with
   `PreparedStatement.setObject`, so a null argument is bound as SQL `NULL`. A
-  `JSON` or `JSONB` argument is bound the same way through its
+  `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`, or `MACADDR8` argument
+  is bound the same way through its
   `org.sqlcj.runtime.UntypedText` wrapper, so a null value becomes a SQL `NULL`
   without a declared type. A null enum argument is wrapped the same way, so it
   is bound as SQL `NULL` instead of as the label of a constant. A null array
@@ -883,7 +893,8 @@ Null handling does not depend on the column type:
   `org.sqlcj.runtime.SqlArray` wrapper, and a null element stays null inside the
   bound array,
 - each result column is read with `ResultSet.getObject(position, Class)`, or
-  with `ResultSet.getString(position)` for `JSON`, `JSONB`, and an enum, so a
+  with `ResultSet.getString(position)` for `JSON`, `JSONB`, `CITEXT`, `INET`,
+  `CIDR`, `MACADDR`, `MACADDR8`, and an enum, so a
   SQL `NULL` is read back as `null`, which `fromLabel` keeps `null` for an
   enum. An array column is read with `org.sqlcj.runtime.SqlArray.getList`, which
   reads a SQL `NULL` as a null list and a `NULL` element as a null element.
@@ -903,7 +914,8 @@ Null binding and null reading are executed against PostgreSQL for the nullable
 columns of the integration schema snapshots, which cover `SMALLINT`, `VARCHAR`,
 `TEXT`, `BOOLEAN`, `DATE`, `TIMESTAMP`, `DECIMAL`, `UUID`,
 `TIMESTAMP WITH TIME ZONE`, `REAL`, `DOUBLE PRECISION`, `BYTEA`, `TIME`, `JSON`,
-`JSONB`, an enum type, and an array of every mapped element type.
+`JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`, `MACADDR8`, an enum type, and an
+array of every mapped element type.
 
 ## Unsupported Types and DDL
 
@@ -1001,6 +1013,17 @@ Type table:
   execute the Java mappings, including the blank-padded `CHAR` values, the JSON
   text as written and as PostgreSQL renders it, and a `JSONB` equality
   predicate, against PostgreSQL 16.
+- `DefaultSchemaParserTest.shouldModelPublicQualifiedCitextColumnTypes` covers
+  the `public`-qualified and quoted `citext` spellings, their arrays, and the
+  names that stay unmapped, and
+  `PostgresIntegrationTest.shouldRoundTripCitextAndNetworkValues` executes a
+  round trip of `citext` and of every network address type, scalar and array,
+  with nulls, a case-insensitive equality, `LIKE`, and `= ANY`, and an `inet`
+  ordering comparison, against PostgreSQL 16.
+- `JavaCodeGeneratorTest.shouldWrapCitextAndNetworkArgumentsAndReadThemAsText`
+  covers the generated `UntypedText` argument, the `SqlArray` argument of a
+  `citext` array, the `getString` and `getList` reads, and compilation of the
+  generated source.
 - `JavaCodeGeneratorTest.shouldWrapJsonArgumentsAndReadJsonColumnsAsText` and
   `JavaCodeGeneratorTest.shouldGenerateCompilableJavaSourceForJsonTypes` cover
   the generated `UntypedText` argument at every binding position of a JSON
@@ -1066,6 +1089,9 @@ Array types:
   generated source. `JavaCodeGeneratorTest.shouldBindBlankPaddedCharacterArraysAsBpchar`
   covers the `bpchar` argument of a `CHAR` array and the `varchar` argument of a
   `VARCHAR` array.
+- `SqlArrayTest.shouldReadStringArrayElementsAsText` covers the `getString`
+  read of a `String` element, over element rows that reject a read as a Java
+  class the way a driver rejects one of a type it maps to no class.
 - `JdbcQueryExecutorTest.shouldBindSqlArrayAsAServerArray` and
   `JdbcQueryExecutorTest.shouldBindNullSqlArrayElementsAsANullArray` cover the
   recorded `createArrayOf` name and elements, the `setArray` position, and the

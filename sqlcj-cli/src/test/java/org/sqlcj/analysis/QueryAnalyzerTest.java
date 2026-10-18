@@ -439,6 +439,42 @@ class QueryAnalyzerTest {
         )
     );
 
+    /**
+     * A schema whose {@code hosts} table carries a scalar column of
+     * {@code citext} and of each network address type, an array of the two of
+     * them the typing tests read, and a text column, beside an {@code aliases}
+     * table whose {@code handle} is another {@code citext} and whose
+     * {@code address} is text, for a merged join column of each kind.
+     */
+    private static final Schema networkSchema = new Schema(
+        List.of(
+            new Table(
+                "hosts",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("handle", ColumnType.CITEXT, true),
+                    new Column("address", ColumnType.INET, true),
+                    new Column("network", ColumnType.CIDR, true),
+                    new Column("mac", ColumnType.MACADDR, true),
+                    new Column("mac8", ColumnType.MACADDR8, true),
+                    new Column("handles", ColumnType.CITEXT, true, null, null, true),
+                    new Column("addresses", ColumnType.INET, true, null, null, true),
+                    new Column("bio", ColumnType.TEXT, true)
+                ),
+                List.of()
+            ),
+            new Table(
+                "aliases",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("handle", ColumnType.CITEXT, true),
+                    new Column("address", ColumnType.TEXT, true)
+                ),
+                List.of()
+            )
+        )
+    );
+
     private final SqlParser parser = new SqlParser();
     private final QueryAnalyzer analyzer = new QueryAnalyzer();
 
@@ -1291,7 +1327,8 @@ class QueryAnalyzerTest {
             "SELECT id FROM users WHERE name LIKE BINARY $1"
                 + "|A binary LIKE pattern placeholder is not supported.",
             "SELECT id FROM users WHERE id LIKE $1"
-                + "|A LIKE pattern placeholder requires a VARCHAR or TEXT column, but id is BIGINT.",
+                + "|A LIKE pattern placeholder requires a VARCHAR, TEXT, or CITEXT column,"
+                + " but id is BIGINT.",
             "SELECT id FROM users WHERE $1 LIKE name"
                 + "|A LIKE placeholder must be the pattern, not the tested value.",
             "SELECT id FROM users WHERE :pattern LIKE name"
@@ -7438,7 +7475,8 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "A LIKE pattern placeholder requires a VARCHAR or TEXT column, but tags is VARCHAR[].",
+            "A LIKE pattern placeholder requires a VARCHAR, TEXT, or CITEXT column,"
+                + " but tags is VARCHAR[].",
             exception.getMessage()
         );
     }
@@ -12892,6 +12930,328 @@ class QueryAnalyzerTest {
         UnsupportedOperationException exception = assertThrows(
             UnsupportedOperationException.class,
             () -> analyzer.analyze(query, parsedSql, setOperationSchema)
+        );
+
+        assertEquals(message, exception.getMessage());
+    }
+
+    /**
+     * A placeholder compared with a {@code citext} or a network address column
+     * is a parameter of that column's type, so the generated method takes the
+     * column's text and the database types the bound value from the comparison
+     * itself.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "handle|CITEXT",
+            "address|INET",
+            "network|CIDR",
+            "mac|MACADDR",
+            "mac8|MACADDR8"
+        }
+    )
+    void shouldTypeAComparisonParameterOfACitextOrNetworkColumn(
+        String column,
+        ColumnType type
+    ) {
+        String sql = "SELECT id, %s FROM hosts WHERE %s = $1".formatted(column, column);
+
+        QueryModel model = analyzer.analyze(
+            new Query("FindHost", QueryType.OPTIONAL, sql),
+            parser.parse(sql),
+            networkSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn(column, type, true)
+            ),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, column, type)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * Each element of an {@code IN} list is typed from the tested column, so a
+     * {@code citext} list takes one {@code citext} parameter per element, in
+     * written order.
+     */
+    @Test
+    void shouldTypeAnInListOfACitextColumn() {
+        String sql = "SELECT id FROM hosts WHERE handle IN ($1, $2)";
+
+        QueryModel model = analyzer.analyze(
+            new Query("FindHosts", QueryType.MANY, sql),
+            parser.parse(sql),
+            networkSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "handle", ColumnType.CITEXT),
+                new QueryParameter(2, "handle", ColumnType.CITEXT)
+            ),
+            model.parameters()
+        );
+    }
+
+    /**
+     * A {@code LIKE} or {@code ILIKE} pattern placeholder takes a
+     * {@code citext} column, whose pattern match is a {@code citext} one, so
+     * the pattern is bound as that type rather than as text.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = { "LIKE", "ILIKE" })
+    void shouldTypeALikePatternOfACitextColumn(String keyword) {
+        String sql = "SELECT id FROM hosts WHERE handle %s $1".formatted(keyword);
+
+        QueryModel model = analyzer.analyze(
+            new Query("SearchHosts", QueryType.MANY, sql),
+            parser.parse(sql),
+            networkSchema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "handle", ColumnType.CITEXT)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * An {@code = ANY} list over a {@code citext} or a network address column
+     * binds an array of that column's type, because PostgreSQL maps an array of
+     * each of them.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "handle|CITEXT",
+            "address|INET",
+            "network|CIDR",
+            "mac|MACADDR",
+            "mac8|MACADDR8"
+        }
+    )
+    void shouldTypeAListParameterOfACitextOrNetworkColumn(String column, ColumnType type) {
+        String sql = "SELECT id FROM hosts WHERE %s = ANY($1)".formatted(column);
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListHosts", QueryType.MANY, sql),
+            parser.parse(sql),
+            networkSchema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, column, type, null, true)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * A cast states a {@code citext} or a network address type for a
+     * placeholder and for a result column, scalar and one-dimensional array
+     * alike, as it states any other mapped type.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "citext|CITEXT|false",
+            "inet|INET|false",
+            "cidr|CIDR|false",
+            "macaddr|MACADDR|false",
+            "macaddr8|MACADDR8|false",
+            "citext[]|CITEXT|true",
+            "inet[]|INET|true"
+        }
+    )
+    void shouldTypeACitextOrNetworkCast(String castType, ColumnType type, boolean array) {
+        String sql = "SELECT :value::%s AS value FROM hosts WHERE id = :id"
+            .formatted(castType);
+
+        QueryModel model = analyzer.analyze(
+            new Query("ReadValue", QueryType.ONE, sql),
+            parser.parse(sql),
+            networkSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("value", type, true, null, array)),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "value", type, null, array),
+                new QueryParameter(2, "id", ColumnType.BIGINT)
+            ),
+            model.parameters()
+        );
+    }
+
+    /**
+     * A {@code MIN} or {@code MAX} of a {@code citext} or an {@code inet}
+     * column is a column of that type, and one of a {@code cidr} column is an
+     * {@code inet}, because PostgreSQL 16 defines the aggregate over
+     * {@code inet} alone and compares a {@code cidr} as the {@code inet} it
+     * converts to. An array column keeps its own element type.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT MIN(handle) AS n FROM hosts|CITEXT|false",
+            "SELECT MAX(handle) AS n FROM hosts|CITEXT|false",
+            "SELECT MIN(address) AS n FROM hosts|INET|false",
+            "SELECT MAX(network) AS n FROM hosts|INET|false",
+            "SELECT MIN(handles) AS n FROM hosts|CITEXT|true",
+            "SELECT MAX(addresses) AS n FROM hosts|INET|true"
+        }
+    )
+    void shouldTypeExtremumAggregateOfACitextOrNetworkColumn(
+        String sql,
+        ColumnType type,
+        boolean array
+    ) {
+        QueryModel model = analyzer.analyze(
+            new Query("ReadHostExtremum", QueryType.ONE, sql),
+            parser.parse(sql),
+            networkSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("n", type, true, null, array)),
+            model.columns()
+        );
+    }
+
+    /**
+     * PostgreSQL 16 defines no {@code MIN} and no {@code MAX} of
+     * {@code macaddr} or {@code macaddr8}, so one of either keeps the
+     * diagnostic every untyped aggregate has.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "SELECT MIN(mac) AS n FROM hosts",
+            "SELECT MAX(mac8) AS n FROM hosts"
+        }
+    )
+    void shouldRejectExtremumAggregateOfAMacAddressColumn(String sql) {
+        Query query = new Query("ReadHostExtremum", QueryType.ONE, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, networkSchema)
+        );
+
+        assertEquals(
+            "Cannot infer the type of %s in SELECT;".formatted(
+                sql.substring("SELECT ".length(), sql.indexOf(" AS n"))
+            )
+                + " state it with a cast and an alias,"
+                + " such as SUM(amount)::numeric AS total",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A set operation and a merged join column resolve a {@code citext} or a
+     * network address column only with a column of the identical type, scalar
+     * and array alike, because PostgreSQL resolves each of them with no other
+     * type this subset maps.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "handle|CITEXT|false",
+            "address|INET|false",
+            "network|CIDR|false",
+            "mac|MACADDR|false",
+            "mac8|MACADDR8|false",
+            "handles|CITEXT|true"
+        }
+    )
+    void shouldResolveOneCitextOrNetworkTypeWithItself(
+        String column,
+        ColumnType type,
+        boolean array
+    ) {
+        String sql = "SELECT %s AS value FROM hosts UNION SELECT %s FROM hosts"
+            .formatted(column, column);
+
+        assertEquals(
+            List.of(new QueryColumn("value", type, true, null, array)),
+            analyzer.analyze(
+                new Query("ListValues", QueryType.MANY, sql),
+                parser.parse(sql),
+                networkSchema
+            ).columns()
+        );
+    }
+
+    /** A merged join column of one {@code citext} on both sides is a citext. */
+    @Test
+    void shouldMergeAJoinColumnOfOneCitextType() {
+        String sql = "SELECT handle FROM hosts JOIN aliases USING (handle)";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListHandles", QueryType.MANY, sql),
+            parser.parse(sql),
+            networkSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("handle", ColumnType.CITEXT, true)),
+            model.columns()
+        );
+    }
+
+    /**
+     * A {@code citext} or a network address column paired with any other type
+     * keeps the rejection its clause states: a set operation names the cast
+     * that states one type for every branch, and a merged join column names the
+     * {@code ON} condition that takes one.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        quoteCharacter = '"',
+        value = {
+            "SELECT handle AS value FROM hosts UNION SELECT bio FROM hosts"
+                + "|Set operation column value has types citext and text;"
+                + " cast it to one type in every branch, such as value::citext",
+            "SELECT address AS value FROM hosts UNION SELECT network FROM hosts"
+                + "|Set operation column value has types inet and cidr;"
+                + " cast it to one type in every branch, such as value::inet",
+            "SELECT mac AS value FROM hosts UNION SELECT mac8 FROM hosts"
+                + "|Set operation column value has types macaddr and macaddr8;"
+                + " cast it to one type in every branch, such as value::macaddr",
+            "SELECT handle AS value FROM hosts UNION SELECT handles FROM hosts"
+                + "|Set operation column value has types citext and citext[];"
+                + " cast it to one type in every branch, such as value::citext",
+            "SELECT address FROM hosts JOIN aliases USING (address)"
+                + "|Join column address has types inet and text;"
+                + " write the join condition with ON and a cast."
+        }
+    )
+    void shouldRejectACitextOrNetworkTypePairedWithAnotherType(String sql, String message) {
+        Query query = new Query("ListValues", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, networkSchema)
         );
 
         assertEquals(message, exception.getMessage());
