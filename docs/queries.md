@@ -91,8 +91,8 @@ configuration entry.
   types, enum types, arrays, and nullability that `SELECT` states. A derived
   source returns no shared `<TableName>Row` record, so `SELECT * FROM <name>`
   over one returns this query's own result record even when the source is named
-  like a table, and every column of a left-joined derived source is nullable,
-  as it is for a left-joined table.
+  like a table, and every column of a null-extended derived source is
+  nullable, as it is for a null-extended table.
 - The body of a derived source is analyzed exactly like a top-level `SELECT`:
   it is classified inside its own parentheses, so a set operation there is
   analyzed as [Set operations](#set-operations) states and the source's columns
@@ -146,34 +146,46 @@ configuration entry.
   target of an `INSERT`, an `UPDATE`, and a `DELETE` alike. `search_path` is
   not followed; see
   [Schema Snapshot Input](postgresql.md#schema-snapshot-input).
-- A table or a derived source may be joined with `JOIN`, `INNER JOIN`,
-  `LEFT JOIN`, or `LEFT OUTER JOIN`, and inner and left joins may be chained in
-  any order.
+- A table or a derived source may be joined with `JOIN` or `INNER JOIN`, with
+  `LEFT`, `RIGHT`, or `FULL JOIN` in its bare or `OUTER` spelling, or with
+  `CROSS JOIN`, and the kinds may be chained in any order. A `FROM` clause may
+  also write its sources as a comma-separated list.
+- The first `FROM` item and each comma-separated item after it start a join
+  group, and a `JOIN` of any kind joins the group it is written onto, because
+  PostgreSQL binds a `JOIN` more tightly than a comma. `WHERE` and the
+  projection read every group of the level as one scope.
 - Every other join is rejected, and a join that can be written as a supported
   one says what to write:
-  - `FULL JOIN is not supported.`
-  - `RIGHT JOIN is not supported; write a LEFT JOIN with the two sources swapped.`
-  - `CROSS JOIN is not supported; write JOIN ... ON TRUE.`
   - `NATURAL JOIN is not supported; write the join condition with ON.`
   - `JOIN ... USING is not supported; write the join condition with ON.`
-  - `A comma-separated FROM list is not supported; write JOIN ... ON with the join condition.`
 
   A `LATERAL` join source is reported as the same unsupported source as a
   `FROM` item of that kind, before the join kind, while every other joined
-  source is resolved after it, and every remaining modifier — a bare `OUTER`,
-  `SEMI`, `APPLY`, `STRAIGHT`, `GLOBAL`, and a join hint — is rejected as
-  `Only unmodified INNER JOIN and LEFT JOIN clauses are supported.`
-- Each join requires exactly one `ON` condition, which may be any boolean
-  expression, including `ON TRUE`. Its column references, qualified or not,
-  resolve against the sources introduced up to and including the joined source,
-  so a reference to a source joined later is rejected, and its placeholders
-  follow the same rules as a `WHERE` predicate. A left join uses the same rule
-  as an inner join.
-- Every column read from a left-joined source is nullable, even when the schema
-  declares it `NOT NULL`, because an unmatched row reads it as `NULL`. The join
-  kind alone decides this, so a left join whose `ON` condition filters its
-  joined rows reads them as nullable too. The base source and every
-  inner-joined source keep their schema nullability.
+  source is resolved after it; `NATURAL` is reported before the side it is
+  written beside, so `NATURAL CROSS JOIN` keeps the `NATURAL` rejection; and
+  every remaining modifier — a bare `OUTER`, `SEMI`, `APPLY`, `STRAIGHT`,
+  `GLOBAL`, and a join hint — is rejected as
+  `Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported.`
+- An inner, left, right, and full join each require exactly one `ON` condition,
+  which may be any boolean expression, including `ON TRUE`. A `CROSS JOIN` and
+  a comma take no condition at all, and `CROSS JOIN ... ON`, which PostgreSQL
+  does not have although the parser reads it, is rejected as
+  `CROSS JOIN takes no ON condition; write JOIN ... ON.` A `NATURAL INNER JOIN`,
+  which the parser reads as an `INNER JOIN` with no condition, keeps the
+  missing-condition rejection.
+- A condition's column references, qualified or not, resolve against the
+  sources of its own join group up to and including its own joined source, so a
+  reference to a source joined later, or to another group of the same level, is
+  rejected, and its placeholders follow the same rules as a `WHERE` predicate.
+  Every join kind uses the same rule.
+- A `LEFT JOIN` null-extends its own joined source, a `RIGHT JOIN` every
+  earlier source of its group, and a `FULL JOIN` both; a source once
+  null-extended stays so. Every column read from a null-extended source is
+  nullable, even when the schema declares it `NOT NULL`, because an unmatched
+  row reads it as `NULL`. The join kind alone decides this, so a join whose
+  `ON` condition filters its rows reads them as nullable too. Every source no
+  join null-extends, a cross-joined and a comma-separated one included, keeps
+  its schema nullability.
 - An alias replaces the table name as the exposed source name, so a qualified
   reference to an aliased table must use the alias and not the table name.
 - Two sources may not expose the same name.
@@ -193,21 +205,24 @@ configuration entry.
   exposes, which is the source's alias or its table name as written. The row's
   columns are the table's own, in schema column order, with their declared
   nullability.
-- The component holding the row of a left-joined source is nullable, and it is
+- The component holding the row of a null-extended source is nullable, and it is
   read as `null` exactly when every column of that embedded row reads `NULL`,
-  which is how an unmatched left join reads. The row's own columns keep their
+  which is how an unmatched outer join reads. The row's own columns keep their
   declared nullability, so one table's row record is the same record wherever it
   is embedded or returned, and the absence of the whole row is carried by the
-  component instead. A component of an inner-joined or base source is never
-  null.
+  component instead. A component of a source no join null-extends is never
+  null, so `SELECT u.*, p.*` over a `FULL JOIN` holds two nullable row
+  components while the same projection over an `INNER JOIN` holds none.
 - A matched row every column of which is `NULL` therefore reads as an absent
   row. No table with at least one `NOT NULL` column can produce that, because
   such a column reads a value for every matched row.
 - A projection that is one wildcard covering exactly one source that is neither
-  derived nor left-joined returns that table's shared row itself instead of a
+  derived nor null-extended returns that table's shared row itself instead of a
   record holding it, so
   `SELECT u.* FROM users u JOIN profiles p ON p.user_id = u.id` returns
-  `UsersRow`. A lone wildcard of a left-joined source returns a
+  `UsersRow`, and so does `SELECT p.*` over
+  `users u RIGHT JOIN profiles p ON p.user_id = u.id`, whose joined source no
+  join null-extends. A lone wildcard of a null-extended source returns a
   `<QueryName>Result` with one nullable row component instead, so a query named
   `ListProfiles` whose projection is `p.*` over
   `users u LEFT JOIN profiles p ON p.user_id = u.id` returns
@@ -275,7 +290,7 @@ GROUP BY r.author_id;
   `bigint` and counts `0` rows rather than none, so `COUNT(*)`,
   `COUNT(column)`, `COUNT(DISTINCT column)`, `COUNT(<source>.*)`, and
   `COUNT(lower(name))` each generate a non-null `Long` component, a count of a
-  left-joined column included. A counted column, and the qualifier of
+  null-extended column included. A counted column, and the qualifier of
   `COUNT(<source>.*)`, must be found in the query's sources as any other
   reference is, but the column's type is never read, so a column of a type
   sqlcj does not map may be counted. Every other argument reaches the database
@@ -863,10 +878,9 @@ parameter is typed and named from `authors.country`, and
 `DeleteAuthorRoyalties` returns one record of the deleted royalty's `id` and
 its author's `name`.
 
-- An `UPDATE ... FROM` clause takes one source followed by inner or left joins,
-  by the join rules [Sources](#sources) states, or by further comma-separated
-  sources. A comma-separated list is accepted here, unlike in a `SELECT`,
-  because it is PostgreSQL's own form of the clause.
+- An `UPDATE ... FROM` clause takes one source followed by joins of every
+  supported kind and by further comma-separated sources, by the join rules
+  [Sources](#sources) states.
 - A `DELETE ... USING` clause takes a comma-separated list of sources, and no
   join: JSqlParser does not read a join there, so `USING a JOIN b` fails to
   parse.
@@ -874,10 +888,10 @@ its author's `name`.
   write in scope, or an aliased subquery, resolved exactly as a read's source
   is, so a `LATERAL` source, a doubly parenthesized source, and a subquery
   without an alias keep their diagnostics.
-- A join condition inside `FROM` sees only the sources of the comma-separated
-  item it joins onto, up to and including its own joined source, because
-  PostgreSQL binds a `JOIN` more tightly than a comma. The target is never one
-  of them, so a condition that names it is rejected as
+- A join condition inside `FROM` sees only the sources of the join group it is
+  written onto, up to and including its own joined source, because PostgreSQL
+  binds a `JOIN` more tightly than a comma. The target is in no join group, so
+  a condition that names it is rejected as
   `Unknown source qualifier in query: <name>`, as PostgreSQL also rejects it.
   Its placeholders are typed by the `WHERE` predicate rules.
 - The `WHERE` predicate reads the target and every added source as one level,
@@ -887,8 +901,9 @@ its author's `name`.
 - The exposed names of the target and of every added source must differ, as the
   sources of a read must, so a repeated name is rejected as
   `Duplicate source name in query: <name>`.
-- Every column read from a left-joined source is nullable, in `RETURNING` as in
-  a read's projection.
+- Every column read from a null-extended source is nullable, in `RETURNING` as
+  in a read's projection, and the target, which is in no join group, is never
+  null-extended.
 - Placeholders bind in the textual order of the query, across the `SET`
   assignments, the added sources and their join conditions, and the `WHERE`
   predicate.
@@ -1046,7 +1061,7 @@ A supported `INSERT`, `UPDATE`, or `DELETE` declared `:one`, `:optional`, or
 A returned column may carry an alias, written as `id AS user_id` or `id user_id`,
 which names its result component exactly as a `SELECT` item's alias does, while
 its type comes from the schema column and its nullability from that column and
-its source, so a column of a left-joined source is nullable.
+its source, so a column of a null-extended source is nullable.
 
 A returning write produces the same generated record, positional row mapper, and
 cardinality behavior as a read, so a database-generated `SERIAL` or `BIGSERIAL`
@@ -1255,7 +1270,7 @@ included.
   of the query name, as in `get_author` and `GetAuthor` to `getAuthor`.
 - A `:one`, `:optional`, or `:many` query that returns one complete table row — a
   `SELECT *` over one table source, a `SELECT <source>.*` whose source is a
-  table that is not left-joined, or a write whose `RETURNING` clause is exactly
+  table no join null-extends, or a write whose `RETURNING` clause is exactly
   a wildcard of its target — returns the `<TableName>Row` record. That record is a
   top-level `public record` in `java.package`, generated once per table into its
   own file and shared by every repository of the package that returns or embeds
@@ -1276,7 +1291,7 @@ included.
   `new ListUserProfilesResult(new UsersRow(resultSet.getObject(1, Long.class),
   ...), new ProfilesRow(resultSet.getObject(3, Long.class), ...))`, so a row the
   repository only embeds generates no mapper field of its own.
-- A nullable row component, which a left-joined source contributes, is guarded
+- A nullable row component, which a null-extended source contributes, is guarded
   by `org.sqlcj.runtime.SqlRow.isNull`, written out in full as every other
   runtime helper is, over the one-based first and last positions of that row's
   own columns:
@@ -1524,10 +1539,11 @@ query name, and its header line.
   each with the diagnostic [Recursive CTEs](#recursive-ctes) states. Each is
   rejected whether or not a source reads the clause, because every body is
   analyzed.
-- A join kind outside a plain inner or left join, each with the diagnostic
-  [Sources](#sources) states, which says what to write instead for `RIGHT`,
-  `CROSS`, `NATURAL`, `USING`, and a comma-separated `FROM` list, and a join
-  that does not carry exactly one `ON` condition.
+- A join kind outside an inner, left, right, full, and cross join, each with
+  the diagnostic [Sources](#sources) states, which says what to write instead
+  for `NATURAL` and `USING`; a `CROSS JOIN` that carries an `ON` condition; and
+  an inner, left, right, or full join that does not carry exactly one `ON`
+  condition.
 - A column reference of a predicate subquery that no level in scope exposes, or
   that two sources of its own level expose, each with the diagnostic
   [Predicates](#predicates) states.
@@ -1914,6 +1930,35 @@ Reads:
   `PostgresIntegrationTest.shouldExecuteGeneratedLeftJoinAgainstPostgres`
   executes a left join against PostgreSQL 16 whose unmatched row reads the
   joined columns as `null`.
+- `QueryAnalyzerTest.shouldAnalyzeRightJoinWithNullableEarlierColumns`,
+  `QueryAnalyzerTest.shouldNullExtendEveryEarlierSourceOfARightJoinedGroup`,
+  `QueryAnalyzerTest.shouldAnalyzeFullJoinWithNullableColumnsOnBothSides`,
+  `QueryAnalyzerTest.shouldEmbedTheRowOfEachFullJoinedSourceAsNullable`,
+  `QueryAnalyzerTest.shouldResolveRowTableOfALoneRightJoinedWildcard`,
+  `QueryAnalyzerTest.shouldExposeEveryColumnOfAFullJoinedDerivedSourceAsNullable`,
+  `QueryAnalyzerTest.shouldNullExtendOnlyTheGroupOfARightJoinedCommaItem`,
+  `QueryAnalyzerTest.shouldAnalyzeCommaSeparatedReadSources`,
+  `QueryAnalyzerTest.shouldAnalyzeCrossJoinInsideItsOwnGroup`,
+  `QueryAnalyzerTest.shouldRejectAReadJoinConditionOutsideItsJoinGroup`,
+  `QueryAnalyzerTest.shouldAnalyzeACorrelatedCommaSeparatedListInsideExists`,
+  `QueryAnalyzerTest.shouldTypeJoinConditionPlaceholdersOfEveryJoinKindInTextualBindingOrder`,
+  `QueryAnalyzerTest.shouldResolveNullabilityOfARightJoinedUpdateFromClause`,
+  and `QueryAnalyzerTest.shouldResolveCrossAndCommaJoinedUpdateFromSources`
+  cover the outer, cross, and comma joins: both right-join and both full-join
+  spellings, the null-extension of every earlier source of a group and of both
+  sides of a full join, the nullable embedded rows of a full join, the shared
+  row of a lone right-joined wildcard beside the result of a lone
+  null-extended one, a full-joined derived source, the group a comma starts and
+  the group a cross join joins, the condition scope across groups and into an
+  enclosing level, the placeholder types and binding order of every kind, and
+  the same rules inside `UPDATE ... FROM`;
+  `SqlcjCompilerIntegrationTest.shouldGenerateCompilableJavaForOuterCrossAndCommaJoins`
+  compiles a repository over all four, and
+  `PostgresIntegrationTest.shouldExecuteGeneratedOuterCrossAndCommaJoinsAgainstPostgres`
+  executes them against PostgreSQL 16, where a right join reads a `null`
+  column for an unmatched row, a full join reads an absent embedded row on each
+  side, a cross join returns every pair, and a comma-separated list followed by
+  a join runs with that join's condition scoped to its own group.
 - `QueryAnalyzerTest.shouldAnalyzeJoinConditionOfAnyBooleanExpression`,
   `QueryAnalyzerTest.shouldReadFilteredLeftJoinedColumnsAsNullable`,
   `QueryAnalyzerTest.shouldResolveJoinConditionParameterInTextualBindingOrder`,
@@ -2150,7 +2195,7 @@ Writes and `RETURNING`:
   comma-separated list, a subquery and a common table expression as sources
   with their bodies' placeholders typed, a join condition that names the
   target or an earlier comma-separated source rejected as an unknown
-  qualifier, the nullability of a returned column of a left-joined source, the
+  qualifier, the nullability of a returned column of a null-extended source, the
   target's shared row returned by `RETURNING <target>.*` on a joined and on a
   single-table write, the query-specific result in which a qualified and a bare
   target wildcard beside another column embeds the target's row, the bare `*`,
@@ -2282,8 +2327,9 @@ Unsupported queries and internal errors:
   covers the whole located diagnostic line, and the absence of generated
   output, of each rejected input: the `VALUES`, `TABLE`, `MERGE`, `TRUNCATE`,
   `EXPLAIN`, `EXECUTE`, `CREATE TABLE`, and `SET` statements, a window and a
-  concatenation projection, a computed `RETURNING` item, the `RIGHT`, `FULL`,
-  `USING`, `NATURAL`, `CROSS`, comma, and `LATERAL` joins, a column list on a
+  concatenation projection, a computed `RETURNING` item, the `USING`,
+  `NATURAL`, and `LATERAL` joins, a `CROSS JOIN` with an `ON` condition, a bare
+  `OUTER JOIN`, a column list on a
   subquery alias, a subquery source without an alias, a recursive `WITH` clause
   read in its own first term, a data-modifying `WITH` body, a set operation as
   an insert's row source, an insert whose `SELECT` writes fewer values than its
@@ -2474,11 +2520,18 @@ Reference service:
   reads two non-null embedded rows, and its left-joined `SELECT t.*, p.*`,
   whose `TasksRow t` is `null` for a project without tasks, against
   PostgreSQL 16 through the generated repository.
+- `ReferenceServiceIntegrationTest.shouldExecuteTheGeneratedJoinKindQueries`
+  executes the four join entries the reference service's query catalogue
+  gained — its `RIGHT JOIN` and `FULL JOIN` of projects and tasks, each of
+  which reads a `null` title for a project without tasks, its `CROSS JOIN` of
+  organizations and projects, which returns every pair, and its
+  comma-separated list of tasks and projects, which returns the joined rows
+  alone — against PostgreSQL 16 through the generated repository.
 - `ReferenceServiceIntegrationTest.shouldRejectEachUnsupportedCatalogueQuery`
   covers the whole located diagnostic line, and the absence of generated
   output, of every entry of the reference service's unsupported query
-  catalogue: the `RIGHT`, `FULL`, `USING`, `NATURAL`, `CROSS`, comma, and
-  `LATERAL` joins, a data-modifying CTE, an uncast `lower(:email)`, and a
-  placeholder beside a subscripted column, and
+  catalogue: the `USING`, `NATURAL`, and `LATERAL` joins, a data-modifying
+  CTE, an uncast `lower(:email)`, and a placeholder beside a subscripted
+  column, and
   `ReferenceServiceIntegrationTest.shouldCatalogueExactlyTheUnsupportedQueryFiles`
   covers that the catalogue directory holds exactly those queries.
