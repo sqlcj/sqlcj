@@ -4,10 +4,15 @@ import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
+import java.sql.Array;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.sql.Statement;
 import java.sql.Types;
 import java.util.Arrays;
@@ -109,6 +114,97 @@ class SqlArrayTest {
                 Arrays.asList("A", null, "B"),
                 SqlArray.getList(resultSet, 1, String.class, String::toUpperCase)
             );
+        }
+    }
+
+    /**
+     * A {@code String} element is read with {@code getString}, so an array
+     * whose element rows reject {@code getObject(position, Class)} is read all
+     * the same. A driver reports that rejection for an element whose server
+     * type has no JDBC type of its own, such as PostgreSQL's {@code citext} and
+     * its network address types.
+     */
+    @Test
+    void shouldReadStringArrayElementsAsText() throws SQLException {
+        insert(1L, Arrays.asList("a", null, "b"));
+
+        try (
+            Connection connection = dataSource.getConnection();
+            PreparedStatement statement = connection.prepareStatement(
+                "SELECT tags FROM tagged WHERE id = 1"
+            );
+            ResultSet resultSet = statement.executeQuery()
+        ) {
+
+            assertTrue(resultSet.next());
+
+            assertEquals(
+                Arrays.asList("a", null, "b"),
+                SqlArray.getList(withTextOnlyElements(resultSet), 1, String.class)
+            );
+        }
+    }
+
+    /** The same result set, whose array elements are readable only as text. */
+    private ResultSet withTextOnlyElements(ResultSet resultSet) {
+        return (ResultSet) Proxy.newProxyInstance(
+            getClass().getClassLoader(),
+            new Class<?>[] { ResultSet.class },
+            (proxy, method, arguments) -> {
+                Object result = invoke(resultSet, method, arguments);
+
+                return "getArray".equals(method.getName()) && result instanceof Array array
+                    ? withTextOnlyElements(array)
+                    : result;
+            }
+        );
+    }
+
+    /** The same array, whose element rows are readable only as text. */
+    private Array withTextOnlyElements(Array array) {
+        return (Array) Proxy.newProxyInstance(
+            getClass().getClassLoader(),
+            new Class<?>[] { Array.class },
+            (proxy, method, arguments) -> {
+                Object result = invoke(array, method, arguments);
+
+                return "getResultSet".equals(method.getName()) && result instanceof ResultSet rows
+                    ? textOnlyRows(rows)
+                    : result;
+            }
+        );
+    }
+
+    /**
+     * The same element rows, which reject every read of a value as a Java class
+     * the way a driver rejects one of a type it maps to no class.
+     */
+    private ResultSet textOnlyRows(ResultSet rows) {
+        return (ResultSet) Proxy.newProxyInstance(
+            getClass().getClassLoader(),
+            new Class<?>[] { ResultSet.class },
+            (proxy, method, arguments) -> {
+                if (
+                    "getObject".equals(method.getName())
+                        && arguments != null
+                        && arguments.length == 2
+                        && arguments[1] instanceof Class
+                ) {
+                    throw new SQLFeatureNotSupportedException(
+                        "This array's elements are readable only as text."
+                    );
+                }
+
+                return invoke(rows, method, arguments);
+            }
+        );
+    }
+
+    private Object invoke(Object delegate, Method method, Object[] arguments) throws Throwable {
+        try {
+            return method.invoke(delegate, arguments);
+        } catch (InvocationTargetException e) {
+            throw e.getCause();
         }
     }
 

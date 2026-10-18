@@ -94,7 +94,7 @@ public record SqlArray(
 
             try (ResultSet rows = array.getResultSet()) {
                 while (rows.next()) {
-                    E element = rows.getObject(2, elementType);
+                    E element = readElement(rows, elementType);
 
                     elements.add(
                         element == null
@@ -108,5 +108,25 @@ public record SqlArray(
         } finally {
             array.free();
         }
+    }
+
+    /**
+     * Reads the value column of one array element row as {@code elementType}.
+     *
+     * <p>A {@code String} element is read with {@link ResultSet#getString}
+     * rather than {@link ResultSet#getObject(int, Class)}, because a driver
+     * reports an element whose server type has no JDBC type of its own, such as
+     * PostgreSQL's {@code citext} and its network address types, as a type for
+     * which {@code getObject(position, String.class)} is not defined. The text
+     * is the same for the character and enum elements that are read as
+     * {@code String} too.
+     */
+    private static <E> E readElement(
+        ResultSet rows,
+        Class<E> elementType
+    ) throws SQLException {
+        return elementType == String.class
+            ? elementType.cast(rows.getString(2))
+            : rows.getObject(2, elementType);
     }
 }
