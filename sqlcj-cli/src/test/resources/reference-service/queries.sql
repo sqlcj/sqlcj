@@ -325,3 +325,17 @@ SELECT t.title,
        p.name
 FROM tasks t, projects p
 WHERE p.id = t.project_id;
+
+-- name: ListProjectMembers :many
+SELECT organization_id,
+       p.name,
+       m.user_id,
+       m.role
+FROM projects p
+         JOIN memberships m USING (organization_id);
+
+-- name: ListNaturallyJoinedTasks :many
+SELECT t.title,
+       p.name
+FROM tasks t
+         NATURAL JOIN (SELECT id AS project_id, name FROM projects) p;

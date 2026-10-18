@@ -100,16 +100,6 @@ class ReferenceServiceIntegrationTest {
      */
     private static final List<UnsupportedQuery> UNSUPPORTED_QUERIES = List.of(
         new UnsupportedQuery(
-            "using_join.sql",
-            "ListTaskComments",
-            "JOIN ... USING is not supported; write the join condition with ON."
-        ),
-        new UnsupportedQuery(
-            "natural_join.sql",
-            "ListNaturallyJoinedTasks",
-            "NATURAL JOIN is not supported; write the join condition with ON."
-        ),
-        new UnsupportedQuery(
             "lateral_join.sql",
             "ListProjectsWithLatestTask",
             "LATERAL is not supported."
@@ -1160,12 +1150,15 @@ class ReferenceServiceIntegrationTest {
      * The generated repository executes the join kinds this milestone adds
      * against the migrated database: the right join and the full join, each of
      * which reads a {@code null} title for a project without tasks, the cross
-     * join, which pairs every organization with every project, and the
-     * comma-separated list, which returns the joined rows alone.
+     * join, which pairs every organization with every project, the
+     * comma-separated list, which returns the joined rows alone, the
+     * {@code USING} join, which reads its merged organization id, and the
+     * {@code NATURAL} join of a subquery source, which merges the project id.
      *
-     * <p>All four read every organization, project, and task of the database,
-     * which the other tests of this class share, so this one asserts over its
-     * own two organizations, its own two projects, and its own single task.
+     * <p>All of them read every organization, project, and task of the
+     * database, which the other tests of this class share, so this one asserts
+     * over its own two organizations, its own two projects, its own single
+     * task, and its own membership.
      */
     @Test
     void shouldExecuteTheGeneratedJoinKindQueries() throws Exception {
@@ -1270,7 +1263,69 @@ class ReferenceServiceIntegrationTest {
                 projectTitles(commaJoined, JOIN_PROJECTS.get(1)),
                 "the comma-separated list returns the joined rows alone"
             );
+
+            Long memberId = (Long) component(
+                invoke(
+                    repository,
+                    "createUser",
+                    firstOrganizationId,
+                    "joins@example.com",
+                    "Join Test Member"
+                ),
+                "id"
+            );
+
+            invoke(
+                repository,
+                "addMember",
+                firstOrganizationId,
+                memberId,
+                enumConstant(classLoader, "MembershipRole", "MAINTAINER")
+            );
+
+            List<?> members = (List<?>) invoke(repository, "listProjectMembers");
+
+            assertEquals(
+                List.of(List.of(firstOrganizationId, memberId)),
+                ownMemberships(members),
+                "the USING join reads the merged organization id of its own member"
+            );
+
+            List<?> naturallyJoined = (List<?>) invoke(
+                repository,
+                "listNaturallyJoinedTasks"
+            );
+
+            assertEquals(
+                List.of("Join Test Task"),
+                projectTitles(naturallyJoined, JOIN_PROJECTS.get(0)),
+                "the NATURAL join reads the task of its own project"
+            );
+
+            assertEquals(
+                List.of(),
+                projectTitles(naturallyJoined, JOIN_PROJECTS.get(1)),
+                "the NATURAL join merges the project id, so an unjoined project returns no row"
+            );
         }
+    }
+
+    /**
+     * The merged organization id and the user id one membership read returns
+     * for the projects the join kind test owns, in the result's order.
+     */
+    private List<List<Object>> ownMemberships(List<?> rows) throws Exception {
+        List<List<Object>> memberships = new ArrayList<>();
+
+        for (Object row : rows) {
+            if (JOIN_PROJECTS.get(0).equals(component(row, "name"))) {
+                memberships.add(
+                    List.of(component(row, "organizationId"), component(row, "userId"))
+                );
+            }
+        }
+
+        return memberships;
     }
 
     /**
