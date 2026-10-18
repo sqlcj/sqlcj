@@ -3498,6 +3498,141 @@ class PostgresIntegrationTest {
     }
 
     /**
+     * Covers the outer, cross, and comma joins end to end against PostgreSQL: a
+     * right join reads a {@code null} role for a team without memberships, a
+     * full join reads an absent row on each side through its embedded row
+     * components, a cross join returns every team and role pair, and a
+     * comma-separated list followed by a join runs with that join's condition
+     * scoped to its own group.
+     */
+    @Test
+    void shouldExecuteGeneratedOuterCrossAndCommaJoinsAgainstPostgres() throws Exception {
+        execute(MEMBERSHIP_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(MEMBERSHIP_SCHEMA, """
+            -- name: ListTeamRoles :many
+            SELECT t.name, m.role
+            FROM memberships m
+            RIGHT JOIN teams t ON m.team_id = t.id
+            ORDER BY t.id;
+
+            -- name: ListTeamsAndMemberships :many
+            SELECT t.*, m.*
+            FROM teams t
+            FULL JOIN memberships m ON m.team_id = t.id
+            ORDER BY t.id, m.role;
+
+            -- name: ListTeamRolePairs :many
+            SELECT t.name, m.role
+            FROM teams t
+            CROSS JOIN memberships m
+            ORDER BY t.id, m.role;
+
+            -- name: ListOwnedTeamRoles :many
+            SELECT t.name, m.role
+            FROM teams t, memberships m
+            JOIN teams owner ON owner.id = m.team_id
+            WHERE m.team_id = t.id
+              AND m.role = :role
+            ORDER BY t.id;
+            """);
+
+        execute("INSERT INTO teams (id, name) VALUES (1, 'Platform'), (2, 'Billing')");
+
+        execute("INSERT INTO memberships (team_id, role) VALUES (1, 'owner'), (3, 'ghost')");
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            List<?> teamRoles = (List<?>) repository.getClass()
+                .getMethod("listTeamRoles")
+                .invoke(repository);
+
+            assertEquals(2, teamRoles.size());
+
+            assertEquals(List.of("name", "role"), recordComponentNames(teamRoles.get(0)));
+
+            assertEquals(List.of("Platform", "Billing"), components(teamRoles, "name"));
+
+            assertEquals(
+                Arrays.asList("owner", null),
+                components(teamRoles, "role"),
+                "the right join reads no role for a team without memberships"
+            );
+
+            List<?> teamsAndMemberships = (List<?>) repository.getClass()
+                .getMethod("listTeamsAndMemberships")
+                .invoke(repository);
+
+            assertEquals(3, teamsAndMemberships.size());
+
+            assertEquals(List.of("t", "m"), recordComponentNames(teamsAndMemberships.get(0)));
+
+            Object matchedTeam = component(teamsAndMemberships.get(0), "t");
+
+            assertEquals("TeamsRow", matchedTeam.getClass().getSimpleName());
+            assertEquals("Platform", component(matchedTeam, "name"));
+
+            assertEquals(
+                "owner",
+                component(component(teamsAndMemberships.get(0), "m"), "role")
+            );
+
+            assertEquals(
+                "Billing",
+                component(component(teamsAndMemberships.get(1), "t"), "name")
+            );
+
+            assertNull(
+                component(teamsAndMemberships.get(1), "m"),
+                "the full join reads no membership row for a team without memberships"
+            );
+
+            assertNull(
+                component(teamsAndMemberships.get(2), "t"),
+                "the full join reads no team row for a membership without a team"
+            );
+
+            assertEquals(
+                "ghost",
+                component(component(teamsAndMemberships.get(2), "m"), "role")
+            );
+
+            List<?> pairs = (List<?>) repository.getClass()
+                .getMethod("listTeamRolePairs")
+                .invoke(repository);
+
+            assertEquals(
+                List.of("Platform", "Platform", "Billing", "Billing"),
+                components(pairs, "name"),
+                "the cross join pairs each team with each membership"
+            );
+
+            assertEquals(
+                List.of("ghost", "owner", "ghost", "owner"),
+                components(pairs, "role")
+            );
+
+            Method listOwnedTeamRoles = repository.getClass().getMethod(
+                "listOwnedTeamRoles",
+                String.class
+            );
+
+            List<?> owned = (List<?>) listOwnedTeamRoles.invoke(repository, "owner");
+
+            assertEquals(List.of("Platform"), components(owned, "name"));
+
+            assertEquals(List.of("owner"), components(owned, "role"));
+
+            assertEquals(
+                List.of(),
+                listOwnedTeamRoles.invoke(repository, "ghost"),
+                "the membership without a team joins no owner"
+            );
+        }
+    }
+
+    /**
      * Covers derived sources end to end: a report over a left-joined common
      * table expression and a read over a subquery source are generated,
      * compiled, and executed against PostgreSQL, so the columns their bodies
