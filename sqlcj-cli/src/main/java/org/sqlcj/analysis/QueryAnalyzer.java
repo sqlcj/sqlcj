@@ -268,9 +268,6 @@ public final class QueryAnalyzer {
     /** The rejection of a source of a write's {@code FROM} or {@code USING}. */
     private static final String WRITE_SOURCE_REJECTION = "Only table sources are supported.";
 
-    /** The rejection of a {@code LATERAL} source. */
-    private static final String LATERAL_REJECTION = "LATERAL is not supported.";
-
     /**
      * The rejection of a subquery source without an alias, which exposes no
      * name its columns could be read through.
@@ -654,7 +651,9 @@ public final class QueryAnalyzer {
      * stands in, so a column resolves in its own sources first and then in
      * each enclosing level outward, as PostgreSQL resolves a correlated
      * reference. A join condition's level is the sources of its own join group
-     * up to and including its own joined source.
+     * up to and including its own joined source. The body of a
+     * {@code LATERAL} source is the level inside a level of the sources
+     * written before that source.
      */
     private record Scope(List<Source> sources, List<Source> commonTableExpressions, Scope enclosing) {
 
@@ -1009,7 +1008,8 @@ public final class QueryAnalyzer {
                 analyzeCommonTableExpressions(selects, analysis, List.of()),
                 true,
                 0,
-                false
+                false,
+                null
             ),
             analysis.placeholders()
         );
@@ -1037,7 +1037,8 @@ public final class QueryAnalyzer {
             analysis,
             analyzeCommonTableExpressions(selects, analysis, List.of()),
             true,
-            0
+            0,
+            null
         );
 
         return toReadQueryModel(query, parsedSql, analyzed, analysis.placeholders());
@@ -1083,12 +1084,19 @@ public final class QueryAnalyzer {
      * <p>{@code listedColumns} is the number of leading columns a column list
      * on the derived source renames, which are the positions the body itself
      * need not name, and {@code 0} where the derived source writes no list.
+     *
+     * <p>{@code enclosing} is the level this query's columns and placeholders
+     * resolve through after its own, which a {@code LATERAL} source's body
+     * receives and every other nested query receives as {@code null}. A
+     * {@code WITH} list declared inside this query keeps its own scope either
+     * way, so its bodies see no enclosing level.
      */
     private AnalyzedSelect analyzeNestedSelect(
         Select select,
         Analysis analysis,
         List<Source> commonTableExpressions,
-        int listedColumns
+        int listedColumns,
+        Scope enclosing
     ) {
         List<Select> selects = parenthesisLevels(select);
 
@@ -1098,7 +1106,8 @@ public final class QueryAnalyzer {
                 analysis,
                 analyzeCommonTableExpressions(selects, analysis, commonTableExpressions),
                 true,
-                listedColumns
+                listedColumns,
+                enclosing
             );
         }
 
@@ -1110,7 +1119,8 @@ public final class QueryAnalyzer {
             analyzeCommonTableExpressions(selects, analysis, commonTableExpressions),
             true,
             listedColumns,
-            false
+            false,
+            enclosing
         );
     }
 
@@ -1169,6 +1179,10 @@ public final class QueryAnalyzer {
      * {@code FROM}, which only a first-term branch of a recursive {@code WITH}
      * clause may. Such a {@code SELECT} has no source at all, so it names no
      * source and returns no table's complete row.
+     *
+     * <p>{@code enclosing} is the level this {@code SELECT} resolves through
+     * after its own, which only the body of a {@code LATERAL} source receives
+     * and which is {@code null} for every other read.
      */
     private AnalyzedSelect analyzePlainSelect(
         PlainSelect plainSelect,
@@ -1176,13 +1190,14 @@ public final class QueryAnalyzer {
         List<Source> commonTableExpressions,
         boolean namesResultColumns,
         int listedColumns,
-        boolean fromOptional
+        boolean fromOptional,
+        Scope enclosing
     ) {
         List<Source> sources = fromOptional && plainSelect.getFromItem() == null
             ? List.of()
-            : resolveSources(plainSelect, analysis, commonTableExpressions, null);
+            : resolveSources(plainSelect, analysis, commonTableExpressions, enclosing);
 
-        Scope scope = Scope.of(sources, commonTableExpressions);
+        Scope scope = new Scope(sources, commonTableExpressions, enclosing);
 
         ResolvedProjection projection = resolveProjection(
             plainSelect,
@@ -1233,13 +1248,18 @@ public final class QueryAnalyzer {
      * applies them to the list's result either way. A nested list written in
      * parentheses carries its own clauses, which are therefore resolved here
      * rather than only on the outermost list.
+     *
+     * <p>{@code enclosing} is the level every branch resolves through after its
+     * own, which only the body of a {@code LATERAL} source receives and which
+     * is {@code null} for every other set operation.
      */
     private AnalyzedSelect analyzeSetOperation(
         SetOperationList setOperation,
         Analysis analysis,
         List<Source> commonTableExpressions,
         boolean namesResultColumns,
-        int listedColumns
+        int listedColumns,
+        Scope enclosing
     ) {
         requireSupportedSetOperators(setOperation);
 
@@ -1254,7 +1274,8 @@ public final class QueryAnalyzer {
                     commonTableExpressions,
                     namesResultColumns && index == 0,
                     index == 0 ? listedColumns : 0,
-                    false
+                    false,
+                    enclosing
                 )
             );
         }
@@ -1288,6 +1309,10 @@ public final class QueryAnalyzer {
      * whether a plain {@code SELECT} of this branch, parenthesized or not, may
      * omit {@code FROM}, which only a first-term branch of a recursive
      * {@code WITH} clause may.
+     *
+     * <p>{@code enclosing} is the level this branch resolves through after its
+     * own, which only the body of a {@code LATERAL} source receives and which
+     * is {@code null} for every other branch.
      */
     private AnalyzedSelect analyzeSetOperationBranch(
         Select branch,
@@ -1295,7 +1320,8 @@ public final class QueryAnalyzer {
         List<Source> commonTableExpressions,
         boolean namesResultColumns,
         int listedColumns,
-        boolean fromOptional
+        boolean fromOptional,
+        Scope enclosing
     ) {
         List<Select> selects = parenthesisLevels(branch);
 
@@ -1314,7 +1340,8 @@ public final class QueryAnalyzer {
                 branchCommonTableExpressions,
                 namesResultColumns,
                 listedColumns,
-                fromOptional
+                fromOptional,
+                enclosing
             );
         }
 
@@ -1324,7 +1351,8 @@ public final class QueryAnalyzer {
                 analysis,
                 branchCommonTableExpressions,
                 namesResultColumns,
-                listedColumns
+                listedColumns,
+                enclosing
             );
         }
 
@@ -1975,7 +2003,8 @@ public final class QueryAnalyzer {
             body,
             analysis,
             commonTableExpressions,
-            listedColumns
+            listedColumns,
+            null
         );
 
         return toDerivedSource(
@@ -2099,7 +2128,8 @@ public final class QueryAnalyzer {
                     scope,
                     index == 0,
                     index == 0 && columnList != null ? columnList.size() : 0,
-                    true
+                    true,
+                    null
                 )
             );
         }
@@ -2125,7 +2155,8 @@ public final class QueryAnalyzer {
             List.copyOf(recursiveScope),
             false,
             0,
-            false
+            false,
+            null
         );
 
         List<AnalyzedSelect> allBranches = new ArrayList<>(firstTerm);
@@ -3420,20 +3451,31 @@ public final class QueryAnalyzer {
      * Resolves one query source: a subquery in the clause, a source that names
      * a common table expression in scope, which reads that expression rather
      * than the schema table of the same name as PostgreSQL resolves it, or a
-     * table of the schema. A {@code LATERAL} source states a source this subset
-     * does not model at all, and is classified first.
+     * table of the schema.
+     *
+     * <p>{@code lateral} is the level a {@code LATERAL} subquery's body reads
+     * as the one enclosing it, which the clause resolving this source states;
+     * every other subquery source sees no source of the query around it, so it
+     * is analyzed with no enclosing level at all.
      */
     private Source resolveSource(
         FromItem fromItem,
         String unsupportedSourceRejection,
         Analysis analysis,
         List<Source> commonTableExpressions,
-        boolean nullable
+        boolean nullable,
+        Scope lateral
     ) {
-        requireNoLateralSource(fromItem);
-
         if (fromItem instanceof ParenthesedSelect subquery) {
-            return toSubquerySource(subquery, analysis, commonTableExpressions, nullable);
+            return toSubquerySource(
+                subquery,
+                analysis,
+                commonTableExpressions,
+                nullable,
+                fromItem instanceof LateralSubSelect
+                    ? lateral
+                    : null
+            );
         }
 
         if (!(fromItem instanceof Table table)) {
@@ -3473,30 +3515,24 @@ public final class QueryAnalyzer {
     }
 
     /**
-     * Rejects a {@code LATERAL} source, which reads the sources written before
-     * it, so it is never reported as a join kind that could be rewritten.
-     */
-    private void requireNoLateralSource(FromItem fromItem) {
-        if (fromItem instanceof LateralSubSelect) {
-            throw new UnsupportedOperationException(LATERAL_REJECTION);
-        }
-    }
-
-    /**
      * Resolves a subquery source into the derived source its own
-     * {@code SELECT} exposes. The body sees only the common table expressions
-     * in scope and no source of the query around it, as PostgreSQL scopes a
-     * subquery source that is not {@code LATERAL}.
+     * {@code SELECT} exposes. The body sees the common table expressions in
+     * scope and, for a {@code LATERAL} source, the {@code enclosing} level its
+     * clause states; a subquery source that is not {@code LATERAL} receives
+     * none, so it sees no source of the query around it, as PostgreSQL scopes
+     * it.
      *
      * <p>The alias is the only name the subquery's columns can be read through,
      * so it is required, and a column list on it would rename those columns by
-     * position, which this subset does not model.
+     * position, which this subset does not model. A {@code LATERAL} source
+     * keeps both rejections, because its body exposes its columns the same way.
      */
     private Source toSubquerySource(
         ParenthesedSelect subquery,
         Analysis analysis,
         List<Source> commonTableExpressions,
-        boolean nullable
+        boolean nullable,
+        Scope enclosing
     ) {
         Alias alias = subquery.getAlias();
 
@@ -3514,7 +3550,13 @@ public final class QueryAnalyzer {
 
         return toDerivedSource(
             name,
-            analyzeNestedSelect(subquery.getSelect(), analysis, commonTableExpressions, 0)
+            analyzeNestedSelect(
+                subquery.getSelect(),
+                analysis,
+                commonTableExpressions,
+                0,
+                enclosing
+            )
                 .columns(),
             nullable
         );
@@ -3681,6 +3723,13 @@ public final class QueryAnalyzer {
      * expose before this join null-extends either of them, and the merged
      * source is installed after that null extension, because no join
      * null-extends the columns it merges itself.
+     *
+     * <p>A {@code LATERAL} source's body reads, as the one level enclosing it,
+     * the sources of this clause resolved before it — the earlier join groups
+     * and, unless a {@code RIGHT} or {@code FULL} join joins it, the earlier
+     * sources of its own group — and then the levels enclosing this one. A
+     * write's target is resolved before this clause, so it is in none of them,
+     * as PostgreSQL scopes a source of {@code FROM} or {@code USING}.
      */
     private void resolveJoinGroups(
         List<Source> sources,
@@ -3692,6 +3741,7 @@ public final class QueryAnalyzer {
         List<Source> commonTableExpressions,
         Scope enclosing
     ) {
+        int firstGroupIndex = sources.size();
         List<Source> group = new ArrayList<>();
 
         for (FromItem groupItem : groupItems) {
@@ -3703,7 +3753,14 @@ public final class QueryAnalyzer {
                     groupItemRejection,
                     analysis,
                     commonTableExpressions,
-                    false
+                    false,
+                    lateralScope(
+                        sources,
+                        firstGroupIndex,
+                        sources.size(),
+                        commonTableExpressions,
+                        enclosing
+                    )
                 )
             );
         }
@@ -3722,7 +3779,14 @@ public final class QueryAnalyzer {
                         groupItemRejection,
                         analysis,
                         commonTableExpressions,
-                        false
+                        false,
+                        lateralScope(
+                            sources,
+                            firstGroupIndex,
+                            sources.size(),
+                            commonTableExpressions,
+                            enclosing
+                        )
                     )
                 );
 
@@ -3733,7 +3797,16 @@ public final class QueryAnalyzer {
                 join,
                 joinedItemRejection,
                 analysis,
-                commonTableExpressions
+                commonTableExpressions,
+                lateralScope(
+                    sources,
+                    firstGroupIndex,
+                    join.isRight() || join.isFull()
+                        ? sources.indexOf(group.get(0))
+                        : sources.size(),
+                    commonTableExpressions,
+                    enclosing
+                )
             );
 
             addSource(sources, joined);
@@ -3755,6 +3828,29 @@ public final class QueryAnalyzer {
             resolveJoinConditionColumns(condition, scope);
             resolveParameters(condition, scope, analysis);
         }
+    }
+
+    /**
+     * The level a {@code LATERAL} source written at one position reads as the
+     * one enclosing it: the sources of this clause from {@code firstGroupIndex},
+     * which is where this clause's own first group starts, up to {@code end},
+     * which is where the source itself is written, and then the levels
+     * enclosing this one. The sources are copied, because the level is a
+     * snapshot of what the body can see rather than the list this clause goes
+     * on resolving.
+     */
+    private Scope lateralScope(
+        List<Source> sources,
+        int firstGroupIndex,
+        int end,
+        List<Source> commonTableExpressions,
+        Scope enclosing
+    ) {
+        return new Scope(
+            List.copyOf(sources.subList(firstGroupIndex, end)),
+            commonTableExpressions,
+            enclosing
+        );
     }
 
     /**
@@ -4225,21 +4321,21 @@ public final class QueryAnalyzer {
      * shapes that this subset excludes, so every excluded modifier is rejected
      * explicitly.
      *
-     * <p>A {@code LATERAL} joined source is classified first, because a source
-     * this subset does not model cannot be written as a supported join at all,
-     * and the join kind is classified after it. Every modifier outside the
-     * subset keeps the general rejection.
+     * <p>The join kind is classified before its source, so a modifier outside
+     * the subset is reported whatever the source it joins.
      *
      * <p>A {@code LEFT} or {@code FULL} join reads its own joined source as a
-     * row that may be absent, so that source is resolved as null-extended.
+     * row that may be absent, so that source is resolved as null-extended, and
+     * a {@code LATERAL} joined source reads the {@code lateral} level its
+     * clause states.
      */
     private Source requireSupportedJoin(
         Join join,
         String unsupportedSourceRejection,
         Analysis analysis,
-        List<Source> commonTableExpressions
+        List<Source> commonTableExpressions,
+        Scope lateral
     ) {
-        requireNoLateralSource(join.getRightItem());
         requireSupportedJoinKind(join);
 
         return resolveSource(
@@ -4247,7 +4343,8 @@ public final class QueryAnalyzer {
             unsupportedSourceRejection,
             analysis,
             commonTableExpressions,
-            join.isLeft() || join.isFull()
+            join.isLeft() || join.isFull(),
+            lateral
         );
     }
 

@@ -3721,6 +3721,81 @@ class PostgresIntegrationTest {
     }
 
     /**
+     * Covers the {@code LATERAL} joins end to end against PostgreSQL: the body
+     * of an inner and of a left one reads the team its own group states, types
+     * its own placeholder, and returns at most one row per team, so a team no
+     * row of the body matches is absent from the inner join and reads
+     * {@code null} columns in the left one.
+     */
+    @Test
+    void shouldExecuteGeneratedLateralJoinsAgainstPostgres() throws Exception {
+        execute(MEMBERSHIP_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(MEMBERSHIP_SCHEMA, """
+            -- name: ListTeamTopRoles :many
+            SELECT t.name, pick.role
+            FROM teams t
+            JOIN LATERAL (SELECT m.role
+                          FROM memberships m
+                          WHERE m.team_id = t.id
+                            AND m.role <> :excluded
+                          ORDER BY m.role
+                          LIMIT 1) pick ON TRUE
+            ORDER BY t.id;
+
+            -- name: ListTeamOptionalRoles :many
+            SELECT t.name, pick.role
+            FROM teams t
+            LEFT JOIN LATERAL (SELECT m.role
+                               FROM memberships m
+                               WHERE m.team_id = t.id
+                                 AND m.role <> :excluded
+                               ORDER BY m.role
+                               LIMIT 1) pick ON TRUE
+            ORDER BY t.id;
+            """);
+
+        execute("INSERT INTO teams (id, name) VALUES (1, 'Platform'), (2, 'Billing')");
+
+        execute(
+            "INSERT INTO memberships (team_id, role)"
+                + " VALUES (1, 'owner'), (1, 'viewer'), (3, 'ghost')"
+        );
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            List<?> topRoles = (List<?>) repository.getClass()
+                .getMethod("listTeamTopRoles", String.class)
+                .invoke(repository, "viewer");
+
+            assertEquals(
+                List.of("Platform"),
+                components(topRoles, "name"),
+                "the inner LATERAL join returns no row for a team its body does not match"
+            );
+
+            assertEquals(
+                List.of("owner"),
+                components(topRoles, "role"),
+                "the LATERAL body reads the memberships of the team it is correlated to"
+            );
+
+            List<?> optionalRoles = (List<?>) repository.getClass()
+                .getMethod("listTeamOptionalRoles", String.class)
+                .invoke(repository, "viewer");
+
+            assertEquals(List.of("Platform", "Billing"), components(optionalRoles, "name"));
+
+            assertEquals(
+                Arrays.asList("owner", null),
+                components(optionalRoles, "role"),
+                "the left LATERAL join reads no role for a team its body does not match"
+            );
+        }
+    }
+
+    /**
      * Covers derived sources end to end: a report over a left-joined common
      * table expression and a read over a subquery source are generated,
      * compiled, and executed against PostgreSQL, so the columns their bodies
