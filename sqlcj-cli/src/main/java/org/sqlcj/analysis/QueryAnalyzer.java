@@ -73,6 +73,7 @@ import org.sqlcj.type.TypeResolver;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -434,8 +435,8 @@ public final class QueryAnalyzer {
 
     /**
      * One query source and the name it exposes to column references, which is
-     * its alias when present and otherwise its table name. A left-joined
-     * source contributes no row when the join finds no match, so every column
+     * its alias when present and otherwise its table name. A null-extended
+     * source contributes no row when its join finds no match, so every column
      * read from it is nullable regardless of its schema declaration, and a
      * wildcard of one embeds a row that may itself be absent.
      *
@@ -453,7 +454,7 @@ public final class QueryAnalyzer {
         String name,
         org.sqlcj.schema.Table table,
         boolean derived,
-        boolean leftJoined,
+        boolean nullable,
         String unreadable
     ) {
 
@@ -462,9 +463,9 @@ public final class QueryAnalyzer {
             String name,
             org.sqlcj.schema.Table table,
             boolean derived,
-            boolean leftJoined
+            boolean nullable
         ) {
-            this(name, table, derived, leftJoined, null);
+            this(name, table, derived, nullable, null);
         }
 
         /**
@@ -473,6 +474,16 @@ public final class QueryAnalyzer {
          */
         private static Source unreadable(String name, String rejection) {
             return new Source(name, null, true, false, rejection);
+        }
+
+        /**
+         * The same source read as a row that may be absent, which an outer
+         * join whose other side finds no match contributes. A source already
+         * read that way stays so, because a later join cannot restore a row an
+         * earlier one null-extended.
+         */
+        private Source nullExtended() {
+            return new Source(name, table, derived, true, unreadable);
         }
 
         /**
@@ -496,8 +507,8 @@ public final class QueryAnalyzer {
      * <p>A predicate subquery is the level inside the level its predicate
      * stands in, so a column resolves in its own sources first and then in
      * each enclosing level outward, as PostgreSQL resolves a correlated
-     * reference. A join condition's level is the sources written up to and
-     * including its own joined source.
+     * reference. A join condition's level is the sources of its own join group
+     * up to and including its own joined source.
      */
     private record Scope(List<Source> sources, List<Source> commonTableExpressions, Scope enclosing) {
 
@@ -509,15 +520,6 @@ public final class QueryAnalyzer {
         /** A lone query level that declares no common table expression. */
         private static Scope of(List<Source> sources) {
             return of(sources, List.of());
-        }
-
-        /**
-         * The level of the same query whose sources are the given ones, which
-         * is how a join condition narrows its own level without changing the
-         * levels around it.
-         */
-        private Scope narrowedTo(List<Source> levelSources) {
-            return new Scope(levelSources, commonTableExpressions, enclosing);
         }
 
         /**
@@ -566,7 +568,7 @@ public final class QueryAnalyzer {
      * One analyzed projection in selected order: the columns it expands to,
      * which are the columns a derived source exposes, and the result components
      * of a top-level read, where a wildcard of a schema table is one embedded
-     * row, nullable when its source is left-joined.
+     * row, nullable when its source is null-extended.
      */
     private record ResolvedProjection(
         List<org.sqlcj.schema.Column> columns,
@@ -2345,7 +2347,7 @@ public final class QueryAnalyzer {
      * included, has no schema type to generate, so it is rejected instead of
      * analyzed.
      *
-     * <p>A returned column of a left-joined source is nullable even when its
+     * <p>A returned column of a null-extended source is nullable even when its
      * schema declaration is not, because an unmatched row reads it as
      * {@code NULL}.
      */
@@ -2369,7 +2371,7 @@ public final class QueryAnalyzer {
                 new QueryColumn(
                     selectedColumnName(alias, schemaColumn),
                     requireSupportedType(schemaColumn),
-                    schemaColumn.nullable() || resolved.source().leftJoined(),
+                    schemaColumn.nullable() || resolved.source().nullable(),
                     schemaColumn.enumType(),
                     schemaColumn.array()
                 )
@@ -3207,12 +3209,12 @@ public final class QueryAnalyzer {
         String unsupportedSourceRejection,
         Analysis analysis,
         List<Source> commonTableExpressions,
-        boolean leftJoined
+        boolean nullable
     ) {
         requireNoLateralSource(fromItem);
 
         if (fromItem instanceof ParenthesedSelect subquery) {
-            return toSubquerySource(subquery, analysis, commonTableExpressions, leftJoined);
+            return toSubquerySource(subquery, analysis, commonTableExpressions, nullable);
         }
 
         if (!(fromItem instanceof Table table)) {
@@ -3229,11 +3231,11 @@ public final class QueryAnalyzer {
                     ? commonTableExpression.name()
                     : table.getAlias().getUnquotedName(),
                 commonTableExpression.table().columns(),
-                leftJoined
+                nullable
             );
         }
 
-        return toSource(table, analysis.schema(), leftJoined);
+        return toSource(table, analysis.schema(), nullable);
     }
 
     /**
@@ -3275,7 +3277,7 @@ public final class QueryAnalyzer {
         ParenthesedSelect subquery,
         Analysis analysis,
         List<Source> commonTableExpressions,
-        boolean leftJoined
+        boolean nullable
     ) {
         Alias alias = subquery.getAlias();
 
@@ -3295,7 +3297,7 @@ public final class QueryAnalyzer {
             name,
             analyzeNestedSelect(subquery.getSelect(), analysis, commonTableExpressions, 0)
                 .columns(),
-            leftJoined
+            nullable
         );
     }
 
@@ -3326,13 +3328,13 @@ public final class QueryAnalyzer {
     /**
      * One derived source — a common table expression or a subquery source —
      * under the name the query exposes it as, whose columns are the result
-     * columns of its own {@code SELECT}. A left join of the source makes every
-     * one of them nullable, as it does for a table source.
+     * columns of its own {@code SELECT}. A join that null-extends the source
+     * makes every one of them nullable, as it does for a table source.
      */
     private Source toDerivedSource(
         String name,
         List<org.sqlcj.schema.Column> columns,
-        boolean leftJoined
+        boolean nullable
     ) {
         requireDistinctDerivedColumnNames(name, columns);
 
@@ -3340,7 +3342,7 @@ public final class QueryAnalyzer {
             name,
             new org.sqlcj.schema.Table(name, columns, List.of()),
             true,
-            leftJoined
+            nullable
         );
     }
 
@@ -3368,11 +3370,13 @@ public final class QueryAnalyzer {
     }
 
     /**
-     * Resolves the ordered query sources from the first source followed by
-     * every joined source, rejecting an exposed name that repeats in this
-     * level. Each join condition resolves its columns through the sources up to
-     * and including its own joined source and then through the levels enclosing
-     * this one, which are none for a query no analyzed query encloses.
+     * Resolves the ordered query sources of one read: its first {@code FROM}
+     * item followed by every comma-separated and every joined source, in the
+     * order the query writes them, rejecting an exposed name that repeats in
+     * this level.
+     *
+     * <p>A read whose caller requires a {@code FROM} clause states one absent
+     * first item here, which is rejected as the unsupported source it is.
      */
     private List<Source> resolveSources(
         PlainSelect plainSelect,
@@ -3382,31 +3386,16 @@ public final class QueryAnalyzer {
     ) {
         List<Source> sources = new ArrayList<>();
 
-        addSource(
+        resolveJoinGroups(
             sources,
-            resolveSource(
-                plainSelect.getFromItem(),
-                "Only table sources are supported.",
-                analysis,
-                commonTableExpressions,
-                false
-            )
+            Collections.singletonList(plainSelect.getFromItem()),
+            plainSelect.getJoins(),
+            "Only table sources are supported.",
+            "Only table join sources are supported.",
+            analysis,
+            commonTableExpressions,
+            enclosing
         );
-
-        List<Join> joins = plainSelect.getJoins();
-
-        if (joins == null) {
-            return List.copyOf(sources);
-        }
-
-        for (Join join : joins) {
-            addSource(sources, requireSupportedJoin(join, analysis, commonTableExpressions));
-
-            resolveJoinConditionColumns(
-                requireJoinCondition(join),
-                new Scope(List.copyOf(sources), commonTableExpressions, enclosing)
-            );
-        }
 
         return List.copyOf(sources);
     }
@@ -3417,14 +3406,9 @@ public final class QueryAnalyzer {
      * clause adds, in the order the query writes them. An exposed name that
      * repeats among them is rejected as it is in a read, the target included.
      *
-     * <p>Each added item written beside the others — the single {@code FROM}
-     * item, a comma-separated source after it, and each {@code USING} source —
-     * starts a join group, and each joined source joins the group it is written
-     * onto, because PostgreSQL binds a {@code JOIN} more tightly than a comma.
-     * A join condition therefore resolves its columns and types its
-     * placeholders over its own group up to and including its joined source,
-     * which never includes the target, as PostgreSQL scopes a condition inside
-     * {@code FROM}.
+     * <p>The target is in no join group, so no join condition sees it and no
+     * join null-extends it, as PostgreSQL scopes a condition inside
+     * {@code FROM} and reads the rows the write updates or deletes.
      */
     private List<Source> resolveWriteSources(
         Source target,
@@ -3434,17 +3418,63 @@ public final class QueryAnalyzer {
         List<Source> commonTableExpressions
     ) {
         List<Source> sources = new ArrayList<>();
-        List<Source> joinGroup = new ArrayList<>();
 
         addSource(sources, target);
 
-        for (FromItem addedItem : addedItems) {
-            addWriteSource(
+        resolveJoinGroups(
+            sources,
+            addedItems,
+            joins,
+            WRITE_SOURCE_REJECTION,
+            WRITE_SOURCE_REJECTION,
+            analysis,
+            commonTableExpressions,
+            null
+        );
+
+        return List.copyOf(sources);
+    }
+
+    /**
+     * Resolves the join groups of one {@code FROM} or {@code USING} clause into
+     * the ordered sources of its level, which a write has already added its
+     * target to.
+     *
+     * <p>Each item written beside the others — the first {@code FROM} item, a
+     * comma-separated item after it, and each {@code USING} source — starts a
+     * join group, and each joined source joins the group it is written onto,
+     * because PostgreSQL binds a {@code JOIN} more tightly than a comma. A
+     * join condition therefore resolves its columns and types its placeholders
+     * over its own group up to and including its joined source, and then over
+     * the levels enclosing this one, which are none for a query no analyzed
+     * query encloses. A {@code CROSS JOIN} and a comma carry no condition at
+     * all.
+     *
+     * <p>A {@code RIGHT} or {@code FULL} join reads the earlier sources of its
+     * own group as rows that may be absent, so each of them is replaced by a
+     * null-extended source, in the group its later conditions resolve against
+     * and in the level's sources alike. The joined source's own nullability is
+     * decided where it is resolved.
+     */
+    private void resolveJoinGroups(
+        List<Source> sources,
+        List<FromItem> groupItems,
+        List<Join> joins,
+        String groupItemRejection,
+        String joinedItemRejection,
+        Analysis analysis,
+        List<Source> commonTableExpressions,
+        Scope enclosing
+    ) {
+        List<Source> group = new ArrayList<>();
+
+        for (FromItem groupItem : groupItems) {
+            addGroupSource(
                 sources,
-                joinGroup,
+                group,
                 resolveSource(
-                    addedItem,
-                    WRITE_SOURCE_REJECTION,
+                    groupItem,
+                    groupItemRejection,
                     analysis,
                     commonTableExpressions,
                     false
@@ -3453,17 +3483,17 @@ public final class QueryAnalyzer {
         }
 
         if (joins == null) {
-            return List.copyOf(sources);
+            return;
         }
 
         for (Join join : joins) {
             if (join.isSimple()) {
-                addWriteSource(
+                addGroupSource(
                     sources,
-                    joinGroup,
+                    group,
                     resolveSource(
                         join.getRightItem(),
-                        WRITE_SOURCE_REJECTION,
+                        groupItemRejection,
                         analysis,
                         commonTableExpressions,
                         false
@@ -3473,41 +3503,62 @@ public final class QueryAnalyzer {
                 continue;
             }
 
-            addJoinedWriteSource(
-                sources,
-                joinGroup,
-                requireSupportedJoin(join, analysis, commonTableExpressions)
+            Source joined = requireSupportedJoin(
+                join,
+                joinedItemRejection,
+                analysis,
+                commonTableExpressions
             );
 
+            addSource(sources, joined);
+            group.add(joined);
+
+            nullExtendEarlierGroupSources(join, sources, group);
+
+            if (join.isCross()) {
+                continue;
+            }
+
             Expression condition = requireJoinCondition(join);
-            Scope scope = Scope.of(List.copyOf(joinGroup), commonTableExpressions);
+            Scope scope = new Scope(List.copyOf(group), commonTableExpressions, enclosing);
 
             resolveJoinConditionColumns(condition, scope);
             resolveParameters(condition, scope, analysis);
         }
-
-        return List.copyOf(sources);
     }
 
     /**
-     * Adds one source a write's {@code FROM} or {@code USING} clause writes
-     * beside the others, which starts a join group of its own.
+     * Adds one source written beside the others, which starts a join group of
+     * its own.
      */
-    private void addWriteSource(List<Source> sources, List<Source> joinGroup, Source source) {
+    private void addGroupSource(List<Source> sources, List<Source> group, Source source) {
         addSource(sources, source);
 
-        joinGroup.clear();
-        joinGroup.add(source);
+        group.clear();
+        group.add(source);
     }
 
     /**
-     * Adds one source a write's {@code FROM} clause joins onto the group it is
-     * written onto, which is the scope of its own join condition.
+     * Replaces the sources a {@code RIGHT} or {@code FULL} join null-extends —
+     * the sources of its own group written before it — by null-extended
+     * sources, so that every column read from them is nullable. Every other
+     * join leaves its group as it is.
      */
-    private void addJoinedWriteSource(List<Source> sources, List<Source> joinGroup, Source source) {
-        addSource(sources, source);
+    private void nullExtendEarlierGroupSources(
+        Join join,
+        List<Source> sources,
+        List<Source> group
+    ) {
+        if (!join.isRight() && !join.isFull()) {
+            return;
+        }
 
-        joinGroup.add(source);
+        for (int index = 0; index < group.size() - 1; index++) {
+            Source nullExtended = group.get(index).nullExtended();
+
+            sources.set(sources.indexOf(group.get(index)), nullExtended);
+            group.set(index, nullExtended);
+        }
     }
 
     private void addSource(List<Source> sources, Source source) {
@@ -3528,14 +3579,14 @@ public final class QueryAnalyzer {
         return toSource(table, schema, false);
     }
 
-    private Source toSource(Table table, Schema schema, boolean leftJoined) {
+    private Source toSource(Table table, Schema schema, boolean nullable) {
         return new Source(
             table.getAlias() == null
                 ? table.getUnquotedName()
                 : table.getAlias().getUnquotedName(),
             findSourceTable(schema, table),
             false,
-            leftJoined
+            nullable
         );
     }
 
@@ -3556,61 +3607,48 @@ public final class QueryAnalyzer {
     }
 
     /**
-     * Accepts only a bare {@code JOIN} or explicit {@code INNER JOIN}, or a
-     * {@code LEFT JOIN} in its bare or {@code LEFT OUTER JOIN} spelling, of one
-     * table or derived source. {@link Join#isInnerJoin()} and
-     * {@link Join#isLeft()} also report shapes that this subset excludes, so
-     * every excluded modifier is rejected explicitly.
+     * Accepts a bare {@code JOIN} or explicit {@code INNER JOIN}, a
+     * {@code LEFT}, {@code RIGHT}, or {@code FULL} join in its bare or
+     * {@code OUTER} spelling, and a {@code CROSS JOIN}, of one table or derived
+     * source. {@link Join#isInnerJoin()} and {@link Join#isLeft()} also report
+     * shapes that this subset excludes, so every excluded modifier is rejected
+     * explicitly.
      *
      * <p>A {@code LATERAL} joined source is classified first, because a source
      * this subset does not model cannot be written as a supported join at all,
-     * and the join kinds that can be written another way are then reported with
-     * that rewrite. Every remaining modifier keeps the general rejection.
+     * and the join kinds that join their sources by a rule this subset does not
+     * model are then reported with the rewrite to write instead. Every
+     * remaining modifier keeps the general rejection.
+     *
+     * <p>A {@code LEFT} or {@code FULL} join reads its own joined source as a
+     * row that may be absent, so that source is resolved as null-extended.
      */
     private Source requireSupportedJoin(
         Join join,
+        String unsupportedSourceRejection,
         Analysis analysis,
         List<Source> commonTableExpressions
     ) {
         requireNoLateralSource(join.getRightItem());
         requireSupportedJoinKind(join);
 
-        if (!isSupportedInnerJoin(join) && !isSupportedLeftJoin(join)) {
-            throw new UnsupportedOperationException(
-                "Only unmodified INNER JOIN and LEFT JOIN clauses are supported."
-            );
-        }
-
         return resolveSource(
             join.getRightItem(),
-            "Only table join sources are supported.",
+            unsupportedSourceRejection,
             analysis,
             commonTableExpressions,
-            join.isLeft()
+            join.isLeft() || join.isFull()
         );
     }
 
     /**
      * Rejects each join kind that joins its sources by a rule this subset does
-     * not model, naming the join to write instead where one exists.
+     * not model, naming the join to write instead where one exists, and then
+     * every remaining modifier. {@code NATURAL} is classified before the side
+     * it is written beside, so {@code NATURAL CROSS JOIN} keeps the
+     * {@code NATURAL} rejection.
      */
     private void requireSupportedJoinKind(Join join) {
-        if (join.isFull()) {
-            throw new UnsupportedOperationException("FULL JOIN is not supported.");
-        }
-
-        if (join.isRight()) {
-            throw new UnsupportedOperationException(
-                "RIGHT JOIN is not supported; write a LEFT JOIN with the two sources swapped."
-            );
-        }
-
-        if (join.isCross()) {
-            throw new UnsupportedOperationException(
-                "CROSS JOIN is not supported; write JOIN ... ON TRUE."
-            );
-        }
-
         if (join.isNatural()) {
             throw new UnsupportedOperationException(
                 "NATURAL JOIN is not supported; write the join condition with ON."
@@ -3623,9 +3661,28 @@ public final class QueryAnalyzer {
             );
         }
 
-        if (join.isSimple()) {
+        if (
+            !isSupportedInnerJoin(join)
+                && !isSupportedOuterJoin(join)
+                && !isSupportedCrossJoin(join)
+        ) {
             throw new UnsupportedOperationException(
-                "A comma-separated FROM list is not supported; write JOIN ... ON with the join condition."
+                "Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported."
+            );
+        }
+
+        requireNoCrossJoinCondition(join);
+    }
+
+    /**
+     * Rejects a condition on a {@code CROSS JOIN}, which PostgreSQL does not
+     * have at all although the parser reads it, naming the join that carries
+     * one.
+     */
+    private void requireNoCrossJoinCondition(Join join) {
+        if (join.isCross() && !join.getOnExpressions().isEmpty()) {
+            throw new UnsupportedOperationException(
+                "CROSS JOIN takes no ON condition; write JOIN ... ON."
             );
         }
     }
@@ -3637,22 +3694,34 @@ public final class QueryAnalyzer {
             && !join.isRight()
             && !join.isFull()
             && !join.isCross()
-            && !join.isNatural()
             && hasNoOtherJoinModifier(join);
     }
 
     /**
-     * Reports a {@code LEFT JOIN}, whose {@code LEFT OUTER JOIN} spelling also
-     * sets the {@code OUTER} keyword. Every other qualifier, including the bare
-     * {@code OUTER JOIN} that sets no side, is excluded.
+     * Reports a {@code LEFT}, {@code RIGHT}, or {@code FULL} join, whose
+     * {@code OUTER} spelling also sets the {@code OUTER} keyword. Exactly one
+     * side must be named, so the bare {@code OUTER JOIN}, which names none, is
+     * excluded, as is every other qualifier.
      */
-    private boolean isSupportedLeftJoin(Join join) {
-        return join.isLeft()
+    private boolean isSupportedOuterJoin(Join join) {
+        return namedOuterSides(join) == 1
             && !join.isInner()
-            && !join.isRight()
-            && !join.isFull()
             && !join.isCross()
-            && !join.isNatural()
+            && hasNoOtherJoinModifier(join);
+    }
+
+    /** The number of outer join sides one join names. */
+    private int namedOuterSides(Join join) {
+        return (join.isLeft() ? 1 : 0)
+            + (join.isRight() ? 1 : 0)
+            + (join.isFull() ? 1 : 0);
+    }
+
+    private boolean isSupportedCrossJoin(Join join) {
+        return join.isCross()
+            && !join.isInner()
+            && !join.isOuter()
+            && namedOuterSides(join) == 0
             && hasNoOtherJoinModifier(join);
     }
 
@@ -3687,10 +3756,11 @@ public final class QueryAnalyzer {
 
     /**
      * Resolves every column reference an {@code ON} condition makes against the
-     * sources introduced up to and including its own joined source, as
-     * PostgreSQL scopes a join condition, so a reference to a later source of
-     * the same level is an unknown qualifier, and then against each enclosing
-     * level. A nested {@code SELECT} is not analyzed here, which the visitor's
+     * sources of its own join group up to and including its own joined source,
+     * as PostgreSQL scopes a join condition, so a reference to a later source
+     * or to another group of the same level is an unknown qualifier, and then
+     * against each enclosing level. A nested {@code SELECT} is not analyzed
+     * here, which the visitor's
      * default traversal already leaves unentered, so a subquery of the
      * condition is analyzed by the predicate rules alone.
      */
@@ -3709,17 +3779,18 @@ public final class QueryAnalyzer {
     }
 
     /**
-     * Resolves the parameters the clauses of a read type, which are the join
-     * condition parameters, the {@code WHERE} parameters, and the pagination
-     * parameters.
+     * Resolves the parameters the clauses of a read type over its whole level,
+     * which are the {@code WHERE} parameters and the pagination parameters.
+     * Each join condition types its own placeholders over its join group where
+     * its sources are resolved, and binding order comes from the textual
+     * placeholder order the parser reported, not from the order the clauses are
+     * analyzed in.
      */
     private void resolveBindingParameters(
         PlainSelect plainSelect,
         Scope scope,
         Analysis analysis
     ) {
-        resolveJoinConditionParameters(plainSelect, scope, analysis);
-
         if (plainSelect.getWhere() != null) {
             resolveParameters(
                 plainSelect.getWhere(),
@@ -3729,32 +3800,6 @@ public final class QueryAnalyzer {
         }
 
         resolvePaginationParameters(plainSelect, analysis.placeholders());
-    }
-
-    /**
-     * Resolves the parameters of each join's {@code ON} condition by the
-     * {@code WHERE} predicate rules, over the sources introduced up to and
-     * including that join's own source. Binding order comes from the textual
-     * placeholder order the parser reported, not from this traversal.
-     */
-    private void resolveJoinConditionParameters(
-        PlainSelect plainSelect,
-        Scope scope,
-        Analysis analysis
-    ) {
-        List<Join> joins = plainSelect.getJoins();
-
-        if (joins == null) {
-            return;
-        }
-
-        for (int index = 0; index < joins.size(); index++) {
-            resolveParameters(
-                requireJoinCondition(joins.get(index)),
-                scope.narrowedTo(scope.sources().subList(0, index + 2)),
-                analysis
-            );
-        }
     }
 
     /**
@@ -4608,7 +4653,7 @@ public final class QueryAnalyzer {
      * Resolves the selected columns in declared order, expanding {@code *}
      * across the query sources in their declared order and
      * {@code qualifier.*} across one source, each in schema column order. A
-     * column of a left-joined source is nullable even when its schema
+     * column of a null-extended source is nullable even when its schema
      * declaration is not, because an unmatched row reads it as {@code NULL}.
      *
      * <p>An aliased scalar count and an aliased cast each resolve to one column
@@ -4624,7 +4669,7 @@ public final class QueryAnalyzer {
      * <p>Beside the expanded columns, which are the columns a derived source
      * exposes, the projection carries the result components of a top-level
      * read, where a wildcard of a schema table is one embedded row rather than
-     * that table's own columns, nullable when its source is left-joined.
+     * that table's own columns, nullable when its source is null-extended.
      *
      * <p>An aggregate and a cast name their column with an alias, which is
      * required only of a projection that names the result columns, so a branch
@@ -4690,9 +4735,9 @@ public final class QueryAnalyzer {
      *
      * <p>The embedded row holds the table's own columns with their declared
      * nullability, and the component itself is nullable when the source is
-     * left-joined, which is where the absence of the whole row is recorded. The
-     * expanded columns stay the columns a derived source exposes, so a
-     * left-joined source still exposes every one of them as nullable.
+     * null-extended, which is where the absence of the whole row is recorded.
+     * The expanded columns stay the columns a derived source exposes, so a
+     * null-extended source still exposes every one of them as nullable.
      *
      * <p>A derived source has no row record, so it contributes its expanded
      * columns as result components too.
@@ -4710,7 +4755,7 @@ public final class QueryAnalyzer {
             resultColumns.add(
                 QueryColumn.row(
                     source.name(),
-                    source.leftJoined(),
+                    source.nullable(),
                     source.rowTable(),
                     toQueryColumns(resolveRowColumns(source))
                 )
@@ -4733,11 +4778,11 @@ public final class QueryAnalyzer {
 
     /**
      * Reports whether a wildcard of one source returns the shared row record
-     * itself rather than embedding it, which a left-joined source does not,
+     * itself rather than embedding it, which a null-extended source does not,
      * because its row may be absent and a result of its own records that.
      */
     private boolean returnsRow(Source source) {
-        return embedsRow(source) && !source.leftJoined();
+        return embedsRow(source) && !source.nullable();
     }
 
     /**
@@ -4768,7 +4813,7 @@ public final class QueryAnalyzer {
             return new org.sqlcj.schema.Column(
                 selectedColumnName(selectItem.getAlias(), schemaColumn),
                 requireSupportedType(schemaColumn),
-                schemaColumn.nullable() || resolved.source().leftJoined(),
+                schemaColumn.nullable() || resolved.source().nullable(),
                 null,
                 schemaColumn.enumType(),
                 schemaColumn.array(),
@@ -5032,7 +5077,7 @@ public final class QueryAnalyzer {
      *
      * <p>A derived source names no table, so a read over one returns a result
      * specific to its own query even when the source is named like a table, and
-     * a left-joined source's row may be absent, so a lone wildcard of one
+     * a null-extended source's row may be absent, so a lone wildcard of one
      * returns a result of its own holding that row as one nullable component.
      */
     private String resolveSelectRowTable(PlainSelect plainSelect, List<Source> sources) {
@@ -5219,17 +5264,17 @@ public final class QueryAnalyzer {
 
     /**
      * The columns one source exposes in its own order, each nullable when the
-     * source is left-joined, which is the expansion of a wildcard over that
+     * source is null-extended, which is the expansion of a wildcard over that
      * source.
      */
     private List<org.sqlcj.schema.Column> resolveAllColumns(Source source) {
-        return resolveSourceColumns(source, source.leftJoined());
+        return resolveSourceColumns(source, source.nullable());
     }
 
     /**
      * The columns of one source's table in schema order, each with the
      * nullability the schema declares, which are the columns of the row record
-     * a wildcard of that source embeds. A left-joined row is absent or complete
+     * a wildcard of that source embeds. A null-extended row is absent or complete
      * as a whole, and the component holding it carries that, so the row's own
      * columns keep their declaration and one table's row record stays the same
      * record in every query that embeds or returns it.

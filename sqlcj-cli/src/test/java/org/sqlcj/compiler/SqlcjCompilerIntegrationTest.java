@@ -1286,6 +1286,83 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
+     * A repository generated from the outer, cross, and comma joins compiles:
+     * the right join's null-extended columns and the full join's nullable rows
+     * on both sides are boxed types, a cross join binds nothing, and a
+     * comma-separated list followed by a join types its own placeholder.
+     */
+    @Test
+    void shouldGenerateCompilableJavaForOuterCrossAndCommaJoins() throws IOException {
+        Path schemaFile = tempDir.resolve("schema.sql");
+        Path queriesFile = tempDir.resolve("queries.sql");
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path classesDirectory = tempDir.resolve("classes");
+
+        Files.writeString(schemaFile, JOIN_SCHEMA);
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: ListProfileUsers :many
+                SELECT u.id, p.id AS profile_id
+                FROM users u
+                RIGHT JOIN profiles p ON p.user_id = u.id;
+
+                -- name: ListUsersAndProfiles :many
+                SELECT u.*, p.*
+                FROM users u
+                FULL JOIN profiles p ON p.user_id = u.id;
+
+                -- name: ListUserProfilePairs :many
+                SELECT u.id, p.nickname
+                FROM users u
+                CROSS JOIN profiles p;
+
+                -- name: ListOrderingUsers :many
+                SELECT u.id, o.total
+                FROM users u, orders o
+                JOIN profiles p ON p.user_id = o.user_id
+                WHERE o.user_id = u.id
+                  AND o.total = $1;
+                """
+        );
+
+        new SqlcjCompiler().compile(
+            usersConfig(schemaFile, queriesFile, generatedDirectory)
+        );
+
+        String source = Files.readString(
+            generatedDirectory.resolve("generated/UsersRepository.java")
+        );
+
+        assertEquals(
+            List.of("Long id", "Long profileId"),
+            recordComponents(source, "ListProfileUsersResult")
+        );
+
+        assertEquals(
+            List.of("UsersRow u", "ProfilesRow p"),
+            recordComponents(source, "ListUsersAndProfilesResult")
+        );
+
+        assertTrue(
+            source.contains(
+                "public List<ListOrderingUsersResult> listOrderingUsers(BigDecimal total)"
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains("public List<ListUserProfilePairsResult> listUserProfilePairs()"),
+            source
+        );
+
+        assertCompiles(generatedDirectory, classesDirectory);
+
+        assertTrue(Files.exists(classesDirectory.resolve("generated/UsersRepository.class")));
+    }
+
+    /**
      * A top-level set operation generates compilable Java: its result record
      * takes the leftmost branch's column names and the types its branches
      * resolve to, its trailing {@code LIMIT} is one method parameter, a
@@ -2722,16 +2799,6 @@ class SqlcjCompilerIntegrationTest {
             ),
             Arguments.of(
                 ":many",
-                "SELECT u.id FROM users u RIGHT JOIN profiles p ON p.user_id = u.id",
-                "RIGHT JOIN is not supported; write a LEFT JOIN with the two sources swapped."
-            ),
-            Arguments.of(
-                ":many",
-                "SELECT u.id FROM users u FULL JOIN profiles p ON p.user_id = u.id",
-                "FULL JOIN is not supported."
-            ),
-            Arguments.of(
-                ":many",
                 "SELECT u.id FROM users u JOIN profiles p USING (id)",
                 "JOIN ... USING is not supported; write the join condition with ON."
             ),
@@ -2742,14 +2809,13 @@ class SqlcjCompilerIntegrationTest {
             ),
             Arguments.of(
                 ":many",
-                "SELECT u.id FROM users u CROSS JOIN profiles p",
-                "CROSS JOIN is not supported; write JOIN ... ON TRUE."
+                "SELECT u.id FROM users u CROSS JOIN profiles p ON p.user_id = u.id",
+                "CROSS JOIN takes no ON condition; write JOIN ... ON."
             ),
             Arguments.of(
                 ":many",
-                "SELECT u.id FROM users u, profiles p",
-                "A comma-separated FROM list is not supported;"
-                    + " write JOIN ... ON with the join condition."
+                "SELECT u.id FROM users u OUTER JOIN profiles p ON p.user_id = u.id",
+                "Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported."
             ),
             Arguments.of(
                 ":many",

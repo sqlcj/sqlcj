@@ -100,16 +100,6 @@ class ReferenceServiceIntegrationTest {
      */
     private static final List<UnsupportedQuery> UNSUPPORTED_QUERIES = List.of(
         new UnsupportedQuery(
-            "right_join.sql",
-            "ListProjectsWithTasks",
-            "RIGHT JOIN is not supported; write a LEFT JOIN with the two sources swapped."
-        ),
-        new UnsupportedQuery(
-            "full_join.sql",
-            "ListProjectsAndTasks",
-            "FULL JOIN is not supported."
-        ),
-        new UnsupportedQuery(
             "using_join.sql",
             "ListTaskComments",
             "JOIN ... USING is not supported; write the join condition with ON."
@@ -118,17 +108,6 @@ class ReferenceServiceIntegrationTest {
             "natural_join.sql",
             "ListNaturallyJoinedTasks",
             "NATURAL JOIN is not supported; write the join condition with ON."
-        ),
-        new UnsupportedQuery(
-            "cross_join.sql",
-            "ListOrganizationProjectPairs",
-            "CROSS JOIN is not supported; write JOIN ... ON TRUE."
-        ),
-        new UnsupportedQuery(
-            "comma_join.sql",
-            "ListCommaJoinedTasks",
-            "A comma-separated FROM list is not supported; "
-                + "write JOIN ... ON with the join condition."
         ),
         new UnsupportedQuery(
             "lateral_join.sql",
@@ -153,6 +132,21 @@ class ReferenceServiceIntegrationTest {
             "Cannot infer the type of :label in labels[1] = :label; "
                 + "state it with a cast, such as :label::text"
         )
+    );
+
+    /** The organizations the join kind test owns inside the shared database. */
+    private static final List<String> JOIN_ORGANIZATIONS = List.of(
+        "Join Test One",
+        "Join Test Two"
+    );
+
+    /**
+     * The projects the join kind test owns, the first of which has one task and
+     * the second none.
+     */
+    private static final List<String> JOIN_PROJECTS = List.of(
+        "Join Test Tasked",
+        "Join Test Empty"
     );
 
     /** The files the three schema inputs generate, relative to {@code java.out}. */
@@ -1160,6 +1154,161 @@ class ReferenceServiceIntegrationTest {
         return componentsOf(rows, "title").stream()
             .filter("Shared Title"::equals)
             .count();
+    }
+
+    /**
+     * The generated repository executes the join kinds this milestone adds
+     * against the migrated database: the right join and the full join, each of
+     * which reads a {@code null} title for a project without tasks, the cross
+     * join, which pairs every organization with every project, and the
+     * comma-separated list, which returns the joined rows alone.
+     *
+     * <p>All four read every organization, project, and task of the database,
+     * which the other tests of this class share, so this one asserts over its
+     * own two organizations, its own two projects, and its own single task.
+     */
+    @Test
+    void shouldExecuteTheGeneratedJoinKindQueries() throws Exception {
+        Path generatedDirectory = tempDir.resolve("generated-joins");
+
+        generate(List.of(migrations().toString()), generatedDirectory);
+
+        Path classesDirectory = compile(generatedDirectory, tempDir.resolve("classes-joins"));
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Long firstOrganizationId = (Long) component(
+                invoke(repository, "createOrganization", JOIN_ORGANIZATIONS.get(0), "{}"),
+                "id"
+            );
+
+            Long secondOrganizationId = (Long) component(
+                invoke(repository, "createOrganization", JOIN_ORGANIZATIONS.get(1), "{}"),
+                "id"
+            );
+
+            Long taskedProjectId = (Long) component(
+                invoke(
+                    repository,
+                    "createProject",
+                    firstOrganizationId,
+                    "JOINED",
+                    JOIN_PROJECTS.get(0)
+                ),
+                "id"
+            );
+
+            invoke(
+                repository,
+                "createProject",
+                secondOrganizationId,
+                "UNJOINED",
+                JOIN_PROJECTS.get(1)
+            );
+
+            Object open = enumConstant(classLoader, "TaskStatus", "OPEN");
+
+            createShapeTask(repository, taskedProjectId, "Join Test Task", (short) 1, open);
+
+            List<?> rightJoined = (List<?>) invoke(repository, "listProjectsWithTasks");
+
+            assertEquals(
+                List.of("Join Test Task"),
+                projectTitles(rightJoined, JOIN_PROJECTS.get(0)),
+                "the right join reads the task of a project that has one"
+            );
+
+            assertEquals(
+                Arrays.asList((Object) null),
+                projectTitles(rightJoined, JOIN_PROJECTS.get(1)),
+                "the right join reads a null title for a project without tasks"
+            );
+
+            List<?> fullJoined = (List<?>) invoke(repository, "listProjectsAndTasks");
+
+            assertEquals(
+                List.of("Join Test Task"),
+                projectTitles(fullJoined, JOIN_PROJECTS.get(0)),
+                "the full join reads the task of a project that has one"
+            );
+
+            assertEquals(
+                Arrays.asList((Object) null),
+                projectTitles(fullJoined, JOIN_PROJECTS.get(1)),
+                "the full join reads a null title for a project without tasks"
+            );
+
+            List<List<Object>> pairs = ownPairs(
+                (List<?>) invoke(repository, "listOrganizationProjectPairs")
+            );
+
+            assertEquals(4, pairs.size(), "the cross join returns every pair of the four");
+
+            assertTrue(
+                pairs.containsAll(
+                    List.of(
+                        List.of(JOIN_ORGANIZATIONS.get(0), JOIN_PROJECTS.get(0)),
+                        List.of(JOIN_ORGANIZATIONS.get(0), JOIN_PROJECTS.get(1)),
+                        List.of(JOIN_ORGANIZATIONS.get(1), JOIN_PROJECTS.get(0)),
+                        List.of(JOIN_ORGANIZATIONS.get(1), JOIN_PROJECTS.get(1))
+                    )
+                ),
+                "the cross join pairs each organization with each project"
+            );
+
+            List<?> commaJoined = (List<?>) invoke(repository, "listCommaJoinedTasks");
+
+            assertEquals(
+                List.of("Join Test Task"),
+                projectTitles(commaJoined, JOIN_PROJECTS.get(0)),
+                "the comma-separated list returns the joined task"
+            );
+
+            assertEquals(
+                List.of(),
+                projectTitles(commaJoined, JOIN_PROJECTS.get(1)),
+                "the comma-separated list returns the joined rows alone"
+            );
+        }
+    }
+
+    /**
+     * The titles one join read returns beside one project name, in the
+     * result's order, where an absent task reads {@code null}.
+     */
+    private List<Object> projectTitles(List<?> rows, String projectName) throws Exception {
+        List<Object> titles = new ArrayList<>();
+
+        for (Object row : rows) {
+            if (projectName.equals(component(row, "name"))) {
+                titles.add(component(row, "title"));
+            }
+        }
+
+        return titles;
+    }
+
+    /**
+     * The organization and project name pairs one cross-join read returns among
+     * the names the join kind test owns, in the result's order.
+     */
+    private List<List<Object>> ownPairs(List<?> rows) throws Exception {
+        List<List<Object>> pairs = new ArrayList<>();
+
+        for (Object row : rows) {
+            Object organizationName = component(row, "organizationName");
+            Object projectName = component(row, "projectName");
+
+            if (
+                JOIN_ORGANIZATIONS.contains(organizationName)
+                    && JOIN_PROJECTS.contains(projectName)
+            ) {
+                pairs.add(List.of(organizationName, projectName));
+            }
+        }
+
+        return pairs;
     }
 
     /**

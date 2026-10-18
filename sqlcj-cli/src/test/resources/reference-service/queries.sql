@@ -301,3 +301,27 @@ WITH RECURSIVE levels AS (SELECT CAST(1 AS integer) AS level
                           WHERE level < 5)
 SELECT level
 FROM levels;
+
+-- name: ListProjectsWithTasks :many
+SELECT p.name,
+       t.title
+FROM tasks t
+         RIGHT JOIN projects p ON p.id = t.project_id;
+
+-- name: ListProjectsAndTasks :many
+SELECT p.name,
+       t.title
+FROM projects p
+         FULL JOIN tasks t ON t.project_id = p.id;
+
+-- name: ListOrganizationProjectPairs :many
+SELECT o.name AS organization_name,
+       p.name AS project_name
+FROM organizations o
+         CROSS JOIN projects p;
+
+-- name: ListCommaJoinedTasks :many
+SELECT t.title,
+       p.name
+FROM tasks t, projects p
+WHERE p.id = t.project_id;

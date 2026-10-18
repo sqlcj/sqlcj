@@ -2861,6 +2861,387 @@ class QueryAnalyzerTest {
     }
 
     /**
+     * A {@code RIGHT JOIN} null-extends every source of its join group written
+     * before it, so every column read from them is nullable even when the
+     * schema declares it {@code NOT NULL}, while its own joined source keeps
+     * its schema nullability. Both accepted spellings are analyzed identically.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = { "RIGHT JOIN", "RIGHT OUTER JOIN" })
+    void shouldAnalyzeRightJoinWithNullableEarlierColumns(String joinKeywords) {
+        String sql = """
+            SELECT u.id, u.name, p.id AS profile_id, p.nickname
+            FROM users u
+            %s profiles p ON p.user_id = u.id
+            """.formatted(joinKeywords);
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListProfileUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, true),
+                new QueryColumn("name", ColumnType.VARCHAR, true),
+                new QueryColumn("profile_id", ColumnType.BIGINT, false),
+                new QueryColumn("nickname", ColumnType.VARCHAR, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A {@code RIGHT JOIN} null-extends every earlier source of its group, not
+     * only the first, so both sources joined before it read as nullable.
+     */
+    @Test
+    void shouldNullExtendEveryEarlierSourceOfARightJoinedGroup() {
+        String sql = """
+            SELECT u.id, o.id AS order_id, p.id AS profile_id
+            FROM users u
+            JOIN orders o ON o.user_id = u.id
+            RIGHT JOIN profiles p ON p.user_id = u.id
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListProfileOrders", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, true),
+                new QueryColumn("order_id", ColumnType.BIGINT, true),
+                new QueryColumn("profile_id", ColumnType.BIGINT, false)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A {@code FULL JOIN} null-extends the earlier sources of its group and its
+     * own joined source, so every column of both sides is nullable. Both
+     * accepted spellings are analyzed identically.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = { "FULL JOIN", "FULL OUTER JOIN" })
+    void shouldAnalyzeFullJoinWithNullableColumnsOnBothSides(String joinKeywords) {
+        String sql = """
+            SELECT u.id, p.id AS profile_id, p.nickname
+            FROM users u
+            %s profiles p ON p.user_id = u.id
+            """.formatted(joinKeywords);
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsersAndProfiles", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, true),
+                new QueryColumn("profile_id", ColumnType.BIGINT, true),
+                new QueryColumn("nickname", ColumnType.VARCHAR, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * Each wildcard of a {@code FULL JOIN} embeds the row of its own source as
+     * a nullable component, because either side may read no row, while the
+     * embedded rows keep their declared column nullability.
+     */
+    @Test
+    void shouldEmbedTheRowOfEachFullJoinedSourceAsNullable() {
+        String sql = """
+            SELECT u.*, p.*
+            FROM users u
+            FULL JOIN profiles p ON p.user_id = u.id
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsersAndProfiles", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertNull(model.rowTable());
+
+        assertEquals(
+            List.of(nullableUsersRow("u"), nullableProfilesRow("p")),
+            model.columns()
+        );
+    }
+
+    /**
+     * A {@code RIGHT JOIN} leaves its own joined source complete, so a lone
+     * wildcard of it returns that table's shared row, while a lone wildcard of
+     * the null-extended source it was joined onto returns a result of its own
+     * holding that row as one nullable component.
+     */
+    @Test
+    void shouldResolveRowTableOfALoneRightJoinedWildcard() {
+        String joinedSql = "SELECT p.* FROM users u RIGHT JOIN profiles p ON p.user_id = u.id";
+
+        QueryModel joined = analyzer.analyze(
+            new Query("ListProfiles", QueryType.MANY, joinedSql),
+            parser.parse(joinedSql),
+            joinSchema
+        );
+
+        assertEquals("profiles", joined.rowTable());
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("user_id", ColumnType.BIGINT, false),
+                new QueryColumn("nickname", ColumnType.VARCHAR, true)
+            ),
+            joined.columns()
+        );
+
+        String nullExtendedSql = "SELECT u.* FROM users u RIGHT JOIN profiles p ON p.user_id = u.id";
+
+        QueryModel nullExtended = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, nullExtendedSql),
+            parser.parse(nullExtendedSql),
+            joinSchema
+        );
+
+        assertNull(nullExtended.rowTable());
+
+        assertEquals(List.of(nullableUsersRow("u")), nullExtended.columns());
+    }
+
+    /**
+     * A {@code FULL JOIN} null-extends a derived source as it does a table
+     * source, so the wildcard of its own columns exposes every one of them as
+     * nullable, and the source it was joined onto reads as nullable too.
+     */
+    @Test
+    void shouldExposeEveryColumnOfAFullJoinedDerivedSourceAsNullable() {
+        String sql = """
+            WITH recent AS (SELECT * FROM orders)
+            SELECT recent.*, u.name
+            FROM users u
+            FULL JOIN recent ON recent.user_id = u.id
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListRecentOrders", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertNull(model.rowTable());
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, true),
+                new QueryColumn("user_id", ColumnType.BIGINT, true),
+                new QueryColumn("total", ColumnType.DECIMAL, true),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A comma-separated {@code FROM} list is a join group of its own, so a
+     * {@code RIGHT JOIN} of a later group null-extends that group's own
+     * sources alone and leaves an earlier group's source complete.
+     */
+    @Test
+    void shouldNullExtendOnlyTheGroupOfARightJoinedCommaItem() {
+        String sql = """
+            SELECT u.id, o.id AS order_id, p.id AS profile_id
+            FROM users u, orders o
+            RIGHT JOIN profiles p ON p.user_id = o.user_id
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListProfileOrders", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("order_id", ColumnType.BIGINT, true),
+                new QueryColumn("profile_id", ColumnType.BIGINT, false)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A comma-separated {@code FROM} list reads every group in one level, so
+     * the projection and the {@code WHERE} predicate see each of them and a
+     * placeholder compared with a column of either is typed from that column.
+     */
+    @Test
+    void shouldAnalyzeCommaSeparatedReadSources() {
+        String sql = """
+            SELECT u.id, o.total
+            FROM users u, orders o
+            WHERE o.user_id = u.id
+              AND o.total = :total
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUserOrders", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("total", ColumnType.DECIMAL, true)
+            ),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "total", ColumnType.DECIMAL)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * A {@code CROSS JOIN} joins the group it is written onto rather than
+     * starting one, so a later join condition still reads the source the group
+     * started with, and no source of a cross join is null-extended.
+     */
+    @Test
+    void shouldAnalyzeCrossJoinInsideItsOwnGroup() {
+        String sql = """
+            SELECT u.id, p.id AS profile_id, o.id AS order_id
+            FROM users u
+            CROSS JOIN profiles p
+            JOIN orders o ON o.user_id = u.id
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUserProfileOrders", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("profile_id", ColumnType.BIGINT, false),
+                new QueryColumn("order_id", ColumnType.BIGINT, false)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A comma starts a join group, so a join condition written after one sees
+     * that group alone and a reference to an earlier group is an unknown
+     * qualifier, as PostgreSQL rejects it.
+     */
+    @Test
+    void shouldRejectAReadJoinConditionOutsideItsJoinGroup() {
+        String sql = """
+            SELECT u.id
+            FROM users u, profiles p
+            JOIN orders o ON o.user_id = u.id
+            """;
+
+        Query query = new Query("ListIds", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, joinSchema)
+        );
+
+        assertEquals(
+            "Unknown source qualifier in query: u",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A comma-separated list inside a predicate subquery reads the levels
+     * enclosing it as one correlated source, so a condition of its own group
+     * and its {@code WHERE} may name a column of the outer query.
+     */
+    @Test
+    void shouldAnalyzeACorrelatedCommaSeparatedListInsideExists() {
+        String sql = """
+            SELECT u.id
+            FROM users u
+            WHERE EXISTS (SELECT p.id
+                          FROM profiles p, orders o
+                          JOIN users x ON x.id = o.user_id
+                          WHERE p.user_id = u.id
+                            AND o.total = :total)
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListOrderingUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "total", ColumnType.DECIMAL)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * A join condition of every supported kind types its placeholders from the
+     * columns of its own group, across a comma-separated list, and every
+     * occurrence binds in the textual order of the query.
+     */
+    @Test
+    void shouldTypeJoinConditionPlaceholdersOfEveryJoinKindInTextualBindingOrder() {
+        String sql = """
+            SELECT u.id
+            FROM users u
+                     LEFT JOIN profiles p ON p.user_id = u.id AND p.nickname = $2,
+                 orders o
+                     RIGHT JOIN users x ON x.id = o.user_id AND o.total = $3
+                     FULL JOIN profiles q ON q.user_id = x.id AND q.nickname = $4
+            WHERE u.id = $1
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListIds", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "id", ColumnType.BIGINT),
+                new QueryParameter(2, "nickname", ColumnType.VARCHAR),
+                new QueryParameter(3, "total", ColumnType.DECIMAL),
+                new QueryParameter(4, "nickname", ColumnType.VARCHAR)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(2, 3, 4, 1), model.bindingParameterIndexes());
+    }
+
+    /**
      * A bare wildcard over joined sources embeds one row of each source's
      * table, in source order, named after the name each source exposes.
      */
@@ -3039,6 +3420,33 @@ class QueryAnalyzerTest {
     private QueryColumn profilesRow(String name) {
         return QueryColumn.row(
             name,
+            "profiles",
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("user_id", ColumnType.BIGINT, false),
+                new QueryColumn("nickname", ColumnType.VARCHAR, true)
+            )
+        );
+    }
+
+    /** The same {@code users} row, nullable because its source may be absent. */
+    private QueryColumn nullableUsersRow(String name) {
+        return QueryColumn.row(
+            name,
+            true,
+            "users",
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
+            )
+        );
+    }
+
+    /** The same {@code profiles} row, nullable because its source may be absent. */
+    private QueryColumn nullableProfilesRow(String name) {
+        return QueryColumn.row(
+            name,
+            true,
             "profiles",
             List.of(
                 new QueryColumn("id", ColumnType.BIGINT, false),
@@ -3361,67 +3769,66 @@ class QueryAnalyzerTest {
 
     /**
      * {@link net.sf.jsqlparser.statement.select.Join#isInnerJoin()} also
-     * reports these shapes as inner joins, so the supported-shape gate must
-     * reject them explicitly.
+     * reports a {@code STRAIGHT_JOIN} as an inner join, so the supported-kind
+     * gate rejects it explicitly.
      */
-    @ParameterizedTest
-    @ValueSource(
-        strings = {
-            "FROM users u, profiles p",
-            "FROM users u STRAIGHT_JOIN profiles p ON p.user_id = u.id"
-        }
-    )
-    void shouldRejectExcludedJoinReportedAsInnerJoin(String fromClause) {
+    @Test
+    void shouldRejectExcludedJoinReportedAsInnerJoin() {
         String sql = """
             SELECT u.id
-            %s
-            """.formatted(fromClause);
+            FROM users u STRAIGHT_JOIN profiles p ON p.user_id = u.id
+            """;
 
         Query query = new Query("ListIds", QueryType.MANY, sql);
         ParsedSql parsedSql = parser.parse(sql);
 
-        assertThrows(
+        UnsupportedOperationException exception = assertThrows(
             UnsupportedOperationException.class,
             () -> analyzer.analyze(query, parsedSql, joinSchema)
+        );
+
+        assertEquals(
+            "Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported.",
+            exception.getMessage()
         );
     }
 
     /**
-     * Only a bare or {@code INNER} join and a {@code LEFT} join in its two
-     * spellings are supported, so every other qualifier stays rejected,
-     * including the qualifiers that also report {@code isOuter()} or
-     * {@code isLeft()}. A join kind that can be written as a supported join
-     * names that rewrite, and every other modifier keeps the general
-     * rejection.
+     * Only an inner, left, right, full, and cross join are supported, so every
+     * other qualifier stays rejected, including the qualifiers that also report
+     * {@code isOuter()} or {@code isLeft()} and the bare {@code OUTER JOIN}
+     * that names no side. A join kind whose own rule this subset does not model
+     * names the rewrite to write instead, {@code NATURAL} before the side it is
+     * written beside, and every other modifier keeps the general rejection.
      */
     @ParameterizedTest
     @CsvSource(
         delimiter = '|',
         value = {
-            "RIGHT JOIN profiles p ON p.user_id = u.id"
-                + "|RIGHT JOIN is not supported;"
-                + " write a LEFT JOIN with the two sources swapped.",
-            "RIGHT OUTER JOIN profiles p ON p.user_id = u.id"
-                + "|RIGHT JOIN is not supported;"
-                + " write a LEFT JOIN with the two sources swapped.",
-            "FULL OUTER JOIN profiles p ON p.user_id = u.id"
-                + "|FULL JOIN is not supported.",
-            "FULL JOIN profiles p ON p.user_id = u.id"
-                + "|FULL JOIN is not supported.",
-            "CROSS JOIN profiles p"
-                + "|CROSS JOIN is not supported; write JOIN ... ON TRUE.",
             "NATURAL JOIN profiles p"
                 + "|NATURAL JOIN is not supported; write the join condition with ON.",
             "NATURAL LEFT JOIN profiles p"
+                + "|NATURAL JOIN is not supported; write the join condition with ON.",
+            "NATURAL CROSS JOIN profiles p"
                 + "|NATURAL JOIN is not supported; write the join condition with ON.",
             "JOIN profiles p USING (user_id)"
                 + "|JOIN ... USING is not supported; write the join condition with ON.",
             "LEFT JOIN profiles p USING (user_id)"
                 + "|JOIN ... USING is not supported; write the join condition with ON.",
+            "RIGHT JOIN profiles p USING (user_id)"
+                + "|JOIN ... USING is not supported; write the join condition with ON.",
+            "CROSS JOIN profiles p ON p.user_id = u.id"
+                + "|CROSS JOIN takes no ON condition; write JOIN ... ON.",
             "OUTER JOIN profiles p ON p.user_id = u.id"
-                + "|Only unmodified INNER JOIN and LEFT JOIN clauses are supported.",
+                + "|Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported.",
             "LEFT SEMI JOIN profiles p ON p.user_id = u.id"
-                + "|Only unmodified INNER JOIN and LEFT JOIN clauses are supported."
+                + "|Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported.",
+            "APPLY profiles p"
+                + "|Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported.",
+            "CROSS APPLY profiles p"
+                + "|Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported.",
+            "GLOBAL JOIN profiles p ON p.user_id = u.id"
+                + "|Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported."
         }
     )
     void shouldRejectUnsupportedJoinModifier(String joinClause, String message) {
@@ -3637,15 +4044,21 @@ class QueryAnalyzerTest {
     }
 
     /**
-     * Each join carries exactly one {@code ON} condition. The parser reports
-     * none for a join written without one, and two for the nested
-     * {@code JOIN a JOIN b ON ... ON ...} form.
+     * Each inner, left, right, and full join carries exactly one {@code ON}
+     * condition. The parser reports none for a join written without one, and
+     * two for the nested {@code JOIN a JOIN b ON ... ON ...} form. A
+     * {@code NATURAL INNER JOIN}, which the parser reads as an {@code INNER
+     * JOIN} with no condition, keeps the same rejection, because accepting it
+     * would analyze a cross join PostgreSQL does not run.
      */
     @ParameterizedTest
     @ValueSource(
         strings = {
             "JOIN profiles p",
             "LEFT JOIN profiles p",
+            "RIGHT JOIN profiles p",
+            "FULL JOIN profiles p",
+            "NATURAL INNER JOIN profiles p",
             "JOIN profiles p JOIN orders o ON o.user_id = u.id ON p.user_id = u.id"
         }
     )
@@ -9463,6 +9876,75 @@ class QueryAnalyzerTest {
             ),
             model.columns()
         );
+    }
+
+    /**
+     * A {@code RIGHT JOIN} inside an {@code UPDATE ... FROM} clause
+     * null-extends the earlier sources of its group, so every column returned
+     * from them is nullable, while its own joined source and the target, which
+     * is in no join group, keep their schema nullability.
+     */
+    @Test
+    void shouldResolveNullabilityOfARightJoinedUpdateFromClause() {
+        String sql = """
+            UPDATE users u
+            SET name = :name
+            FROM profiles p
+            RIGHT JOIN orders o ON o.user_id = p.user_id
+            WHERE u.id = o.user_id
+            RETURNING u.id, p.id AS profile_id, o.id AS order_id
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("RenameOrderingUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("profile_id", ColumnType.BIGINT, true),
+                new QueryColumn("order_id", ColumnType.BIGINT, false)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A {@code CROSS JOIN} and a comma-separated item inside an
+     * {@code UPDATE ... FROM} clause add their sources with no condition of
+     * their own, and the update's {@code WHERE} reads each of them.
+     */
+    @Test
+    void shouldResolveCrossAndCommaJoinedUpdateFromSources() {
+        String sql = """
+            UPDATE users u
+            SET name = :name
+            FROM profiles p
+            CROSS JOIN orders o, users x
+            WHERE u.id = p.user_id
+              AND o.user_id = x.id
+              AND o.total = :total
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("RenameOrderingUsers", QueryType.EXEC, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals("users", model.table());
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "total", ColumnType.DECIMAL)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 2), model.bindingParameterIndexes());
     }
 
     /**
