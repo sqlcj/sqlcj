@@ -147,32 +147,59 @@ configuration entry.
   not followed; see
   [Schema Snapshot Input](postgresql.md#schema-snapshot-input).
 - A table or a derived source may be joined with `JOIN` or `INNER JOIN`, with
-  `LEFT`, `RIGHT`, or `FULL JOIN` in its bare or `OUTER` spelling, or with
+  `LEFT`, `RIGHT`, or `FULL JOIN` in its bare or `OUTER` spelling, each of them
+  written with an `ON` condition, a `USING` list, or `NATURAL`, or with
   `CROSS JOIN`, and the kinds may be chained in any order. A `FROM` clause may
   also write its sources as a comma-separated list.
 - The first `FROM` item and each comma-separated item after it start a join
   group, and a `JOIN` of any kind joins the group it is written onto, because
   PostgreSQL binds a `JOIN` more tightly than a comma. `WHERE` and the
   projection read every group of the level as one scope.
-- Every other join is rejected, and a join that can be written as a supported
-  one says what to write:
-  - `NATURAL JOIN is not supported; write the join condition with ON.`
-  - `JOIN ... USING is not supported; write the join condition with ON.`
-
-  A `LATERAL` join source is reported as the same unsupported source as a
-  `FROM` item of that kind, before the join kind, while every other joined
-  source is resolved after it; `NATURAL` is reported before the side it is
-  written beside, so `NATURAL CROSS JOIN` keeps the `NATURAL` rejection; and
-  every remaining modifier — a bare `OUTER`, `SEMI`, `APPLY`, `STRAIGHT`,
-  `GLOBAL`, and a join hint — is rejected as
+- Every other join is rejected: a `LATERAL` join source is reported as the same
+  unsupported source as a `FROM` item of that kind, before the join kind, while
+  every other joined source is resolved after it, and every remaining
+  modifier — a bare `OUTER`, `SEMI`, `APPLY`, `STRAIGHT`, `GLOBAL`, a join
+  hint, and `NATURAL CROSS JOIN`, which the parser reads and PostgreSQL does
+  not have — is rejected as
   `Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported.`
-- An inner, left, right, and full join each require exactly one `ON` condition,
-  which may be any boolean expression, including `ON TRUE`. A `CROSS JOIN` and
-  a comma take no condition at all, and `CROSS JOIN ... ON`, which PostgreSQL
-  does not have although the parser reads it, is rejected as
-  `CROSS JOIN takes no ON condition; write JOIN ... ON.` A `NATURAL INNER JOIN`,
-  which the parser reads as an `INNER JOIN` with no condition, keeps the
-  missing-condition rejection.
+- An inner, left, right, and full join each carry exactly one `ON` condition,
+  which may be any boolean expression, including `ON TRUE`, or a `USING` list
+  or `NATURAL`, which state their join columns instead. A `CROSS JOIN` and a
+  comma take none at all, and a condition PostgreSQL does not give a join,
+  although the parser reads it, is rejected:
+  - `CROSS JOIN takes no ON condition; write JOIN ... ON.`
+  - `CROSS JOIN takes no USING list; write JOIN ... USING.`
+  - `NATURAL JOIN takes no ON condition or USING list.`
+
+  A `NATURAL INNER JOIN`, which the parser reads as an `INNER JOIN` with no
+  condition, keeps the missing-condition rejection
+  `A join requires one ON condition.`, as a join written without one does.
+- A `JOIN ... USING (...)` and a `NATURAL JOIN` of any of those kinds merge
+  their join columns into one column each, as PostgreSQL does. A `USING` list
+  merges the names it writes, in its own order; a `NATURAL JOIN` merges the
+  names common to both sides, in the left side's order, and with none joins its
+  sources as a cross join does.
+- The left side of such a join is its group's output so far: the merged columns
+  of its latest merge, then the columns no earlier join merged away from each of
+  its sources. A merged column is named as the left side declares it, takes the
+  type both sides resolve to by the
+  [set operation rules](#set-operations), and is nullable only when both sides
+  are in an inner and a full join, as the left column in a left join, and as
+  the right column in a right join, read before that join null-extends either
+  side. No join null-extends the columns it merges itself, while a later
+  `RIGHT` or `FULL` join of the same group null-extends them with every other
+  source written before it.
+- An unqualified reference to a merged name reads the merged column — in a
+  later join condition, `WHERE`, the projection, an aggregate, and a write's
+  `RETURNING` alike — and a qualified reference reads its own source's column,
+  with that source's own type and null extension. `source.*` embeds that
+  source's complete row, the merged columns included.
+- A join column outside those rules is rejected:
+  - `USING column <c> does not exist in the left side of the join.`
+  - `USING column <c> does not exist in the right side of the join.`
+  - `Join column <c> appears more than once in the left side of the join.`
+  - `Join column <c> has types <t1> and <t2>; write the join condition with ON
+    and a cast.`, because a merged column takes no cast of its own.
 - A condition's column references, qualified or not, resolve against the
   sources of its own join group up to and including its own joined source, so a
   reference to a source joined later, or to another group of the same level, is
@@ -232,6 +259,19 @@ configuration entry.
   source — expands into that source's own columns in order, because a derived
   source has no row record. A bare `*` therefore holds an embedded row per table
   source and the expanded columns of every derived source, in source order.
+- A bare `*` expands each join group of its level in the order the query writes
+  it. A group that merges no join column keeps that expansion, while a group
+  whose `USING` or `NATURAL` join merges one lists the group's columns flat, as
+  PostgreSQL lists them: the merged columns of its latest merge, then the
+  merged columns it did not merge again, then the columns each of its sources
+  still exposes, in the order the group joins them, each nullable as its null
+  extension states. `qualifier.*` keeps the embedded row of its own source, the
+  merged columns included, so
+  `SELECT * FROM users u JOIN profiles p USING (id)` holds the merged `id`
+  followed by the remaining columns of `users` and of `profiles`, and a derived
+  source whose body writes such a `*` exposes each merged name once, which is
+  how it keeps the distinct-name rule. An insert's `SELECT *` counts the same
+  columns, so its column list names the merged columns once.
 - Selected-column order is the order of the generated result record and of the
   positional row mapper. An embedded row stands in the position its wildcard is
   written at and holds the columns that wildcard selected, so the read order
@@ -1540,10 +1580,12 @@ query name, and its header line.
   rejected whether or not a source reads the clause, because every body is
   analyzed.
 - A join kind outside an inner, left, right, full, and cross join, each with
-  the diagnostic [Sources](#sources) states, which says what to write instead
-  for `NATURAL` and `USING`; a `CROSS JOIN` that carries an `ON` condition; and
-  an inner, left, right, or full join that does not carry exactly one `ON`
-  condition.
+  the diagnostic [Sources](#sources) states; a `CROSS JOIN` that carries an
+  `ON` condition or a `USING` list; a `NATURAL` join that carries either; an
+  inner, left, right, or full join that carries neither exactly one `ON`
+  condition, a `USING` list, nor `NATURAL`; and a join column one side does not
+  expose, the left side exposes twice, or whose two sides state types that
+  resolve to none, each with the diagnostic [Sources](#sources) states.
 - A column reference of a predicate subquery that no level in scope exposes, or
   that two sources of its own level expose, each with the diagnostic
   [Predicates](#predicates) states.
@@ -1959,6 +2001,52 @@ Reads:
   column for an unmatched row, a full join reads an absent embedded row on each
   side, a cross join returns every pair, and a comma-separated list followed by
   a join runs with that join's condition scoped to its own group.
+- `QueryAnalyzerTest.shouldWidenTheTypeOfAMergedJoinColumn`,
+  `QueryAnalyzerTest.shouldRejectMergedJoinColumnOfTypesThatResolveToNoType`,
+  `QueryAnalyzerTest.shouldResolveMergedJoinColumnNullabilityOfEachJoinKind`,
+  `QueryAnalyzerTest.shouldNullExtendMergedColumnsOfALaterOuterJoin`,
+  `QueryAnalyzerTest.shouldResolveUnqualifiedMergedColumnInALaterJoinCondition`,
+  `QueryAnalyzerTest.shouldTypeAPlaceholderFromAMergedColumn`,
+  `QueryAnalyzerTest.shouldResolveAMergedColumnInsideAnAggregate`,
+  `QueryAnalyzerTest.shouldReadQualifiedJoinColumnsThroughTheirOwnSources`,
+  `QueryAnalyzerTest.shouldRejectAmbiguousReferenceBetweenAMergedColumnAndAnotherGroup`,
+  `QueryAnalyzerTest.shouldMergeChainedUsingLists`,
+  `QueryAnalyzerTest.shouldKeepOneMergedColumnWhenALaterJoinMergesItAgain`,
+  `QueryAnalyzerTest.shouldMergeTheCommonColumnsOfANaturalJoin`,
+  `QueryAnalyzerTest.shouldJoinANaturalJoinOfNoCommonColumnAsACrossJoin`,
+  `QueryAnalyzerTest.shouldExpandAMergingGroupFlatBesideANonMergingGroup`,
+  `QueryAnalyzerTest.shouldExpandASourceJoinedAfterAMergingJoinFlat`,
+  `QueryAnalyzerTest.shouldExpandANullExtendedSourceJoinedAfterAMergingJoinFlat`,
+  `QueryAnalyzerTest.shouldEmbedTheRowOfAQualifiedWildcardOfAMergingGroupSource`,
+  `QueryAnalyzerTest.shouldExposeTheMergedColumnsOfADerivedSourceOverAMergingWildcard`,
+  `QueryAnalyzerTest.shouldCountTheMergedColumnsOfAnInsertSelectWildcard`,
+  `QueryAnalyzerTest.shouldRejectAnInsertSelectWildcardCountOverAMergingGroup`,
+  `QueryAnalyzerTest.shouldReadAMergedColumnOfAnUpdateFromClause`,
+  `QueryAnalyzerTest.shouldRejectAUsingColumnMissingFromOneSide`, and
+  `QueryAnalyzerTest.shouldRejectAJoinColumnRepeatedInTheLeftSide` cover the
+  `USING` and `NATURAL` joins: the merged column's widened type and the pair
+  that resolves to none, its nullability under each join kind and under a later
+  `RIGHT` or `FULL` join, its unqualified reads in a later condition, a
+  `WHERE` placeholder, a projection, and an aggregate, the qualified reads of
+  each source's own column, the ambiguity against another group, a chained
+  `USING` list and one that merges a merged column again, a `NATURAL` join with
+  and without common columns, the flat bare `*` beside a non-merging group and
+  over a source an `ON` join adds to the group after its latest merge, whether
+  that join null-extends it or not, a
+  `source.*` embedding, a derived source over a merging `*`, the shared
+  `INSERT ... SELECT *` count, `UPDATE ... FROM ... USING`, and each rejected
+  join column, while
+  `QueryAnalyzerTest.shouldRejectUnsupportedJoinModifier` covers
+  `NATURAL CROSS JOIN`, `CROSS JOIN ... USING`, and a `NATURAL` join with an
+  `ON` condition or a `USING` list;
+  `SqlcjCompilerIntegrationTest.shouldGenerateCompilableJavaForUsingAndNaturalJoins`
+  compiles a repository over a `USING` join, a `NATURAL` join, and a flat
+  bare `*`, and
+  `PostgresIntegrationTest.shouldExecuteGeneratedMergedJoinColumnsAgainstPostgres`
+  executes them against PostgreSQL 16, where a bare `*` over a `USING` join
+  reads the merged column first and in its wider type and a
+  `FULL JOIN ... USING` reads the present side's value for an unmatched row on
+  each side.
 - `QueryAnalyzerTest.shouldAnalyzeJoinConditionOfAnyBooleanExpression`,
   `QueryAnalyzerTest.shouldReadFilteredLeftJoinedColumnsAsNullable`,
   `QueryAnalyzerTest.shouldResolveJoinConditionParameterInTextualBindingOrder`,
@@ -2327,9 +2415,9 @@ Unsupported queries and internal errors:
   covers the whole located diagnostic line, and the absence of generated
   output, of each rejected input: the `VALUES`, `TABLE`, `MERGE`, `TRUNCATE`,
   `EXPLAIN`, `EXECUTE`, `CREATE TABLE`, and `SET` statements, a window and a
-  concatenation projection, a computed `RETURNING` item, the `USING`,
-  `NATURAL`, and `LATERAL` joins, a `CROSS JOIN` with an `ON` condition, a bare
-  `OUTER JOIN`, a column list on a
+  concatenation projection, a computed `RETURNING` item, the `LATERAL` join, a
+  `CROSS JOIN` with an `ON` condition and one with a `USING` list, a `NATURAL`
+  join with an `ON` condition, a bare `OUTER JOIN`, a column list on a
   subquery alias, a subquery source without an alias, a recursive `WITH` clause
   read in its own first term, a data-modifying `WITH` body, a set operation as
   an insert's row source, an insert whose `SELECT` writes fewer values than its
@@ -2521,17 +2609,19 @@ Reference service:
   whose `TasksRow t` is `null` for a project without tasks, against
   PostgreSQL 16 through the generated repository.
 - `ReferenceServiceIntegrationTest.shouldExecuteTheGeneratedJoinKindQueries`
-  executes the four join entries the reference service's query catalogue
+  executes the six join entries the reference service's query catalogue
   gained — its `RIGHT JOIN` and `FULL JOIN` of projects and tasks, each of
   which reads a `null` title for a project without tasks, its `CROSS JOIN` of
-  organizations and projects, which returns every pair, and its
-  comma-separated list of tasks and projects, which returns the joined rows
-  alone — against PostgreSQL 16 through the generated repository.
+  organizations and projects, which returns every pair, its comma-separated
+  list of tasks and projects, which returns the joined rows alone, its
+  `JOIN memberships USING (organization_id)`, which reads the merged
+  organization id of its own member, and its `NATURAL JOIN` of tasks and a
+  projects subquery, which merges the project id — against PostgreSQL 16
+  through the generated repository.
 - `ReferenceServiceIntegrationTest.shouldRejectEachUnsupportedCatalogueQuery`
   covers the whole located diagnostic line, and the absence of generated
   output, of every entry of the reference service's unsupported query
-  catalogue: the `USING`, `NATURAL`, and `LATERAL` joins, a data-modifying
-  CTE, an uncast `lower(:email)`, and a placeholder beside a subscripted
-  column, and
+  catalogue: the `LATERAL` join, a data-modifying CTE, an uncast
+  `lower(:email)`, and a placeholder beside a subscripted column, and
   `ReferenceServiceIntegrationTest.shouldCatalogueExactlyTheUnsupportedQueryFiles`
   covers that the catalogue directory holds exactly those queries.

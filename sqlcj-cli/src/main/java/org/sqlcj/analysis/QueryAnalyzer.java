@@ -217,6 +217,54 @@ public final class QueryAnalyzer {
     private static final String JOINED_DELETE_REJECTION = """
         A joined DELETE is not supported; write the other sources in DELETE ... USING.""";
 
+    /**
+     * The rejection of a {@code CROSS JOIN} that carries a {@code USING} list,
+     * which PostgreSQL does not have although the parser reads it, naming the
+     * join that merges join columns.
+     */
+    private static final String CROSS_JOIN_USING_REJECTION = """
+        CROSS JOIN takes no USING list; write JOIN ... USING.""";
+
+    /**
+     * The rejection of a {@code NATURAL} join that carries an {@code ON}
+     * condition or a {@code USING} list, which PostgreSQL does not have
+     * although the parser reads it, because {@code NATURAL} states the join
+     * columns itself.
+     */
+    private static final String NATURAL_JOIN_CONDITION_REJECTION = """
+        NATURAL JOIN takes no ON condition or USING list.""";
+
+    /**
+     * The rejection of a {@code USING} column the left side of its join does
+     * not expose, which is the group's output before that join.
+     */
+    private static final String USING_LEFT_COLUMN_REJECTION = """
+        USING column %s does not exist in the left side of the join.""";
+
+    /**
+     * The rejection of a {@code USING} column the joined source does not
+     * expose.
+     */
+    private static final String USING_RIGHT_COLUMN_REJECTION = """
+        USING column %s does not exist in the right side of the join.""";
+
+    /**
+     * The rejection of a join column the left side of its join exposes more
+     * than once, which names no single column to merge, as PostgreSQL also
+     * rejects it.
+     */
+    private static final String REPEATED_JOIN_COLUMN_REJECTION = """
+        Join column %s appears more than once in the left side of the join.""";
+
+    /**
+     * The rejection of one join column whose sides state types this subset
+     * resolves to no single type, which names the column and both types as
+     * PostgreSQL spells them. A merged column takes no cast, so the named fix
+     * is the condition written with {@code ON}.
+     */
+    private static final String JOIN_COLUMN_TYPE_REJECTION = """
+        Join column %s has types %s and %s; write the join condition with ON and a cast.""";
+
     /** The rejection of a source of a write's {@code FROM} or {@code USING}. */
     private static final String WRITE_SOURCE_REJECTION = "Only table sources are supported.";
 
@@ -449,13 +497,22 @@ public final class QueryAnalyzer {
      * diagnostic a source naming it is rejected with, and no table at all, so
      * that the name shadows the schema table of that name exactly as a
      * readable clause does.
+     *
+     * <p>A join group whose joins merge columns carries one merged source of
+     * its own beside its members: it holds the group's merged columns, names
+     * the members it merges, in {@code groupSources}, and exposes no name a
+     * qualifier can reach. Each member records the names a join merged away
+     * from it, in {@code mergedAway}, which an unqualified reference and a
+     * bare {@code *} read from the merged source instead.
      */
     private record Source(
         String name,
         org.sqlcj.schema.Table table,
         boolean derived,
         boolean nullable,
-        String unreadable
+        String unreadable,
+        List<String> groupSources,
+        List<String> mergedAway
     ) {
 
         /** One readable source, which every analyzed query resolves against. */
@@ -468,6 +525,17 @@ public final class QueryAnalyzer {
             this(name, table, derived, nullable, null);
         }
 
+        /** One source under the diagnostic or the absence of one it carries. */
+        private Source(
+            String name,
+            org.sqlcj.schema.Table table,
+            boolean derived,
+            boolean nullable,
+            String unreadable
+        ) {
+            this(name, table, derived, nullable, unreadable, List.of(), List.of());
+        }
+
         /**
          * One name in scope that no source may read, under the diagnostic that
          * states why.
@@ -477,13 +545,91 @@ public final class QueryAnalyzer {
         }
 
         /**
+         * The merged source of one join group, which holds the columns its
+         * joins merged and is named by the members it merges, joined with
+         * {@code JOIN}, because the merged column belongs to no one of them.
+         * Its own columns carry the nullability its joins resolved, so no join
+         * that merged them null-extends it.
+         */
+        private static Source merged(
+            List<org.sqlcj.schema.Column> columns,
+            List<String> groupSources
+        ) {
+            String name = String.join(" JOIN ", groupSources);
+
+            return new Source(
+                name,
+                new org.sqlcj.schema.Table(name, columns, List.of()),
+                true,
+                false,
+                null,
+                List.copyOf(groupSources),
+                List.of()
+            );
+        }
+
+        /**
          * The same source read as a row that may be absent, which an outer
          * join whose other side finds no match contributes. A source already
          * read that way stays so, because a later join cannot restore a row an
          * earlier one null-extended.
          */
         private Source nullExtended() {
-            return new Source(name, table, derived, true, unreadable);
+            return new Source(name, table, derived, true, unreadable, groupSources, mergedAway);
+        }
+
+        /**
+         * The same merged source, named by one more member of its join group,
+         * which a join that merges no column adds to the group this source
+         * holds. Its merged columns stay as the joins that merged them
+         * resolved them, and so does the null extension a later join read it
+         * under.
+         */
+        private Source grouping(String groupSource) {
+            List<String> names = new ArrayList<>(groupSources);
+
+            names.add(groupSource);
+
+            Source grouped = merged(table.columns(), names);
+
+            return nullable
+                ? grouped.nullExtended()
+                : grouped;
+        }
+
+        /**
+         * The same source with the names one more join merged away from it,
+         * which it exposes to no unqualified reference and to no bare
+         * {@code *}.
+         */
+        private Source merging(List<String> names) {
+            List<String> merged = new ArrayList<>(mergedAway);
+
+            merged.addAll(names);
+
+            return new Source(
+                name,
+                table,
+                derived,
+                nullable,
+                unreadable,
+                groupSources,
+                List.copyOf(merged)
+            );
+        }
+
+        /** Reports whether this source is the merged source of a join group. */
+        private boolean merged() {
+            return !groupSources.isEmpty();
+        }
+
+        /**
+         * Reports whether a join merged one of this source's columns away, so
+         * that the merged source of its group exposes that name instead.
+         */
+        private boolean mergesAway(String columnName) {
+            return mergedAway.stream()
+                .anyMatch(merged -> merged.equalsIgnoreCase(columnName));
         }
 
         /**
@@ -524,13 +670,17 @@ public final class QueryAnalyzer {
 
         /**
          * The sources every level makes visible, from the innermost level
-         * outward, which are the sources a column reference may resolve in.
+         * outward, which are the sources a column reference may name. A join
+         * group's merged source exposes no name of its own, so it is none of
+         * them.
          */
         private List<Source> visibleSources() {
             List<Source> visible = new ArrayList<>();
 
             for (Scope level = this; level != null; level = level.enclosing()) {
-                visible.addAll(level.sources());
+                level.sources().stream()
+                    .filter(source -> !source.merged())
+                    .forEach(visible::add);
             }
 
             return visible;
@@ -578,6 +728,47 @@ public final class QueryAnalyzer {
 
     /** One column reference resolved against the ordered query sources. */
     private record ResolvedColumn(Source source, org.sqlcj.schema.Column column) {
+    }
+
+    /**
+     * One column one join merges: the merged column itself, named as the left
+     * side of the join declares it, and the exposed name of the member that
+     * side reads it through, which is {@code null} for a column the group's
+     * merged source already holds.
+     */
+    private record JoinColumn(org.sqlcj.schema.Column column, String leftSource) {
+
+        /** The name the merged column exposes. */
+        private String name() {
+            return column.name();
+        }
+    }
+
+    /**
+     * One source a bare {@code *} expands, with the columns it reads from it:
+     * the merged columns of a join group, the columns one member of such a
+     * group still exposes, or every column of a source in a group that merges
+     * none.
+     *
+     * <p>A merging group's columns are flat result columns, as PostgreSQL
+     * lists them, while a source of a group that merges none keeps the
+     * embedded row of its own table.
+     */
+    private record WildcardSource(
+        Source source,
+        List<org.sqlcj.schema.Column> columns,
+        boolean flat
+    ) {
+
+        /** One source of a group that merges no column at all. */
+        private static WildcardSource of(Source source) {
+            return new WildcardSource(source, source.table().columns(), false);
+        }
+
+        /** One source of a merging group, whose columns are listed flat. */
+        private static WildcardSource flat(Source source, List<org.sqlcj.schema.Column> columns) {
+            return new WildcardSource(source, columns, true);
+        }
     }
 
     /**
@@ -1238,25 +1429,54 @@ public final class QueryAnalyzer {
 
     /**
      * Resolves the type of one result column over one more branch, which is the
-     * type PostgreSQL 16 resolves the two to wherever this subset states it
-     * exactly:
+     * type the common type rules resolve the two to.
+     *
+     * <p>A pair those rules resolve to no single type is rejected naming the
+     * cast that states one type for every branch, because an inferred type that
+     * is not PostgreSQL's own would model the result wrongly. The diagnostic
+     * names the first branch's type and the conflicting branch's, which are the
+     * types the query writes.
+     */
+    private org.sqlcj.schema.Column resolveSetOperationColumnType(
+        org.sqlcj.schema.Column first,
+        org.sqlcj.schema.Column resolved,
+        org.sqlcj.schema.Column column
+    ) {
+        org.sqlcj.schema.Column common = resolveCommonColumnType(resolved, column);
+
+        if (common != null) {
+            return common;
+        }
+
+        throw new UnsupportedOperationException(
+            SET_OPERATION_COLUMN_TYPE_REJECTION.formatted(
+                first.name(),
+                sqlType(first),
+                sqlType(column),
+                first.name(),
+                sqlType(first)
+            )
+        );
+    }
+
+    /**
+     * The type two columns of one result resolve to, which is the type
+     * PostgreSQL 16 resolves the two to wherever this subset states it exactly:
      *
      * <ul>
      *   <li>one identical type, its enum type, its array spelling, and its
      *       blank-padded spelling included, resolves to itself;</li>
      *   <li>two scalar numeric types resolve to the wider;</li>
      *   <li>two scalar date and time types resolve to the wider;</li>
-     *   <li>two scalar character types resolve to the first branch's, because
+     *   <li>two scalar character types resolve to the first column's, because
      *       each converts implicitly to the other.</li>
      * </ul>
      *
-     * <p>Every other pair is rejected naming the cast that states one type for
-     * every branch, because an inferred type that is not PostgreSQL's own would
-     * model the result wrongly. The diagnostic names the first branch's type and
-     * the conflicting branch's, which are the types the query writes.
+     * <p>Every other pair resolves to {@code null}, which each caller — a set
+     * operation's column, a recursive {@code WITH} clause's column, and a
+     * join's merged column — rejects with the fix its own clause takes.
      */
-    private org.sqlcj.schema.Column resolveSetOperationColumnType(
-        org.sqlcj.schema.Column first,
+    private org.sqlcj.schema.Column resolveCommonColumnType(
         org.sqlcj.schema.Column resolved,
         org.sqlcj.schema.Column column
     ) {
@@ -1285,15 +1505,7 @@ public final class QueryAnalyzer {
             }
         }
 
-        throw new UnsupportedOperationException(
-            SET_OPERATION_COLUMN_TYPE_REJECTION.formatted(
-                first.name(),
-                sqlType(first),
-                sqlType(column),
-                first.name(),
-                sqlType(first)
-            )
-        );
+        return null;
     }
 
     /**
@@ -2698,9 +2910,11 @@ public final class QueryAnalyzer {
      * The items an insert's {@code SELECT} writes by position, where each
      * column a wildcard expands to is one item of its own, reported as
      * {@code null} because it states a column of a source rather than a
-     * written value. A wildcard expands over the columns of each source in
-     * declared order, and {@code qualifier.*} over the columns of that one
-     * source, neither of which needs a mapped type, because nothing binds them.
+     * written value. A bare {@code *} expands the columns of the level's join
+     * groups, a group that merges columns listing its merged columns in place
+     * of the columns they merge, and {@code qualifier.*} the columns of that
+     * one source, neither of which needs a mapped type, because nothing binds
+     * them.
      */
     private List<Expression> resolveInsertSelectItems(
         PlainSelect plainSelect,
@@ -2721,8 +2935,8 @@ public final class QueryAnalyzer {
             }
 
             if (expression instanceof AllColumns) {
-                for (Source source : sources) {
-                    addWildcardItems(items, source);
+                for (WildcardSource wildcardSource : bareWildcardSources(sources)) {
+                    addWildcardItems(items, wildcardSource.columns().size());
                 }
 
                 continue;
@@ -2736,7 +2950,12 @@ public final class QueryAnalyzer {
 
     /** One wildcard item per column of the source the wildcard expands over. */
     private void addWildcardItems(List<Expression> items, Source source) {
-        for (int index = 0; index < source.table().columns().size(); index++) {
+        addWildcardItems(items, source.table().columns().size());
+    }
+
+    /** One wildcard item per column one wildcard expands to. */
+    private void addWildcardItems(List<Expression> items, int columns) {
+        for (int index = 0; index < columns; index++) {
             items.add(null);
         }
     }
@@ -3455,6 +3674,13 @@ public final class QueryAnalyzer {
      * null-extended source, in the group its later conditions resolve against
      * and in the level's sources alike. The joined source's own nullability is
      * decided where it is resolved.
+     *
+     * <p>A {@code USING} list and a {@code NATURAL} join merge their join
+     * columns into the group's own merged source and carry no condition of
+     * their own. Their columns are resolved from the nullability both sides
+     * expose before this join null-extends either of them, and the merged
+     * source is installed after that null extension, because no join
+     * null-extends the columns it merges itself.
      */
     private void resolveJoinGroups(
         List<Source> sources,
@@ -3513,9 +3739,13 @@ public final class QueryAnalyzer {
             addSource(sources, joined);
             group.add(joined);
 
+            List<JoinColumn> joinColumns = resolveJoinColumns(join, group, joined);
+
             nullExtendEarlierGroupSources(join, sources, group);
 
-            if (join.isCross()) {
+            mergeJoinColumns(joinColumns, sources, group, joined);
+
+            if (join.isCross() || mergesJoinColumns(join)) {
                 continue;
             }
 
@@ -3561,8 +3791,388 @@ public final class QueryAnalyzer {
         }
     }
 
+    /**
+     * Reports whether one join merges its join columns, which a
+     * {@code USING} list and a {@code NATURAL} join do and every other join
+     * does not, so neither of them carries an {@code ON} condition. A
+     * {@code NATURAL} join of no common column merges none and joins its
+     * sources as a cross join does.
+     */
+    private boolean mergesJoinColumns(Join join) {
+        return join.isNatural() || !join.getUsingColumns().isEmpty();
+    }
+
+    /**
+     * Resolves the columns one join merges, in the order PostgreSQL exposes
+     * them: a {@code USING} list names them in its own order, and a
+     * {@code NATURAL} join takes the names its two sides share, in the left
+     * side's order. Every join that merges none reports an empty list.
+     *
+     * <p>The left side of the join is the group's output before it: the merged
+     * columns of its latest merge first, then the columns no earlier join
+     * merged away from each member, in group order. A name that side exposes
+     * more than once names no single column to merge and is rejected, as
+     * PostgreSQL rejects it, and a {@code USING} name either side does not
+     * expose is rejected naming the side that lacks it.
+     */
+    private List<JoinColumn> resolveJoinColumns(Join join, List<Source> group, Source joined) {
+        if (!mergesJoinColumns(join)) {
+            return List.of();
+        }
+
+        List<ResolvedColumn> leftSide = leftJoinSide(group);
+        List<JoinColumn> joinColumns = new ArrayList<>();
+
+        for (String name : joinColumnNames(join, leftSide, joined)) {
+            joinColumns.add(resolveJoinColumn(join, name, leftSide, joined));
+        }
+
+        return List.copyOf(joinColumns);
+    }
+
+    /**
+     * The columns the left side of the group's latest join exposes, each with
+     * the source it is read through, which decides its effective nullability:
+     * the group's merged columns first, then the columns each member still
+     * exposes, in group order. The joined source itself, which the group
+     * already holds as its last source, is the right side and none of them.
+     */
+    private List<ResolvedColumn> leftJoinSide(List<Source> group) {
+        List<Source> leftSources = group.subList(0, group.size() - 1);
+
+        List<ResolvedColumn> leftSide = new ArrayList<>();
+
+        mergedGroupSource(leftSources)
+            .ifPresent(
+                merged -> merged.table().columns()
+                    .forEach(column -> leftSide.add(new ResolvedColumn(merged, column)))
+            );
+
+        for (Source source : leftSources) {
+            if (source.merged()) {
+                continue;
+            }
+
+            exposedColumns(source)
+                .forEach(column -> leftSide.add(new ResolvedColumn(source, column)));
+        }
+
+        return List.copyOf(leftSide);
+    }
+
+    /** The merged source of one join group, which merges no column without. */
+    private Optional<Source> mergedGroupSource(List<Source> group) {
+        return group.stream()
+            .filter(Source::merged)
+            .findFirst();
+    }
+
+    /**
+     * The columns one source exposes under its own name, which are the columns
+     * of its table that no join of its group merged away.
+     */
+    private List<org.sqlcj.schema.Column> exposedColumns(Source source) {
+        return source.table().columns().stream()
+            .filter(column -> !source.mergesAway(column.name()))
+            .toList();
+    }
+
+    /**
+     * The names one join merges, which a {@code USING} list writes itself and
+     * a {@code NATURAL} join takes from the names its left side and its joined
+     * source share, in the left side's order and once each.
+     */
+    private List<String> joinColumnNames(
+        Join join,
+        List<ResolvedColumn> leftSide,
+        Source joined
+    ) {
+        if (!join.getUsingColumns().isEmpty()) {
+            return join.getUsingColumns().stream()
+                .map(net.sf.jsqlparser.schema.Column::getUnquotedColumnName)
+                .toList();
+        }
+
+        List<String> names = new ArrayList<>();
+
+        for (ResolvedColumn left : leftSide) {
+            String name = left.column().name();
+
+            boolean common = lookupColumn(joined.table(), name).isPresent()
+                && names.stream().noneMatch(listed -> listed.equalsIgnoreCase(name));
+
+            if (common) {
+                names.add(name);
+            }
+        }
+
+        return List.copyOf(names);
+    }
+
+    /**
+     * Resolves one join column into the merged column it exposes and the
+     * member it is merged away from, which is none for a column the group's
+     * merged source already holds.
+     */
+    private JoinColumn resolveJoinColumn(
+        Join join,
+        String name,
+        List<ResolvedColumn> leftSide,
+        Source joined
+    ) {
+        List<ResolvedColumn> matches = leftSide.stream()
+            .filter(left -> left.column().name().equalsIgnoreCase(name))
+            .toList();
+
+        if (matches.size() > 1) {
+            throw new UnsupportedOperationException(
+                REPEATED_JOIN_COLUMN_REJECTION.formatted(name)
+            );
+        }
+
+        if (matches.isEmpty()) {
+            throw new UnsupportedOperationException(
+                USING_LEFT_COLUMN_REJECTION.formatted(name)
+            );
+        }
+
+        ResolvedColumn left = matches.get(0);
+
+        org.sqlcj.schema.Column right = lookupColumn(joined.table(), name)
+            .orElseThrow(
+                () -> new UnsupportedOperationException(
+                    USING_RIGHT_COLUMN_REJECTION.formatted(name)
+                )
+            );
+
+        return new JoinColumn(
+            mergedColumn(join, left, right),
+            left.source().merged()
+                ? null
+                : left.source().name()
+        );
+    }
+
+    /**
+     * The merged column of one join column, which is named as the left side
+     * declares it, typed as the set operation rules resolve both sides, and
+     * nullable by the join kind.
+     *
+     * <p>A pair those rules resolve to no single type is rejected, because a
+     * merged column takes no cast, so the condition belongs in an {@code ON}
+     * clause instead. A column whose type the schema left unmapped is reported
+     * as that unsupported type, which the diagnostic would otherwise have to
+     * spell.
+     */
+    private org.sqlcj.schema.Column mergedColumn(
+        Join join,
+        ResolvedColumn left,
+        org.sqlcj.schema.Column right
+    ) {
+        org.sqlcj.schema.Column leftColumn = left.column();
+        org.sqlcj.schema.Column resolved = resolveCommonColumnType(leftColumn, right);
+
+        if (resolved == null) {
+            requireSupportedType(leftColumn);
+            requireSupportedType(right);
+
+            throw new UnsupportedOperationException(
+                JOIN_COLUMN_TYPE_REJECTION.formatted(
+                    leftColumn.name(),
+                    sqlType(leftColumn),
+                    sqlType(right)
+                )
+            );
+        }
+
+        return new org.sqlcj.schema.Column(
+            leftColumn.name(),
+            resolved.type(),
+            mergedNullability(
+                join,
+                leftColumn.nullable() || left.source().nullable(),
+                right.nullable()
+            ),
+            null,
+            resolved.enumType(),
+            resolved.array(),
+            resolved.blankPadded()
+        );
+    }
+
+    /**
+     * The nullability of one merged column, from the nullability both sides
+     * expose before this join null-extends either of them: an inner join reads
+     * the pair's equal values and a full join coalesces them, so their merged
+     * column is nullable only when both sides are, while a left join reads the
+     * left column and a right join the right column, which is the value
+     * PostgreSQL exposes.
+     */
+    private boolean mergedNullability(Join join, boolean leftNullable, boolean rightNullable) {
+        if (join.isLeft()) {
+            return leftNullable;
+        }
+
+        if (join.isRight()) {
+            return rightNullable;
+        }
+
+        return leftNullable && rightNullable;
+    }
+
+    /**
+     * Merges the columns one join merges into its group: the group's merged
+     * source becomes the columns this join merges followed by the columns its
+     * latest merge exposed and this join does not merge again, and every
+     * source a name is merged away from records that name.
+     *
+     * <p>An unqualified reference and a bare {@code *} therefore read the
+     * merged column alone, while a qualified reference, a {@code source.*},
+     * and a later condition still read each source's own column. The merged
+     * source stands right after its group's first source, where a bare
+     * {@code *} expands the group's columns, and is replaced in place by every
+     * later merge, so it is never the first source of its level.
+     *
+     * <p>A join that merges no column joins one more member into its group
+     * all the same, so the group's merged source records that member too,
+     * which keeps a bare {@code *} listing the group's columns flat.
+     */
+    private void mergeJoinColumns(
+        List<JoinColumn> joinColumns,
+        List<Source> sources,
+        List<Source> group,
+        Source joined
+    ) {
+        if (joinColumns.isEmpty()) {
+            recordGroupMember(sources, group, joined);
+
+            return;
+        }
+
+        List<org.sqlcj.schema.Column> columns = new ArrayList<>(
+            joinColumns.stream()
+                .map(JoinColumn::column)
+                .toList()
+        );
+
+        Optional<Source> previous = mergedGroupSource(group);
+
+        previous.ifPresent(merged -> columns.addAll(carriedMergedColumns(merged, joinColumns)));
+
+        Source merged = Source.merged(List.copyOf(columns), groupSourceNames(group));
+
+        if (previous.isPresent()) {
+            replaceGroupSource(sources, group, previous.get(), merged);
+        } else {
+            sources.add(sources.indexOf(group.get(0)) + 1, merged);
+            group.add(1, merged);
+        }
+
+        mergeAwayJoinColumns(joinColumns, sources, group, joined);
+    }
+
+    /**
+     * Records one more member in the merged source of the group a join that
+     * merges no column — an {@code ON} join, a cross join, and a
+     * {@code NATURAL} join of no common column — adds a source to, so that a
+     * bare {@code *} lists that member's columns flat after the group's
+     * merged columns instead of embedding its row. A group that merges no
+     * column at all holds no merged source and keeps its members as they are
+     * written.
+     */
+    private void recordGroupMember(List<Source> sources, List<Source> group, Source joined) {
+        mergedGroupSource(group)
+            .ifPresent(
+                merged -> replaceGroupSource(
+                    sources,
+                    group,
+                    merged,
+                    merged.grouping(joined.name())
+                )
+            );
+    }
+
+    /**
+     * The merged columns of one group's latest merge that one more join does
+     * not merge again, which stay in its merged source after the columns the
+     * later join merges. A {@code RIGHT} or {@code FULL} join null-extends the
+     * merged source it carries them over from, so each of them carries that
+     * nullability too.
+     */
+    private List<org.sqlcj.schema.Column> carriedMergedColumns(
+        Source merged,
+        List<JoinColumn> joinColumns
+    ) {
+        List<org.sqlcj.schema.Column> carried = merged.table().columns().stream()
+            .filter(
+                column -> joinColumns.stream()
+                    .noneMatch(joinColumn -> joinColumn.name().equalsIgnoreCase(column.name()))
+            )
+            .toList();
+
+        return resolveColumns(carried, merged.nullable());
+    }
+
+    /** The exposed names of one group's sources, in the order it joins them. */
+    private List<String> groupSourceNames(List<Source> group) {
+        return group.stream()
+            .filter(source -> !source.merged())
+            .map(Source::name)
+            .toList();
+    }
+
+    /**
+     * Records the names one join merged away from each source it merged them
+     * from: the member the left column was read through, which is none for a
+     * column the group's merged source already held, and the joined source.
+     */
+    private void mergeAwayJoinColumns(
+        List<JoinColumn> joinColumns,
+        List<Source> sources,
+        List<Source> group,
+        Source joined
+    ) {
+        Map<String, List<String>> mergedAway = new LinkedHashMap<>();
+
+        for (JoinColumn joinColumn : joinColumns) {
+            if (joinColumn.leftSource() != null) {
+                mergedAway
+                    .computeIfAbsent(joinColumn.leftSource(), name -> new ArrayList<>())
+                    .add(joinColumn.name());
+            }
+
+            mergedAway
+                .computeIfAbsent(joined.name(), name -> new ArrayList<>())
+                .add(joinColumn.name());
+        }
+
+        mergedAway.forEach(
+            (name, names) -> {
+                Source source = findSource(group, name);
+
+                replaceGroupSource(sources, group, source, source.merging(names));
+            }
+        );
+    }
+
+    /**
+     * Replaces one source of a join group, in the group its later conditions
+     * resolve against and in the level's sources alike, as null extension
+     * replaces the sources it reads as rows that may be absent.
+     */
+    private void replaceGroupSource(
+        List<Source> sources,
+        List<Source> group,
+        Source source,
+        Source replacement
+    ) {
+        sources.set(sources.indexOf(source), replacement);
+        group.set(group.indexOf(source), replacement);
+    }
+
     private void addSource(List<Source> sources, Source source) {
         boolean duplicate = sources.stream()
+            .filter(existing -> !existing.merged())
             .anyMatch(existing -> existing.name().equalsIgnoreCase(source.name()));
 
         if (duplicate) {
@@ -3609,16 +4219,16 @@ public final class QueryAnalyzer {
     /**
      * Accepts a bare {@code JOIN} or explicit {@code INNER JOIN}, a
      * {@code LEFT}, {@code RIGHT}, or {@code FULL} join in its bare or
-     * {@code OUTER} spelling, and a {@code CROSS JOIN}, of one table or derived
+     * {@code OUTER} spelling, each of them {@code NATURAL} or with a
+     * {@code USING} list, and a {@code CROSS JOIN}, of one table or derived
      * source. {@link Join#isInnerJoin()} and {@link Join#isLeft()} also report
      * shapes that this subset excludes, so every excluded modifier is rejected
      * explicitly.
      *
      * <p>A {@code LATERAL} joined source is classified first, because a source
      * this subset does not model cannot be written as a supported join at all,
-     * and the join kinds that join their sources by a rule this subset does not
-     * model are then reported with the rewrite to write instead. Every
-     * remaining modifier keeps the general rejection.
+     * and the join kind is classified after it. Every modifier outside the
+     * subset keeps the general rejection.
      *
      * <p>A {@code LEFT} or {@code FULL} join reads its own joined source as a
      * row that may be absent, so that source is resolved as null-extended.
@@ -3642,25 +4252,12 @@ public final class QueryAnalyzer {
     }
 
     /**
-     * Rejects each join kind that joins its sources by a rule this subset does
-     * not model, naming the join to write instead where one exists, and then
-     * every remaining modifier. {@code NATURAL} is classified before the side
-     * it is written beside, so {@code NATURAL CROSS JOIN} keeps the
-     * {@code NATURAL} rejection.
+     * Rejects every join kind outside the supported subset, and then each
+     * combination of a supported kind with a condition PostgreSQL does not
+     * give it although the parser reads it. A {@code NATURAL CROSS JOIN},
+     * which is no supported kind at all, keeps the general rejection.
      */
     private void requireSupportedJoinKind(Join join) {
-        if (join.isNatural()) {
-            throw new UnsupportedOperationException(
-                "NATURAL JOIN is not supported; write the join condition with ON."
-            );
-        }
-
-        if (!join.getUsingColumns().isEmpty()) {
-            throw new UnsupportedOperationException(
-                "JOIN ... USING is not supported; write the join condition with ON."
-            );
-        }
-
         if (
             !isSupportedInnerJoin(join)
                 && !isSupportedOuterJoin(join)
@@ -3671,7 +4268,20 @@ public final class QueryAnalyzer {
             );
         }
 
+        requireNoCrossJoinUsingList(join);
         requireNoCrossJoinCondition(join);
+        requireNoNaturalJoinCondition(join);
+    }
+
+    /**
+     * Rejects a {@code USING} list on a {@code CROSS JOIN}, which PostgreSQL
+     * does not have at all although the parser reads it, naming the join that
+     * merges join columns.
+     */
+    private void requireNoCrossJoinUsingList(Join join) {
+        if (join.isCross() && !join.getUsingColumns().isEmpty()) {
+            throw new UnsupportedOperationException(CROSS_JOIN_USING_REJECTION);
+        }
     }
 
     /**
@@ -3687,8 +4297,28 @@ public final class QueryAnalyzer {
         }
     }
 
+    /**
+     * Rejects an {@code ON} condition and a {@code USING} list on a
+     * {@code NATURAL} join, which PostgreSQL does not have although the parser
+     * reads both, because {@code NATURAL} states the join columns itself.
+     */
+    private void requireNoNaturalJoinCondition(Join join) {
+        if (
+            join.isNatural()
+                && (!join.getOnExpressions().isEmpty() || !join.getUsingColumns().isEmpty())
+        ) {
+            throw new UnsupportedOperationException(NATURAL_JOIN_CONDITION_REJECTION);
+        }
+    }
+
+    /**
+     * Reports a bare {@code JOIN}, an explicit {@code INNER JOIN}, and a bare
+     * {@code NATURAL JOIN}, which PostgreSQL joins as an inner join and the
+     * parser reports as a {@code NATURAL} join of no named side and no inner
+     * keyword at all, so it is recognized here explicitly.
+     */
     private boolean isSupportedInnerJoin(Join join) {
-        return join.isInnerJoin()
+        return (join.isInnerJoin() || join.isNatural())
             && !join.isOuter()
             && !join.isLeft()
             && !join.isRight()
@@ -3717,10 +4347,17 @@ public final class QueryAnalyzer {
             + (join.isFull() ? 1 : 0);
     }
 
+    /**
+     * Reports a {@code CROSS JOIN}, which joins every row of its sources.
+     * {@code NATURAL CROSS JOIN}, which PostgreSQL does not have although the
+     * parser reads it, is excluded, because a natural join merges the columns
+     * a cross join keeps apart.
+     */
     private boolean isSupportedCrossJoin(Join join) {
         return join.isCross()
             && !join.isInner()
             && !join.isOuter()
+            && !join.isNatural()
             && namedOuterSides(join) == 0
             && hasNoOtherJoinModifier(join);
     }
@@ -3732,8 +4369,7 @@ public final class QueryAnalyzer {
             && !join.isStraight()
             && !join.isGlobal()
             && !join.isWindowJoin()
-            && join.getJoinHint() == null
-            && join.getUsingColumns().isEmpty();
+            && join.getJoinHint() == null;
     }
 
     /**
@@ -4669,7 +5305,10 @@ public final class QueryAnalyzer {
      * <p>Beside the expanded columns, which are the columns a derived source
      * exposes, the projection carries the result components of a top-level
      * read, where a wildcard of a schema table is one embedded row rather than
-     * that table's own columns, nullable when its source is null-extended.
+     * that table's own columns, nullable when its source is null-extended. A
+     * bare {@code *} over a join group that merges columns lists that group's
+     * columns flat instead, as PostgreSQL lists them, so a merged column
+     * stands once and in its own position in both.
      *
      * <p>An aggregate and a cast name their column with an alias, which is
      * required only of a projection that names the result columns, so a branch
@@ -4707,8 +5346,20 @@ public final class QueryAnalyzer {
             }
 
             if (expression instanceof AllColumns) {
-                for (Source source : sources) {
-                    addWildcardColumns(columns, resultColumns, source);
+                for (WildcardSource wildcardSource : bareWildcardSources(sources)) {
+                    if (wildcardSource.flat()) {
+                        List<org.sqlcj.schema.Column> flatColumns = resolveColumns(
+                            wildcardSource.columns(),
+                            wildcardSource.source().nullable()
+                        );
+
+                        columns.addAll(flatColumns);
+                        resultColumns.addAll(toQueryColumns(flatColumns));
+
+                        continue;
+                    }
+
+                    addWildcardColumns(columns, resultColumns, wildcardSource.source());
                 }
 
                 continue;
@@ -4726,6 +5377,51 @@ public final class QueryAnalyzer {
         }
 
         return new ResolvedProjection(columns, resultColumns);
+    }
+
+    /**
+     * The sources a bare {@code *} expands, in the order PostgreSQL lists
+     * their columns: every join group of the level in the order the query
+     * writes it, and within a group that merges columns its merged columns
+     * first and then the columns each of its sources still exposes, in the
+     * order the group joins them. A group that merges none expands each of its
+     * sources as it is written.
+     *
+     * <p>A group's merged source stands right after the group's first source,
+     * and every other source of that group after it, so the sources a merging
+     * group expands are the merged source's own and the ones the level lists
+     * beside it.
+     */
+    private List<WildcardSource> bareWildcardSources(List<Source> sources) {
+        List<WildcardSource> wildcardSources = new ArrayList<>();
+
+        for (int index = 0; index < sources.size(); index++) {
+            Source source = sources.get(index);
+
+            Source merged = index + 1 < sources.size() && sources.get(index + 1).merged()
+                ? sources.get(index + 1)
+                : null;
+
+            if (merged == null) {
+                wildcardSources.add(WildcardSource.of(source));
+
+                continue;
+            }
+
+            wildcardSources.add(WildcardSource.flat(merged, merged.table().columns()));
+
+            for (String name : merged.groupSources()) {
+                Source groupSource = findSource(sources, name);
+
+                wildcardSources.add(
+                    WildcardSource.flat(groupSource, exposedColumns(groupSource))
+                );
+            }
+
+            index += merged.groupSources().size();
+        }
+
+        return List.copyOf(wildcardSources);
     }
 
     /**
@@ -5169,6 +5865,13 @@ public final class QueryAnalyzer {
      * column name in an enclosing level never makes a reference ambiguous. A
      * reference no level has names every visible source, from the innermost
      * level outward.
+     *
+     * <p>A name a join merged away from its source is exposed by the merged
+     * source of that source's group alone, so an unqualified reference to it
+     * reads the merged column and a qualified one still reads the source's own
+     * column. The merged source exposes no name of its own, so no qualifier
+     * reaches it, and an ambiguity it takes part in names it by its group's
+     * joined sources.
      */
     private ResolvedColumn resolveColumn(net.sf.jsqlparser.schema.Column column, Scope scope) {
         String columnName = column.getUnquotedColumnName();
@@ -5182,7 +5885,7 @@ public final class QueryAnalyzer {
 
         for (Scope level = scope; level != null; level = level.enclosing()) {
             List<Source> matches = level.sources().stream()
-                .filter(source -> lookupColumn(source.table(), columnName).isPresent())
+                .filter(source -> exposes(source, columnName))
                 .toList();
 
             if (matches.size() > 1) {
@@ -5235,10 +5938,26 @@ public final class QueryAnalyzer {
         throw unknownSourceQualifier(name);
     }
 
+    /**
+     * The first source of one list that exposes the given name. A join group's
+     * merged source exposes no name of its own, because its merged columns
+     * belong to no one of its sources, so no qualifier resolves to it.
+     */
     private Optional<Source> lookupSource(List<Source> sources, String name) {
         return sources.stream()
+            .filter(source -> !source.merged())
             .filter(source -> source.name().equalsIgnoreCase(name))
             .findFirst();
+    }
+
+    /**
+     * Reports whether one source exposes the given column name to an
+     * unqualified reference, which a name a join merged away from it is read
+     * through its group's merged source instead of.
+     */
+    private boolean exposes(Source source, String columnName) {
+        return !source.mergesAway(columnName)
+            && lookupColumn(source.table(), columnName).isPresent();
     }
 
     private IllegalArgumentException unknownSourceQualifier(String name) {
@@ -5291,7 +6010,18 @@ public final class QueryAnalyzer {
         Source source,
         boolean nullableSource
     ) {
-        return source.table().columns().stream()
+        return resolveColumns(source.table().columns(), nullableSource);
+    }
+
+    /**
+     * The given columns of one source, each nullable when its own declaration
+     * states it so or when {@code nullableSource} forces it.
+     */
+    private List<org.sqlcj.schema.Column> resolveColumns(
+        List<org.sqlcj.schema.Column> columns,
+        boolean nullableSource
+    ) {
+        return columns.stream()
             .map(
                 column -> new org.sqlcj.schema.Column(
                     column.name(),

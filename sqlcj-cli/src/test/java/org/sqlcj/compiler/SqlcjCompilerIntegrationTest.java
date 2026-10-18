@@ -1363,6 +1363,78 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
+     * A repository generated from the {@code USING} and {@code NATURAL} joins
+     * compiles: a merged column is one result component of the type both sides
+     * resolve to, a bare {@code *} over a merging group is a flat result
+     * record whose merged columns stand once, and a member's remaining columns
+     * keep the nullability their null extension states.
+     */
+    @Test
+    void shouldGenerateCompilableJavaForUsingAndNaturalJoins() throws IOException {
+        Path schemaFile = tempDir.resolve("schema.sql");
+        Path queriesFile = tempDir.resolve("queries.sql");
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path classesDirectory = tempDir.resolve("classes");
+
+        Files.writeString(schemaFile, JOIN_SCHEMA);
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: ListOrderingProfiles :many
+                SELECT user_id, p.nickname, o.total
+                FROM profiles p
+                JOIN orders o USING (user_id)
+                WHERE user_id = $1;
+
+                -- name: ListNaturalProfileOrders :many
+                SELECT *
+                FROM profiles p
+                NATURAL JOIN orders o;
+
+                -- name: ListUserProfileColumns :many
+                SELECT *
+                FROM users u
+                LEFT JOIN profiles p USING (id);
+                """
+        );
+
+        new SqlcjCompiler().compile(
+            usersConfig(schemaFile, queriesFile, generatedDirectory)
+        );
+
+        String source = Files.readString(
+            generatedDirectory.resolve("generated/UsersRepository.java")
+        );
+
+        assertTrue(
+            source.contains(
+                "public List<ListOrderingProfilesResult> listOrderingProfiles(Long userId)"
+            ),
+            source
+        );
+
+        assertEquals(
+            List.of("Long userId", "String nickname", "BigDecimal total"),
+            recordComponents(source, "ListOrderingProfilesResult")
+        );
+
+        assertEquals(
+            List.of("Long id", "Long userId", "String nickname", "BigDecimal total"),
+            recordComponents(source, "ListNaturalProfileOrdersResult")
+        );
+
+        assertEquals(
+            List.of("Long id", "String name", "Long userId", "String nickname"),
+            recordComponents(source, "ListUserProfileColumnsResult")
+        );
+
+        assertCompiles(generatedDirectory, classesDirectory);
+
+        assertTrue(Files.exists(classesDirectory.resolve("generated/UsersRepository.class")));
+    }
+
+    /**
      * A top-level set operation generates compilable Java: its result record
      * takes the leftmost branch's column names and the types its branches
      * resolve to, its trailing {@code LIMIT} is one method parameter, a
@@ -2799,13 +2871,13 @@ class SqlcjCompilerIntegrationTest {
             ),
             Arguments.of(
                 ":many",
-                "SELECT u.id FROM users u JOIN profiles p USING (id)",
-                "JOIN ... USING is not supported; write the join condition with ON."
+                "SELECT u.id FROM users u CROSS JOIN profiles p USING (id)",
+                "CROSS JOIN takes no USING list; write JOIN ... USING."
             ),
             Arguments.of(
                 ":many",
-                "SELECT u.id FROM users u NATURAL JOIN profiles p",
-                "NATURAL JOIN is not supported; write the join condition with ON."
+                "SELECT u.id FROM users u NATURAL JOIN profiles p ON p.user_id = u.id",
+                "NATURAL JOIN takes no ON condition or USING list."
             ),
             Arguments.of(
                 ":many",

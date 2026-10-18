@@ -849,6 +849,16 @@ is read from a null-extended source — one a `LEFT`, `RIGHT`, or `FULL` join
 null-extends — whose columns are all nullable because an unmatched row supplies
 no value for them.
 
+The column a `JOIN ... USING (...)` or a `NATURAL JOIN` merges is nullable by
+the value PostgreSQL exposes for it, read from both sides before that join
+null-extends either of them: an inner join reads the pair's equal values and a
+full join coalesces them, so their merged column is nullable only when both
+sides are; a left join reads the left column and a right join the right column,
+so the merged column is nullable exactly when that side is. No join
+null-extends the columns it merges itself, while a later `RIGHT` or `FULL` join
+of the same group null-extends them, as it does every other source written
+before it.
+
 Row absence is a different thing from a null component, and the two are never
 mixed:
 
@@ -1329,6 +1339,12 @@ Nulls:
 - `PostgresIntegrationTest.shouldEnforceResultCardinalitiesAgainstPostgres`
   proves that row absence is reported by `:optional` and `:one` rather than by a
   null result.
+- `PostgresIntegrationTest.shouldExecuteGeneratedMergedJoinColumnsAgainstPostgres`
+  proves that a `FULL JOIN ... USING` reads the merged column of an unmatched
+  row on each side as the value the present side holds, and
+  `QueryAnalyzerTest.shouldResolveMergedJoinColumnNullabilityOfEachJoinKind`
+  and `QueryAnalyzerTest.shouldNullExtendMergedColumnsOfALaterOuterJoin` cover
+  the modeled nullability of a merged column.
 - `DefaultSchemaParserTest.shouldParseColumns`,
   `DefaultSchemaParserTest.shouldParseNullabilityOfAddedColumnTypes`,
   `DefaultSchemaParserTest.shouldParseNullabilityOfIntegerAliasColumns`, and

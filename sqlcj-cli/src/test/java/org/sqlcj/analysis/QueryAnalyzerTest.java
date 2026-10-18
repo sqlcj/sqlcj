@@ -14,6 +14,7 @@ import org.sqlcj.schema.Table;
 import org.sqlcj.sql.ParsedSql;
 import org.sqlcj.sql.SqlParser;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -292,6 +293,91 @@ class QueryAnalyzerTest {
                     new Column("id", ColumnType.BIGINT, false),
                     new Column("user_id", ColumnType.BIGINT, false),
                     new Column("total", ColumnType.DECIMAL, true)
+                ),
+                List.of()
+            )
+        )
+    );
+
+    /**
+     * A schema whose tables share join column names of several types and
+     * nullability: {@code tasks} and {@code counters} share
+     * {@code project_id}, which is wider on the {@code tasks} side,
+     * {@code owner_id}, which only {@code counters} declares nullable, and
+     * {@code sprint_id}, which both declare nullable; {@code sprints} shares
+     * {@code project_id} with both; {@code labels} declares it as text, which
+     * resolves with neither; {@code projects} shares {@code id} with
+     * {@code tasks} and {@code organization_id} with {@code memberships}; and
+     * {@code memberships} shares no name with {@code labels} at all.
+     * {@code task_snapshots} takes the columns a wildcard of a merging group
+     * selects.
+     */
+    private static final Schema mergeSchema = new Schema(
+        List.of(
+            new Table(
+                "tasks",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("project_id", ColumnType.BIGINT, true),
+                    new Column("owner_id", ColumnType.BIGINT, false),
+                    new Column("sprint_id", ColumnType.BIGINT, true),
+                    new Column("title", ColumnType.VARCHAR, false)
+                ),
+                List.of()
+            ),
+            new Table(
+                "counters",
+                List.of(
+                    new Column("project_id", ColumnType.INTEGER, false),
+                    new Column("owner_id", ColumnType.BIGINT, true),
+                    new Column("sprint_id", ColumnType.BIGINT, true),
+                    new Column("total", ColumnType.INTEGER, true)
+                ),
+                List.of()
+            ),
+            new Table(
+                "sprints",
+                List.of(
+                    new Column("project_id", ColumnType.BIGINT, false),
+                    new Column("sprint_name", ColumnType.VARCHAR, true)
+                ),
+                List.of()
+            ),
+            new Table(
+                "labels",
+                List.of(
+                    new Column("project_id", ColumnType.TEXT, false),
+                    new Column("label", ColumnType.TEXT, true)
+                ),
+                List.of()
+            ),
+            new Table(
+                "projects",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("organization_id", ColumnType.BIGINT, false),
+                    new Column("name", ColumnType.VARCHAR, true)
+                ),
+                List.of()
+            ),
+            new Table(
+                "memberships",
+                List.of(
+                    new Column("organization_id", ColumnType.BIGINT, false),
+                    new Column("user_id", ColumnType.BIGINT, false),
+                    new Column("role", ColumnType.VARCHAR, true)
+                ),
+                List.of()
+            ),
+            new Table(
+                "task_snapshots",
+                List.of(
+                    new Column("project_id", ColumnType.BIGINT, true),
+                    new Column("owner_id", ColumnType.BIGINT, true),
+                    new Column("sprint_id", ColumnType.BIGINT, true),
+                    new Column("id", ColumnType.BIGINT, true),
+                    new Column("title", ColumnType.VARCHAR, true),
+                    new Column("total", ColumnType.INTEGER, true)
                 ),
                 List.of()
             )
@@ -3797,26 +3883,24 @@ class QueryAnalyzerTest {
      * Only an inner, left, right, full, and cross join are supported, so every
      * other qualifier stays rejected, including the qualifiers that also report
      * {@code isOuter()} or {@code isLeft()} and the bare {@code OUTER JOIN}
-     * that names no side. A join kind whose own rule this subset does not model
-     * names the rewrite to write instead, {@code NATURAL} before the side it is
-     * written beside, and every other modifier keeps the general rejection.
+     * that names no side. A {@code NATURAL CROSS JOIN}, which the parser reads
+     * and PostgreSQL does not have, is one of them, while a supported kind
+     * written with a condition it does not take names what to write instead.
      */
     @ParameterizedTest
     @CsvSource(
         delimiter = '|',
         value = {
-            "NATURAL JOIN profiles p"
-                + "|NATURAL JOIN is not supported; write the join condition with ON.",
-            "NATURAL LEFT JOIN profiles p"
-                + "|NATURAL JOIN is not supported; write the join condition with ON.",
             "NATURAL CROSS JOIN profiles p"
-                + "|NATURAL JOIN is not supported; write the join condition with ON.",
-            "JOIN profiles p USING (user_id)"
-                + "|JOIN ... USING is not supported; write the join condition with ON.",
-            "LEFT JOIN profiles p USING (user_id)"
-                + "|JOIN ... USING is not supported; write the join condition with ON.",
-            "RIGHT JOIN profiles p USING (user_id)"
-                + "|JOIN ... USING is not supported; write the join condition with ON.",
+                + "|Only INNER, LEFT, RIGHT, FULL, and CROSS JOIN clauses are supported.",
+            "CROSS JOIN profiles p USING (user_id)"
+                + "|CROSS JOIN takes no USING list; write JOIN ... USING.",
+            "NATURAL JOIN profiles p ON p.user_id = u.id"
+                + "|NATURAL JOIN takes no ON condition or USING list.",
+            "NATURAL LEFT JOIN profiles p ON p.user_id = u.id"
+                + "|NATURAL JOIN takes no ON condition or USING list.",
+            "NATURAL JOIN profiles p USING (user_id)"
+                + "|NATURAL JOIN takes no ON condition or USING list.",
             "CROSS JOIN profiles p ON p.user_id = u.id"
                 + "|CROSS JOIN takes no ON condition; write JOIN ... ON.",
             "OUTER JOIN profiles p ON p.user_id = u.id"
@@ -4080,6 +4164,748 @@ class QueryAnalyzerTest {
         assertEquals(
             "A join requires one ON condition.",
             exception.getMessage()
+        );
+    }
+
+    /**
+     * A merged column takes the type the set operation rules resolve both
+     * sides to, so a narrower left column widens to the type PostgreSQL gives
+     * the merged column.
+     */
+    @Test
+    void shouldWidenTheTypeOfAMergedJoinColumn() {
+        String sql = """
+            SELECT project_id
+            FROM counters c
+            JOIN tasks t USING (project_id)
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListProjectCounters", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("project_id", ColumnType.BIGINT, false)),
+            model.columns()
+        );
+    }
+
+    /**
+     * A merged column takes no cast of its own, so a pair of types those rules
+     * resolve to none is rejected naming both types and the clause that can
+     * state a cast.
+     */
+    @Test
+    void shouldRejectMergedJoinColumnOfTypesThatResolveToNoType() {
+        String sql = """
+            SELECT label
+            FROM counters c
+            JOIN labels l USING (project_id)
+            """;
+
+        Query query = new Query("ListCounterLabels", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, mergeSchema)
+        );
+
+        assertEquals(
+            "Join column project_id has types integer and text; "
+                + "write the join condition with ON and a cast.",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A merged column's nullability comes from the nullability both sides
+     * expose before the join null-extends either of them: an inner and a full
+     * join read it as nullable only when both sides are, a left join reads the
+     * left column, and a right join the right column. {@code project_id} is
+     * nullable on the left alone, {@code owner_id} on the right alone, and
+     * {@code sprint_id} on both.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "JOIN counters c USING (project_id, owner_id, sprint_id)|false|false|true",
+            "INNER JOIN counters c USING (project_id, owner_id, sprint_id)|false|false|true",
+            "NATURAL JOIN counters c|false|false|true",
+            "LEFT JOIN counters c USING (project_id, owner_id, sprint_id)|true|false|true",
+            "NATURAL LEFT OUTER JOIN counters c|true|false|true",
+            "RIGHT JOIN counters c USING (project_id, owner_id, sprint_id)|false|true|true",
+            "NATURAL RIGHT JOIN counters c|false|true|true",
+            "FULL JOIN counters c USING (project_id, owner_id, sprint_id)|false|false|true",
+            "NATURAL FULL OUTER JOIN counters c|false|false|true"
+        }
+    )
+    void shouldResolveMergedJoinColumnNullabilityOfEachJoinKind(
+        String joinClause,
+        boolean projectId,
+        boolean ownerId,
+        boolean sprintId
+    ) {
+        String sql = """
+            SELECT project_id, owner_id, sprint_id
+            FROM tasks t
+            %s
+            """.formatted(joinClause);
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListTaskCounters", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("project_id", ColumnType.BIGINT, projectId),
+                new QueryColumn("owner_id", ColumnType.BIGINT, ownerId),
+                new QueryColumn("sprint_id", ColumnType.BIGINT, sprintId)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * No join null-extends the columns it merges itself, while a later
+     * {@code RIGHT} or {@code FULL} join of the same group null-extends them
+     * with every other source written before it.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = { "RIGHT", "FULL" })
+    void shouldNullExtendMergedColumnsOfALaterOuterJoin(String joinSide) {
+        String sql = """
+            SELECT project_id, t.title, p.id AS project_row_id
+            FROM tasks t
+            JOIN counters c USING (project_id)
+            %s JOIN projects p ON p.id = t.id
+            """.formatted(joinSide);
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListTaskProjects", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("project_id", ColumnType.BIGINT, true),
+                new QueryColumn("title", ColumnType.VARCHAR, true),
+                new QueryColumn("project_row_id", ColumnType.BIGINT, "FULL".equals(joinSide))
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * An unqualified reference to a merged column reads the merged column
+     * itself, in a later join condition of its group, which would be ambiguous
+     * if both sources still exposed the name.
+     */
+    @Test
+    void shouldResolveUnqualifiedMergedColumnInALaterJoinCondition() {
+        String sql = """
+            SELECT project_id, p.name
+            FROM counters c
+            JOIN tasks t USING (project_id)
+            JOIN projects p ON p.id = project_id
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListCounterProjects", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("project_id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A {@code WHERE} placeholder compared with a merged column is typed by
+     * the merged column, whose type is wider than the left source's own.
+     */
+    @Test
+    void shouldTypeAPlaceholderFromAMergedColumn() {
+        String sql = """
+            SELECT title
+            FROM counters c
+            JOIN tasks t USING (project_id)
+            WHERE project_id = $1
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListProjectTitles", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("title", ColumnType.VARCHAR, false)),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "project_id", ColumnType.BIGINT)),
+            model.parameters()
+        );
+    }
+
+    /** An aggregate of a merged column reads the merged column's own type. */
+    @Test
+    void shouldResolveAMergedColumnInsideAnAggregate() {
+        String sql = """
+            SELECT MAX(project_id) AS newest_project_id
+            FROM counters c
+            JOIN tasks t USING (project_id)
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("FindNewestProject", QueryType.ONE, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("newest_project_id", ColumnType.BIGINT, true)),
+            model.columns()
+        );
+    }
+
+    /**
+     * A qualified reference to a merged name reads its own source's column,
+     * with that source's own type and the nullability its null extension
+     * states, while the unqualified reference reads the merged column.
+     */
+    @Test
+    void shouldReadQualifiedJoinColumnsThroughTheirOwnSources() {
+        String sql = """
+            SELECT project_id, c.project_id AS counter_project_id, t.project_id AS task_project_id
+            FROM counters c
+            LEFT JOIN tasks t USING (project_id)
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListCounterTasks", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("project_id", ColumnType.BIGINT, false),
+                new QueryColumn("counter_project_id", ColumnType.INTEGER, false),
+                new QueryColumn("task_project_id", ColumnType.BIGINT, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A merged column is one column of its level, so a reference another group
+     * of that level also exposes is ambiguous, and the diagnostic names the
+     * merged column by its group's joined sources.
+     */
+    @Test
+    void shouldRejectAmbiguousReferenceBetweenAMergedColumnAndAnotherGroup() {
+        String sql = """
+            SELECT project_id
+            FROM sprints s, counters c
+            JOIN tasks t USING (project_id)
+            """;
+
+        Query query = new Query("ListProjectIds", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, mergeSchema)
+        );
+
+        assertEquals(
+            "Ambiguous column reference 'project_id' in sources: s, c JOIN t",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A chained {@code USING} list merges over the group's output so far, so
+     * its own merged columns stand first and the columns it does not merge
+     * again keep their order after them, and a bare {@code *} lists the group
+     * flat in that order.
+     */
+    @Test
+    void shouldMergeChainedUsingLists() {
+        String sql = """
+            SELECT *
+            FROM tasks t
+            JOIN counters c USING (project_id, owner_id, sprint_id)
+            JOIN projects p USING (id)
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListTaskCounterProjects", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertNull(model.rowTable());
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("project_id", ColumnType.BIGINT, false),
+                new QueryColumn("owner_id", ColumnType.BIGINT, false),
+                new QueryColumn("sprint_id", ColumnType.BIGINT, true),
+                new QueryColumn("title", ColumnType.VARCHAR, false),
+                new QueryColumn("total", ColumnType.INTEGER, true),
+                new QueryColumn("organization_id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A later join that merges a name the group already merged merges the
+     * merged column itself, so the group keeps one column of that name.
+     */
+    @Test
+    void shouldKeepOneMergedColumnWhenALaterJoinMergesItAgain() {
+        String sql = """
+            SELECT *
+            FROM counters c
+            JOIN tasks t USING (project_id, owner_id, sprint_id)
+            JOIN sprints s USING (project_id)
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListCounterSprints", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("project_id", ColumnType.BIGINT, false),
+                new QueryColumn("owner_id", ColumnType.BIGINT, false),
+                new QueryColumn("sprint_id", ColumnType.BIGINT, true),
+                new QueryColumn("total", ColumnType.INTEGER, true),
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("title", ColumnType.VARCHAR, false),
+                new QueryColumn("sprint_name", ColumnType.VARCHAR, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A {@code NATURAL JOIN} merges the names its two sides share, in the left
+     * side's order, and a bare {@code *} lists them before the columns each
+     * source still exposes.
+     */
+    @Test
+    void shouldMergeTheCommonColumnsOfANaturalJoin() {
+        String sql = """
+            SELECT *
+            FROM tasks t
+            NATURAL JOIN counters c
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListNaturalTaskCounters", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(mergedTaskCounterColumns(), model.columns());
+    }
+
+    /**
+     * A {@code NATURAL JOIN} of two sources that share no name merges nothing
+     * and joins them as a cross join, so a bare {@code *} keeps one embedded
+     * row per source.
+     */
+    @Test
+    void shouldJoinANaturalJoinOfNoCommonColumnAsACrossJoin() {
+        String sql = """
+            SELECT *
+            FROM labels l
+            NATURAL JOIN memberships m
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListLabelMemberships", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(List.of(labelsRow("l"), membershipsRow("m")), model.columns());
+    }
+
+    /**
+     * A bare {@code *} expands each join group in the order the query writes
+     * it: a group that merges columns flat, and a group that merges none as
+     * one embedded row per source.
+     */
+    @Test
+    void shouldExpandAMergingGroupFlatBesideANonMergingGroup() {
+        String sql = """
+            SELECT *
+            FROM tasks t
+            NATURAL JOIN counters c, memberships m
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListTaskCounterMemberships", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        List<QueryColumn> expected = new ArrayList<>(mergedTaskCounterColumns());
+
+        expected.add(membershipsRow("m"));
+
+        assertEquals(expected, model.columns());
+    }
+
+    /**
+     * A source an {@code ON} join adds to a merging group after its latest
+     * merge is one more member of that group, so a bare {@code *} lists its
+     * columns flat after the group's merged columns instead of embedding its
+     * row.
+     */
+    @Test
+    void shouldExpandASourceJoinedAfterAMergingJoinFlat() {
+        String sql = """
+            SELECT *
+            FROM tasks t
+            JOIN counters c USING (project_id, owner_id, sprint_id)
+            JOIN memberships m ON m.user_id = t.id
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListTaskCounterMembers", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        List<QueryColumn> expected = new ArrayList<>(mergedTaskCounterColumns());
+
+        expected.addAll(
+            List.of(
+                new QueryColumn("organization_id", ColumnType.BIGINT, false),
+                new QueryColumn("user_id", ColumnType.BIGINT, false),
+                new QueryColumn("role", ColumnType.VARCHAR, true)
+            )
+        );
+
+        assertEquals(expected, model.columns());
+    }
+
+    /**
+     * A {@code LEFT JOIN} that adds a source to a merging group after its
+     * latest merge null-extends that source alone, so a bare {@code *} lists
+     * each of its columns flat and nullable, while the group's merged columns
+     * keep the nullability their own joins resolved.
+     */
+    @Test
+    void shouldExpandANullExtendedSourceJoinedAfterAMergingJoinFlat() {
+        String sql = """
+            SELECT *
+            FROM tasks t
+            JOIN counters c USING (project_id, owner_id, sprint_id)
+            LEFT JOIN memberships m ON m.user_id = t.id
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListTaskCounterMembers", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        List<QueryColumn> expected = new ArrayList<>(mergedTaskCounterColumns());
+
+        expected.addAll(
+            List.of(
+                new QueryColumn("organization_id", ColumnType.BIGINT, true),
+                new QueryColumn("user_id", ColumnType.BIGINT, true),
+                new QueryColumn("role", ColumnType.VARCHAR, true)
+            )
+        );
+
+        assertEquals(expected, model.columns());
+    }
+
+    /**
+     * A {@code source.*} of a merging group's source embeds that source's own
+     * complete row, the columns a join merged away included, as PostgreSQL
+     * returns them.
+     */
+    @Test
+    void shouldEmbedTheRowOfAQualifiedWildcardOfAMergingGroupSource() {
+        String sql = """
+            SELECT project_id, t.*
+            FROM tasks t
+            NATURAL JOIN counters c
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListTaskRows", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("project_id", ColumnType.BIGINT, false),
+                tasksRow("t")
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A derived source whose body writes a bare {@code *} over a merging group
+     * exposes the merged columns once, so the body keeps the distinct-name
+     * rule every derived source follows.
+     */
+    @Test
+    void shouldExposeTheMergedColumnsOfADerivedSourceOverAMergingWildcard() {
+        String sql = """
+            SELECT d.project_id, d.total
+            FROM (SELECT * FROM tasks t NATURAL JOIN counters c) d
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListDerivedTaskCounters", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("project_id", ColumnType.BIGINT, false),
+                new QueryColumn("total", ColumnType.INTEGER, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * An insert's {@code SELECT *} writes one item per column the wildcard
+     * expands to, so a merging group's merged columns count once and the
+     * column list must name exactly those columns.
+     */
+    @Test
+    void shouldCountTheMergedColumnsOfAnInsertSelectWildcard() {
+        String sql = """
+            INSERT INTO task_snapshots (project_id, owner_id, sprint_id, id, title, total)
+            SELECT * FROM tasks t NATURAL JOIN counters c
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("CreateTaskSnapshots", QueryType.EXEC, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals("task_snapshots", model.table());
+        assertTrue(model.columns().isEmpty());
+    }
+
+    /**
+     * The same insert whose column list names one column fewer than the
+     * wildcard expands to is rejected, so the merged columns are counted once
+     * rather than twice.
+     */
+    @Test
+    void shouldRejectAnInsertSelectWildcardCountOverAMergingGroup() {
+        String sql = """
+            INSERT INTO task_snapshots (project_id, owner_id, sprint_id, id, title)
+            SELECT * FROM tasks t NATURAL JOIN counters c
+            """;
+
+        Query query = new Query("CreateTaskSnapshots", QueryType.EXEC, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, mergeSchema)
+        );
+
+        assertEquals("INSERT column and value counts must match.", exception.getMessage());
+    }
+
+    /**
+     * An {@code UPDATE ... FROM} clause merges its join columns as a read
+     * does, so its {@code WHERE} and its {@code RETURNING} clause read the
+     * merged column, while the target, which is in no join group, keeps its
+     * own columns.
+     */
+    @Test
+    void shouldReadAMergedColumnOfAnUpdateFromClause() {
+        String sql = """
+            UPDATE projects p
+            SET name = $1
+            FROM tasks t
+            JOIN counters c USING (project_id)
+            WHERE p.id = project_id
+            RETURNING p.id, project_id
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("RenameCountedProjects", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals("projects", model.table());
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("project_id", ColumnType.BIGINT, false)
+            ),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * A {@code USING} column either side of its join does not expose names no
+     * column to merge, and the diagnostic names the side that lacks it. The
+     * left side is the group's output before the join, so a column of the
+     * joined source alone is missing from it.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "missing|USING column missing does not exist in the left side of the join.",
+            "total|USING column total does not exist in the left side of the join.",
+            "title|USING column title does not exist in the right side of the join."
+        }
+    )
+    void shouldRejectAUsingColumnMissingFromOneSide(String column, String message) {
+        String sql = """
+            SELECT t.id
+            FROM tasks t
+            JOIN counters c USING (%s)
+            """.formatted(column);
+
+        Query query = new Query("ListTaskIds", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, mergeSchema)
+        );
+
+        assertEquals(message, exception.getMessage());
+    }
+
+    /**
+     * A join column the left side exposes more than once names no single
+     * column to merge, under a {@code USING} list and a {@code NATURAL} join
+     * alike, as PostgreSQL rejects it.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "JOIN counters c USING (project_id)",
+            "NATURAL JOIN counters c"
+        }
+    )
+    void shouldRejectAJoinColumnRepeatedInTheLeftSide(String joinClause) {
+        String sql = """
+            SELECT t.id
+            FROM tasks t
+            JOIN sprints s ON s.project_id = t.project_id
+            %s
+            """.formatted(joinClause);
+
+        Query query = new Query("ListTaskIds", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, mergeSchema)
+        );
+
+        assertEquals(
+            "Join column project_id appears more than once in the left side of the join.",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * The columns a bare {@code *} selects over {@code tasks NATURAL JOIN
+     * counters}: the merged columns in the left side's order, then the columns
+     * each source still exposes, in the order the group joins them.
+     */
+    private List<QueryColumn> mergedTaskCounterColumns() {
+        return List.of(
+            new QueryColumn("project_id", ColumnType.BIGINT, false),
+            new QueryColumn("owner_id", ColumnType.BIGINT, false),
+            new QueryColumn("sprint_id", ColumnType.BIGINT, true),
+            new QueryColumn("id", ColumnType.BIGINT, false),
+            new QueryColumn("title", ColumnType.VARCHAR, false),
+            new QueryColumn("total", ColumnType.INTEGER, true)
+        );
+    }
+
+    /** The embedded row of the {@code tasks} table under one exposed name. */
+    private QueryColumn tasksRow(String name) {
+        return QueryColumn.row(
+            name,
+            "tasks",
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("project_id", ColumnType.BIGINT, true),
+                new QueryColumn("owner_id", ColumnType.BIGINT, false),
+                new QueryColumn("sprint_id", ColumnType.BIGINT, true),
+                new QueryColumn("title", ColumnType.VARCHAR, false)
+            )
+        );
+    }
+
+    /** The embedded row of the {@code labels} table under one exposed name. */
+    private QueryColumn labelsRow(String name) {
+        return QueryColumn.row(
+            name,
+            "labels",
+            List.of(
+                new QueryColumn("project_id", ColumnType.TEXT, false),
+                new QueryColumn("label", ColumnType.TEXT, true)
+            )
+        );
+    }
+
+    /** The embedded row of the {@code memberships} table under one exposed name. */
+    private QueryColumn membershipsRow(String name) {
+        return QueryColumn.row(
+            name,
+            "memberships",
+            List.of(
+                new QueryColumn("organization_id", ColumnType.BIGINT, false),
+                new QueryColumn("user_id", ColumnType.BIGINT, false),
+                new QueryColumn("role", ColumnType.VARCHAR, true)
+            )
         );
     }
 

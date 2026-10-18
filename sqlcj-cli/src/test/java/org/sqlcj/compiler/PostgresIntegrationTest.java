@@ -173,6 +173,25 @@ class PostgresIntegrationTest {
         """;
 
     /**
+     * A snapshot whose two tables share the {@code team_id} join column in two
+     * widths, so a merged column takes the wider of them, as PostgreSQL
+     * resolves it.
+     */
+    private static final String MERGED_JOIN_SCHEMA = """
+        CREATE TABLE teams
+        (
+            team_id INTEGER PRIMARY KEY,
+            name    VARCHAR(255) NOT NULL
+        );
+
+        CREATE TABLE memberships
+        (
+            team_id BIGINT      NOT NULL,
+            role    VARCHAR(32) NOT NULL
+        );
+        """;
+
+    /**
      * A snapshot that declares every accepted floating-point, binary, and time
      * spelling, each of them nullable so that one row can carry values and
      * another can carry nulls.
@@ -3628,6 +3647,75 @@ class PostgresIntegrationTest {
                 List.of(),
                 listOwnedTeamRoles.invoke(repository, "ghost"),
                 "the membership without a team joins no owner"
+            );
+        }
+    }
+
+    /**
+     * Covers the {@code USING} join's merged columns end to end against
+     * PostgreSQL: a bare {@code *} reads the merged column first and then the
+     * columns each source still exposes, in PostgreSQL's own order and with
+     * the merged column's wider type, and a {@code FULL JOIN ... USING} reads
+     * the merged column of an unmatched row on each side as the value the
+     * present side holds.
+     */
+    @Test
+    void shouldExecuteGeneratedMergedJoinColumnsAgainstPostgres() throws Exception {
+        execute(MERGED_JOIN_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(MERGED_JOIN_SCHEMA, """
+            -- name: ListTeamMemberships :many
+            SELECT *
+            FROM teams t
+            JOIN memberships m USING (team_id)
+            ORDER BY team_id;
+
+            -- name: ListEveryTeamMembership :many
+            SELECT team_id, t.name, m.role
+            FROM teams t
+            FULL JOIN memberships m USING (team_id)
+            ORDER BY team_id;
+            """);
+
+        execute("INSERT INTO teams (team_id, name) VALUES (1, 'Platform'), (2, 'Billing')");
+
+        execute("INSERT INTO memberships (team_id, role) VALUES (1, 'owner'), (3, 'ghost')");
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            List<?> memberships = (List<?>) repository.getClass()
+                .getMethod("listTeamMemberships")
+                .invoke(repository);
+
+            assertEquals(1, memberships.size());
+
+            assertEquals(
+                List.of("teamId", "name", "role"),
+                recordComponentNames(memberships.get(0)),
+                "the wildcard reads the merged column before the columns of each source"
+            );
+
+            assertEquals(1L, component(memberships.get(0), "teamId"));
+            assertEquals("Platform", component(memberships.get(0), "name"));
+            assertEquals("owner", component(memberships.get(0), "role"));
+
+            List<?> everyMembership = (List<?>) repository.getClass()
+                .getMethod("listEveryTeamMembership")
+                .invoke(repository);
+
+            assertEquals(List.of(1L, 2L, 3L), components(everyMembership, "teamId"));
+
+            assertEquals(
+                Arrays.asList("Platform", "Billing", null),
+                components(everyMembership, "name"),
+                "the full join reads no team name for a membership without a team"
+            );
+
+            assertEquals(
+                Arrays.asList("owner", null, "ghost"),
+                components(everyMembership, "role"),
+                "the full join reads no role for a team without memberships"
             );
         }
     }
