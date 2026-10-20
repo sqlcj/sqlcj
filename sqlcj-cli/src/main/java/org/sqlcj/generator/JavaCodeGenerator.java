@@ -665,6 +665,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             case TIMESTAMP_WITH_TIME_ZONE -> "java.time.OffsetDateTime";
             case DECIMAL -> "java.math.BigDecimal";
             case UUID -> "java.util.UUID";
+            case INTERVAL -> "org.sqlcj.runtime.SqlInterval";
             default -> null;
         };
     }
@@ -1054,7 +1055,9 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * without a declared SQL type and the database types it from the context of
      * its placeholder. An enum parameter is wrapped the same way, around the
      * label of the generated constant, because PostgreSQL rejects a label bound
-     * as {@code varchar} where an enum is expected. An array parameter is
+     * as {@code varchar} where an enum is expected. An {@code INTERVAL}
+     * parameter is wrapped the same way, around the text its runtime value
+     * writes. An array parameter is
      * wrapped in {@code org.sqlcj.runtime.SqlArray} with the element type's
      * PostgreSQL name, so that the runtime binds the list as a server array.
      * Every wrapper is written out in full, so the generated imports are the
@@ -1070,6 +1073,11 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 .formatted(name, name);
         }
 
+        if (parameter.type() == ColumnType.INTERVAL) {
+            return "new org.sqlcj.runtime.UntypedText(%s == null ? null : %s.format())"
+                .formatted(name, name);
+        }
+
         if (isUntypedText(parameter.type())) {
             return "new org.sqlcj.runtime.UntypedText(" + name + ")";
         }
@@ -1081,7 +1089,8 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * Renders one array executor argument, which carries the element type's
      * PostgreSQL name beside the list. An array of an enum carries the labels
      * of its constants instead of the constants themselves, because the runtime
-     * binds the values the database stores.
+     * binds the values the database stores, and an array of {@code INTERVAL}
+     * carries the text of its values for the same reason.
      */
     private String generateArrayArgument(QueryParameter parameter, String name) {
         if (parameter.type() == ColumnType.ENUM) {
@@ -1090,6 +1099,14 @@ public final class JavaCodeGenerator implements CodeGenerator {
                     generateStringLiteral(parameter.enumType()),
                     name,
                     JavaNames.enumTypeName(parameter.enumType())
+                );
+        }
+
+        if (parameter.type() == ColumnType.INTERVAL) {
+            return "org.sqlcj.runtime.SqlArray.of(%s, %s, org.sqlcj.runtime.SqlInterval::format)"
+                .formatted(
+                    generateStringLiteral(elementTypeName(parameter)),
+                    name
                 );
         }
 
@@ -1132,6 +1149,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             case CIDR -> "cidr";
             case MACADDR -> "macaddr";
             case MACADDR8 -> "macaddr8";
+            case INTERVAL -> "interval";
             default -> throw new IllegalStateException(
                 "Column type has no array element type: " + parameter.type()
             );
@@ -1249,7 +1267,9 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * {@code getString}, because a driver reports it as a type of its own for
      * which {@code getObject(position, String.class)}
      * is not defined. An enum column reads its label the same way and resolves
-     * it to the generated constant; an array column reads its elements through
+     * it to the generated constant, and an {@code INTERVAL} column reads
+     * PostgreSQL's text the same way and parses it; an array column reads its
+     * elements through
      * {@code org.sqlcj.runtime.SqlArray}, which reads each element as a scalar
      * of the element type is read; every other column is read as its mapped
      * Java type.
@@ -1275,6 +1295,13 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 .stripTrailing();
         }
 
+        if (column.type() == ColumnType.INTERVAL) {
+            return "org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(%d))"
+                .formatted(position)
+                .indent(8)
+                .stripTrailing();
+        }
+
         String javaType = typeResolver.resolve(column.type());
 
         return "resultSet.getObject(%d, %s.class)"
@@ -1285,12 +1312,19 @@ public final class JavaCodeGenerator implements CodeGenerator {
 
     /**
      * Reads one array column as a list of its element type. An array of an enum
-     * reads each label and resolves it to the generated constant.
+     * reads each label and resolves it to the generated constant, and an array
+     * of {@code INTERVAL} reads each element's text and parses it.
      */
     private String generateArrayMapping(QueryColumn column, int position) {
         if (column.type() == ColumnType.ENUM) {
             return "org.sqlcj.runtime.SqlArray.getList(resultSet, %d, String.class, %s::fromLabel)"
                 .formatted(position, JavaNames.enumTypeName(column.enumType()));
+        }
+
+        if (column.type() == ColumnType.INTERVAL) {
+            return ("org.sqlcj.runtime.SqlArray.getList("
+                + "resultSet, %d, String.class, org.sqlcj.runtime.SqlInterval::parse)")
+                .formatted(position);
         }
 
         return "org.sqlcj.runtime.SqlArray.getList(resultSet, %d, %s.class)"

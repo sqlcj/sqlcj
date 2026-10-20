@@ -29,6 +29,7 @@ public class DefaultTypeResolver implements TypeResolver {
             case DOUBLE_PRECISION -> "Double";
             case UUID -> "UUID";
             case BYTEA -> "byte[]";
+            case INTERVAL -> "SqlInterval";
             case ENUM -> throw new IllegalArgumentException(
                 "An enum column has no mapped Java type; its generated enum type is named by the generator"
             );

@@ -14,6 +14,7 @@ import org.sqlcj.runtime.JdbcQueryExecutor;
 import org.sqlcj.runtime.JdbcTransactions;
 import org.sqlcj.runtime.QueryCardinalityException;
 import org.sqlcj.runtime.QueryExecutor;
+import org.sqlcj.runtime.SqlInterval;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -346,6 +347,22 @@ class PostgresIntegrationTest {
             networks  CIDR[],
             macs      MACADDR[],
             mac8s     MACADDR8[]
+        );
+        """;
+
+    /**
+     * A snapshot declaring a nullable scalar and a nullable one-dimensional
+     * array {@code INTERVAL} column beside the instant an interval window is
+     * measured from, so that one row can carry interval values, one can carry
+     * nulls, and a read can filter on {@code now() - :age::interval}.
+     */
+    private static final String INTERVAL_SCHEMA = """
+        CREATE TABLE duration_values
+        (
+            id         BIGINT PRIMARY KEY,
+            age        INTERVAL,
+            ages       INTERVAL[],
+            created_at TIMESTAMP WITH TIME ZONE
         );
         """;
 
@@ -725,6 +742,7 @@ class PostgresIntegrationTest {
         execute("DROP TABLE IF EXISTS categories");
         execute("DROP TABLE IF EXISTS documents");
         execute("DROP TABLE IF EXISTS network_values");
+        execute("DROP TABLE IF EXISTS duration_values");
         execute("DROP TABLE IF EXISTS user_aliases");
         execute("DROP TABLE IF EXISTS users");
         execute(SCHEMA);
@@ -3349,6 +3367,159 @@ class PostgresIntegrationTest {
             assertEquals(
                 List.of(),
                 ids(findAboveAddress.invoke(repository, "192.168.0.20/24"))
+            );
+        }
+    }
+
+    /**
+     * Proves that an {@code INTERVAL} round trips through generated code as the
+     * exact {@code org.sqlcj.runtime.SqlInterval} value PostgreSQL stores: a
+     * value holding months, days, and a time part, a negative value, an array
+     * holding a null element, and a null scalar are all written and read back
+     * unchanged, and a read filters on {@code now() - :age::interval}.
+     *
+     * <p>One row is written on a caller-owned connection whose session
+     * {@code IntervalStyle} is {@code sql_standard} and read back on the
+     * default {@code postgres} style, because the generated binding writes an
+     * explicit sign on every field, which every style reads alike.
+     */
+    @Test
+    void shouldRoundTripIntervalValues() throws Exception {
+        execute(INTERVAL_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(
+            INTERVAL_SCHEMA,
+            """
+                -- name: InsertDurationValue :exec
+                INSERT INTO duration_values (id, age, ages, created_at)
+                VALUES ($1, $2, $3, $4);
+
+                -- name: GetDurationValue :one
+                SELECT id, age, ages, created_at
+                FROM duration_values
+                WHERE id = $1;
+
+                -- name: FindRecentDurations :many
+                SELECT id
+                FROM duration_values
+                WHERE created_at > now() - :age::interval
+                ORDER BY id;
+                """
+        );
+
+        SqlInterval mixed = new SqlInterval(14, -3, 3_723_000_004L);
+        SqlInterval negative = new SqlInterval(-1, 2, -10_800_000_000L);
+
+        OffsetDateTime recent = OffsetDateTime.now();
+        OffsetDateTime old = recent.minusDays(10);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Method insertMethod = repository.getClass().getMethod(
+                "insertDurationValue",
+                Long.class,
+                SqlInterval.class,
+                List.class,
+                OffsetDateTime.class
+            );
+
+            assertEquals(
+                1,
+                insertMethod.invoke(
+                    repository,
+                    1L,
+                    mixed,
+                    Arrays.asList(new SqlInterval(0, 0, 1_500_000L), null),
+                    recent
+                )
+            );
+
+            assertEquals(
+                1,
+                insertMethod.invoke(repository, 2L, null, null, old)
+            );
+
+            assertEquals(
+                1,
+                insertMethod.invoke(
+                    repository,
+                    3L,
+                    negative,
+                    List.of(new SqlInterval(-14, 0, 0)),
+                    old
+                )
+            );
+
+            try (Connection connection = dataSource.getConnection()) {
+                try (Statement statement = connection.createStatement()) {
+                    statement.execute("SET IntervalStyle = 'sql_standard'");
+                }
+
+                Object sqlStandardRepository = newRepository(
+                    classLoader,
+                    new JdbcQueryExecutor(connection)
+                );
+
+                assertEquals(
+                    1,
+                    insertMethod.invoke(sqlStandardRepository, 4L, mixed, null, recent)
+                );
+            }
+
+            Method getMethod = repository.getClass().getMethod(
+                "getDurationValue",
+                Long.class
+            );
+
+            Object result = getMethod.invoke(repository, 1L);
+
+            assertEquals(
+                List.of("id", "age", "ages", "createdAt"),
+                recordComponentNames(result)
+            );
+
+            assertEquals(
+                List.of(Long.class, SqlInterval.class, List.class, OffsetDateTime.class),
+                recordComponentTypes(result)
+            );
+
+            assertEquals(mixed, component(result, "age"));
+
+            assertEquals(
+                Arrays.asList(new SqlInterval(0, 0, 1_500_000L), null),
+                component(result, "ages")
+            );
+
+            Object nullResult = getMethod.invoke(repository, 2L);
+
+            assertNull(component(nullResult, "age"));
+            assertNull(component(nullResult, "ages"));
+
+            Object negativeResult = getMethod.invoke(repository, 3L);
+
+            assertEquals(negative, component(negativeResult, "age"));
+
+            assertEquals(
+                List.of(new SqlInterval(-14, 0, 0)),
+                component(negativeResult, "ages")
+            );
+
+            assertEquals(mixed, component(getMethod.invoke(repository, 4L), "age"));
+
+            Method findRecent = repository.getClass().getMethod(
+                "findRecentDurations",
+                SqlInterval.class
+            );
+
+            assertEquals(
+                List.of(1L, 4L),
+                ids(findRecent.invoke(repository, new SqlInterval(0, 1, 0)))
+            );
+
+            assertEquals(
+                List.of(1L, 2L, 3L, 4L),
+                ids(findRecent.invoke(repository, new SqlInterval(1, 0, 0)))
             );
         }
     }

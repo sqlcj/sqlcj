@@ -1111,6 +1111,81 @@ class JavaCodeGeneratorTest {
     }
 
     /**
+     * An {@code INTERVAL} parameter is an {@code org.sqlcj.runtime.SqlInterval}
+     * bound through {@code org.sqlcj.runtime.UntypedText} as the text the value
+     * writes, and an array of one binds the text of each element; a column of
+     * either is read back by parsing PostgreSQL's own text, which the driver
+     * reports as a type of its own rather than as a character type. The Java
+     * type is imported as a {@code java.time} type is, while the runtime
+     * wrappers are written out in full, and the generated source compiles.
+     */
+    @Test
+    void shouldWrapIntervalArgumentsAndReadThemThroughSqlInterval() throws IOException {
+        QueryModel query = new QueryModel(
+            "FindDuration",
+            QueryType.ONE,
+            "durations",
+            """
+                SELECT id, age, ages
+                FROM durations
+                WHERE age = ?
+                  AND ages = ?
+                """,
+            List.of(1, 2),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("age", ColumnType.INTERVAL, true),
+                new QueryColumn("ages", ColumnType.INTERVAL, true, null, true)
+            ),
+            List.of(
+                new QueryParameter(1, "age", ColumnType.INTERVAL),
+                new QueryParameter(2, "ages", ColumnType.INTERVAL, null, true)
+            ),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                "public FindDurationResult findDuration("
+                    + "SqlInterval age, List<SqlInterval> ages)"
+            )
+        );
+
+        assertTrue(
+            source.contains(
+                "java.util.Arrays.asList("
+                    + "new org.sqlcj.runtime.UntypedText(age == null ? null : age.format()), "
+                    + "org.sqlcj.runtime.SqlArray.of("
+                    + "\"interval\", ages, org.sqlcj.runtime.SqlInterval::format))"
+            )
+        );
+
+        assertTrue(source.contains("resultSet.getObject(1, Long.class)"));
+
+        assertTrue(
+            source.contains("org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(2))")
+        );
+
+        assertTrue(
+            source.contains(
+                "org.sqlcj.runtime.SqlArray.getList("
+                    + "resultSet, 3, String.class, org.sqlcj.runtime.SqlInterval::parse)"
+            )
+        );
+
+        assertTrue(source.contains("import org.sqlcj.runtime.SqlInterval;"));
+
+        assertFalse(source.contains("import org.sqlcj.runtime.UntypedText;"));
+        assertFalse(source.contains("import org.sqlcj.runtime.SqlArray;"));
+
+        assertCompiles(file);
+    }
+
+    /**
      * Compiles a repository that binds JSON text in a write and binds and reads
      * it in a query.
      */

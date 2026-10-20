@@ -475,6 +475,26 @@ class QueryAnalyzerTest {
         )
     );
 
+    /**
+     * A schema whose {@code durations} table carries a scalar and a
+     * one-dimensional array {@code INTERVAL} column, beside the timestamp
+     * column an interval is subtracted from, for the interval typing tests.
+     */
+    private static final Schema intervalSchema = new Schema(
+        List.of(
+            new Table(
+                "durations",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("age", ColumnType.INTERVAL, true),
+                    new Column("ages", ColumnType.INTERVAL, true, null, null, true),
+                    new Column("created_at", ColumnType.TIMESTAMP, true)
+                ),
+                List.of()
+            )
+        )
+    );
+
     private final SqlParser parser = new SqlParser();
     private final QueryAnalyzer analyzer = new QueryAnalyzer();
 
@@ -2205,8 +2225,8 @@ class QueryAnalyzerTest {
             "SELECT CAST(SUM(id) AS numeric) FROM users"
                 + "|A cast projection requires a result alias,"
                 + " such as SUM(amount)::numeric AS total.",
-            "SELECT id::interval AS i FROM users"
-                + "|Result column 'i' has unsupported cast type INTERVAL"
+            "SELECT id::money AS i FROM users"
+                + "|Result column 'i' has unsupported cast type MONEY"
         }
     )
     void shouldRejectUnsupportedCastProjectionForm(String sql, String message) {
@@ -6179,9 +6199,9 @@ class QueryAnalyzerTest {
     @CsvSource(
         delimiter = '|',
         value = {
-            "SELECT id FROM users WHERE id = $1::interval|$1|INTERVAL",
+            "SELECT id FROM users WHERE id = $1::money|$1|MONEY",
             "SELECT id FROM users WHERE id = $1::int[][]|$1|INT[][]",
-            "SELECT id FROM users WHERE id = :value::interval|:value|INTERVAL"
+            "SELECT id FROM users WHERE id = :value::money|:value|MONEY"
         }
     )
     void shouldRejectUnsupportedCastType(String sql, String placeholder, String type) {
@@ -6526,7 +6546,7 @@ class QueryAnalyzerTest {
      */
     @Test
     void shouldRejectUnsupportedCastTypeOutsideTheAnalyzedClauses() {
-        String sql = "SELECT id FROM users ORDER BY $1::interval";
+        String sql = "SELECT id FROM users ORDER BY $1::money";
 
         Query query = new Query("ListUsers", QueryType.MANY, sql);
         ParsedSql parsedSql = parser.parse(sql);
@@ -6537,7 +6557,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "Placeholder $1 has unsupported cast type INTERVAL",
+            "Placeholder $1 has unsupported cast type MONEY",
             exception.getMessage()
         );
     }
@@ -13255,5 +13275,177 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(message, exception.getMessage());
+    }
+
+    /**
+     * A placeholder a scalar {@code INTERVAL} column types — a comparison, an
+     * {@code IN} element, and a {@code BETWEEN} bound — is an interval
+     * parameter, so the generated method takes the runtime interval value and
+     * the database types the text it is bound as from the comparison itself.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "age = $1|1",
+            "$1 = age|1",
+            "age IN ($1, $2)|2",
+            "age BETWEEN $1 AND $2|2"
+        }
+    )
+    void shouldTypeAScalarPlaceholderOfAnIntervalColumn(String predicate, int count) {
+        String sql = "SELECT id, age FROM durations WHERE " + predicate;
+
+        QueryModel model = analyzer.analyze(
+            new Query("FindDurations", QueryType.MANY, sql),
+            parser.parse(sql),
+            intervalSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("age", ColumnType.INTERVAL, true)
+            ),
+            model.columns()
+        );
+
+        List<QueryParameter> expected = new ArrayList<>();
+
+        for (int index = 1; index <= count; index++) {
+            expected.add(new QueryParameter(index, "age", ColumnType.INTERVAL));
+        }
+
+        assertEquals(expected, model.parameters());
+    }
+
+    /**
+     * An {@code = ANY} list over a scalar {@code INTERVAL} column binds an
+     * array of intervals, because PostgreSQL maps an {@code interval} array.
+     */
+    @Test
+    void shouldTypeAListParameterOfAnIntervalColumn() {
+        String sql = "SELECT id, ages FROM durations WHERE age = ANY($1)";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListDurations", QueryType.MANY, sql),
+            parser.parse(sql),
+            intervalSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("ages", ColumnType.INTERVAL, true, null, true)
+            ),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "age", ColumnType.INTERVAL, null, true)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * A cast states {@code INTERVAL} for a placeholder and for a result
+     * column, scalar and one-dimensional array alike, with any fields or
+     * precision the spelling carries, as it states any other mapped type.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "interval|INTERVAL|false",
+            "INTERVAL(3)|INTERVAL|false",
+            "interval year to month|INTERVAL|false",
+            "interval[]|INTERVAL|true"
+        }
+    )
+    void shouldTypeAnIntervalCast(String castType, ColumnType type, boolean array) {
+        String sql = "SELECT :value::%s AS value FROM durations WHERE id = :id"
+            .formatted(castType);
+
+        QueryModel model = analyzer.analyze(
+            new Query("ReadValue", QueryType.ONE, sql),
+            parser.parse(sql),
+            intervalSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("value", type, true, null, array)),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "value", type, null, array),
+                new QueryParameter(2, "id", ColumnType.BIGINT)
+            ),
+            model.parameters()
+        );
+    }
+
+    /**
+     * A cast interval placeholder is typed inside an expression the analyzer
+     * does not otherwise read, so a window measured from a timestamp column,
+     * {@code created_at > now() - :age::interval}, takes one interval
+     * parameter named by its own name.
+     */
+    @Test
+    void shouldTypeACastIntervalPlaceholderInATimestampExpression() {
+        String sql = """
+            SELECT id, created_at
+            FROM durations
+            WHERE created_at > now() - :age::interval""";
+
+        QueryModel model = analyzer.analyze(
+            new Query("FindRecentDurations", QueryType.MANY, sql),
+            parser.parse(sql),
+            intervalSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("created_at", ColumnType.TIMESTAMP, true)
+            ),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "age", ColumnType.INTERVAL)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * PostgreSQL 16 orders intervals and defines a {@code SUM} and an
+     * {@code AVG} of one, so every aggregate of a scalar interval column is an
+     * interval, and a {@code MIN} or {@code MAX} of an interval array keeps its
+     * array type as any other ordered array does.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT MIN(age) AS n FROM durations|false",
+            "SELECT MAX(age) AS n FROM durations|false",
+            "SELECT SUM(age) AS n FROM durations|false",
+            "SELECT AVG(age) AS n FROM durations|false",
+            "SELECT MIN(ages) AS n FROM durations|true"
+        }
+    )
+    void shouldTypeAggregatesOfAnIntervalColumn(String sql, boolean array) {
+        QueryModel model = analyzer.analyze(
+            new Query("ReadDurationAggregate", QueryType.ONE, sql),
+            parser.parse(sql),
+            intervalSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("n", ColumnType.INTERVAL, true, null, array)),
+            model.columns()
+        );
     }
 }

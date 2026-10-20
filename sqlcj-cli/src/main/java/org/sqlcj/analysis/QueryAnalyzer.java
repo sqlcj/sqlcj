@@ -420,8 +420,9 @@ public final class QueryAnalyzer {
 
     /**
      * The type of a {@code SUM} of each scalar type PostgreSQL 16 defines one
-     * for, which widens an integral type so that the sum of many rows fits. A
-     * type this table does not name has no sum, an array included.
+     * for, which widens an integral type so that the sum of many rows fits, and
+     * keeps {@code INTERVAL}, whose sum PostgreSQL defines as well. A type this
+     * table does not name has no sum, an array included.
      */
     private static final Map<ColumnType, ColumnType> SUM_TYPES = Map.of(
         ColumnType.SMALLINT, ColumnType.BIGINT,
@@ -429,13 +430,15 @@ public final class QueryAnalyzer {
         ColumnType.BIGINT, ColumnType.DECIMAL,
         ColumnType.DECIMAL, ColumnType.DECIMAL,
         ColumnType.REAL, ColumnType.REAL,
-        ColumnType.DOUBLE_PRECISION, ColumnType.DOUBLE_PRECISION
+        ColumnType.DOUBLE_PRECISION, ColumnType.DOUBLE_PRECISION,
+        ColumnType.INTERVAL, ColumnType.INTERVAL
     );
 
     /**
      * The type of an {@code AVG} of each scalar type PostgreSQL 16 defines one
-     * for, which is exact for an exact input and floating for a floating one.
-     * A type this table does not name has no average, an array included.
+     * for, which is exact for an exact input and floating for a floating one,
+     * and keeps {@code INTERVAL}, whose average PostgreSQL defines as well. A
+     * type this table does not name has no average, an array included.
      */
     private static final Map<ColumnType, ColumnType> AVERAGE_TYPES = Map.of(
         ColumnType.SMALLINT, ColumnType.DECIMAL,
@@ -443,7 +446,8 @@ public final class QueryAnalyzer {
         ColumnType.BIGINT, ColumnType.DECIMAL,
         ColumnType.DECIMAL, ColumnType.DECIMAL,
         ColumnType.REAL, ColumnType.DOUBLE_PRECISION,
-        ColumnType.DOUBLE_PRECISION, ColumnType.DOUBLE_PRECISION
+        ColumnType.DOUBLE_PRECISION, ColumnType.DOUBLE_PRECISION,
+        ColumnType.INTERVAL, ColumnType.INTERVAL
     );
 
     /**
@@ -1706,6 +1710,7 @@ public final class QueryAnalyzer {
             case CIDR -> "cidr";
             case MACADDR -> "macaddr";
             case MACADDR8 -> "macaddr8";
+            case INTERVAL -> "interval";
             case ENUM -> column.enumType();
         };
 
