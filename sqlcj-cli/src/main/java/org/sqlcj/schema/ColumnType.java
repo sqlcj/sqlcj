@@ -23,6 +23,7 @@ public enum ColumnType {
     CIDR,
     MACADDR,
     MACADDR8,
+    INTERVAL,
 
     /**
      * A column of a declared enum type, whose Java type is the enum generated

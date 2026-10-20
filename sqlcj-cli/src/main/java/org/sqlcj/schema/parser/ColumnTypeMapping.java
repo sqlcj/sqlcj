@@ -235,6 +235,7 @@ public final class ColumnTypeMapping {
             case "CIDR" -> ColumnType.CIDR;
             case "MACADDR" -> ColumnType.MACADDR;
             case "MACADDR8" -> ColumnType.MACADDR8;
+            case "INTERVAL" -> ColumnType.INTERVAL;
             default -> null;
         };
     }

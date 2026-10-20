@@ -394,7 +394,14 @@ class DefaultSchemaParserTest {
             "MACADDR, MACADDR",
             "macaddr, MACADDR",
             "MACADDR8, MACADDR8",
-            "macaddr8, MACADDR8"
+            "macaddr8, MACADDR8",
+            "INTERVAL, INTERVAL",
+            "interval, INTERVAL",
+            "INTERVAL(3), INTERVAL",
+            "INTERVAL YEAR, INTERVAL",
+            "INTERVAL YEAR TO MONTH, INTERVAL",
+            "interval hour to minute, INTERVAL",
+            "INTERVAL DAY TO SECOND(3), INTERVAL"
         }
     )
     void shouldParsePostgresTypeSpellings(String sqlType, ColumnType expectedType) {
@@ -515,6 +522,7 @@ class DefaultSchemaParserTest {
             "xml[], XML[]",
             "\"char\", \"CHAR\"",
             "integer[][], INTEGER[][]",
+            "interval[][], INTERVAL[][]",
             "'numeric(10, 2)[3][2]', NUMERIC[][]"
         }
     )
@@ -591,7 +599,9 @@ class DefaultSchemaParserTest {
             "inet[], INET",
             "cidr[], CIDR",
             "macaddr[], MACADDR",
-            "macaddr8[], MACADDR8"
+            "macaddr8[], MACADDR8",
+            "interval[], INTERVAL",
+            "INTERVAL YEAR TO MONTH[], INTERVAL"
         }
     )
     void shouldModelOneDimensionalArrayColumns(String sqlType, ColumnType elementType) {

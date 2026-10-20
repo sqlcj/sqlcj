@@ -306,6 +306,7 @@ accepted and map exactly like their unparameterized spellings.
 | `CITEXT` | `String` | The text itself. PostgreSQL compares, matches, and orders a `citext` ignoring case, so an equality, a `LIKE`, an `ILIKE`, and an `= ANY(citext[])` over such a column are case-insensitive. The type comes from the `citext` extension, which belongs to the schema it was installed in, so the name is resolved in the one namespace sqlcj models: `public.citext` and `"public"."citext"` are the type `citext`, and a name qualified with any other schema never resolves. |
 | `INET`, `CIDR` | `String` | PostgreSQL's own text of the value, its netmask included, as in `192.168.0.10/24` and `10.0.0.0/8`. `java.net.InetAddress` holds no netmask, so the text is the exact value. |
 | `MACADDR`, `MACADDR8` | `String` | PostgreSQL's own text of the address, as in `08:00:2b:01:02:03`. |
+| `INTERVAL`, with any fields and any precision, such as `INTERVAL YEAR TO MONTH` and `INTERVAL(3)` | `org.sqlcj.runtime.SqlInterval` | A record of `int months`, `int days`, and `long microseconds`, which is PostgreSQL's own representation: none of the three converts into another without a calendar, because a month is 28 to 31 days and a day is 23, 24, or 25 hours across a daylight-saving change. The fields and the precision of the spelling are ignored, as PostgreSQL ignores them for the stored value. `SqlInterval.of(java.time.Period)` and `SqlInterval.of(java.time.Duration)` build one, and `toPeriod()` and `toDuration()` convert back, each throwing `java.time.DateTimeException` when the value holds a component the target cannot hold: a `Period` holds no time part and a `Duration` holds no month. `toDuration()` counts a day as 24 hours, as `Duration.ofDays` does and as PostgreSQL compares two intervals. |
 | The name of an enum type the schema declares | The generated Java enum of that type | Matched without SQL identifier delimiters and case-insensitively, as PostgreSQL resolves an unquoted type name. A `public`-qualified name resolves as its unqualified name, so `public.mood` and `"public"."mood"` are the type `mood`, and a name qualified with any other schema never resolves. See [Enum Types](#enum-types). |
 | A one-dimensional array of any spelling above except `BYTEA`, `JSON`, and `JSONB`, written `type[]` or `type[n]` | `java.util.List<T>` of the element's Java type | The declared size is ignored, as PostgreSQL ignores it. See [Array Types](#array-types). |
 
@@ -316,8 +317,9 @@ failing the schema, and fails only a query that uses it; see
 
 The generated repository imports `java.time.LocalDate`, `java.time.LocalTime`,
 `java.time.LocalDateTime`, `java.time.OffsetDateTime`, `java.math.BigDecimal`,
-and `java.util.UUID` as needed; the remaining types need no import, and
-`java.util.List` is already imported by every repository. A row record imports
+`java.util.UUID`, and `org.sqlcj.runtime.SqlInterval` as needed; the remaining
+types need no import, and `java.util.List` is already imported by every
+repository. A row record imports
 `java.util.List` when one of its components is an array. A generated
 enum belongs to the generated package, so it is used by its simple name and
 needs no import either. Each result column is read at its one-based position in
@@ -326,8 +328,19 @@ or with `resultSet.getString(position)` for a `JSON`, `JSONB`, `CITEXT`,
 `INET`, `CIDR`, `MACADDR`, or `MACADDR8` column, which the driver reports as a
 type of its own rather than as a character type. An
 enum column reads its label the same way and resolves it with
-`<EnumType>.fromLabel(...)`, and an array column is read with
-`org.sqlcj.runtime.SqlArray.getList(...)`.
+`<EnumType>.fromLabel(...)`, an `INTERVAL` column reads PostgreSQL's own text
+the same way and parses it with
+`org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(position))`, and an
+array column is read with `org.sqlcj.runtime.SqlArray.getList(...)`.
+
+`SqlInterval.parse` reads the text PostgreSQL writes under its default
+`IntervalStyle`, `postgres`, such as `1 year 2 mons -3 days +01:02:03.000004`,
+and reads `null` as `null`, so a SQL `NULL` column is a `null` component. Text
+of any other `IntervalStyle`, which the session can select, is rejected with
+`IllegalArgumentException` naming the text and `IntervalStyle`, because such
+text cannot be told apart from the `postgres` form: a leading `-` of
+`sql_standard` applies to every unsigned field after it. sqlcj never changes the
+session setting.
 
 A `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`, or `MACADDR8` argument
 is passed to the executor as
@@ -340,6 +353,13 @@ comparison as a case-sensitive `text` one. An enum argument is passed the same w
 around the label of its constant, because a label bound as `varchar` is
 rejected where an enum is expected. An array argument is wrapped in
 `org.sqlcj.runtime.SqlArray` the same way; see [Array Types](#array-types).
+
+An `INTERVAL` argument is passed to the executor as
+`new org.sqlcj.runtime.UntypedText(value == null ? null : value.format())`.
+`format()` writes the three counts with an explicit sign on every field, as in
+`+14 mons -3 days +3723000004 microseconds`, so that PostgreSQL reads the text
+alike under every `IntervalStyle` and the least microsecond count the record
+holds is spellable, which the `HH:MM:SS` form cannot be.
 
 ## Enum Types
 
@@ -485,7 +505,9 @@ generates `List<String> tags` and `List<StageSetting> past`.
 
 - The element type is any spelling in
   [Supported Column Types](#supported-column-types) except `BYTEA`, `JSON`, and
-  `JSONB`, or the name of an enum type the schema declares.
+  `JSONB`, or the name of an enum type the schema declares. `INTERVAL[]` is a
+  `List<org.sqlcj.runtime.SqlInterval>`, while `INTERVAL[][]` has no mapping and
+  is recorded as `INTERVAL[][]`.
 - The declared size of a dimension is ignored, as PostgreSQL ignores it, so
   `numeric(10, 2)[3]` is the same type as `numeric(10, 2)[]`.
 - An array column is typed the same way through `CREATE TABLE`,
@@ -513,14 +535,17 @@ full so that the generated imports are unchanged, where `<element type>` is
 PostgreSQL's own name of the element type: `int4`, `int8`, `int2`, `bool`,
 `varchar`, `bpchar`, `text`, `date`, `time`, `timestamp`, `timestamptz`,
 `numeric`, `float4`, `float8`, `uuid`, `citext`, `inet`, `cidr`, `macaddr`,
-`macaddr8`, or the declared name of an enum type. A
+`macaddr8`, `interval`, or the declared name of an enum type. A
 `CHAR` or `CHARACTER` element is named `bpchar`, PostgreSQL's own name of the
 blank-padded character type, because PostgreSQL compares a `bpchar` array only
 with another one; `VARCHAR` and `CHARACTER VARYING` elements are named
 `varchar`. Both read their elements back as `String`, blank padded to the
 declared length for `CHAR`, as a scalar of that type is read. An array of an
 enum carries the labels of its constants instead, as
-`org.sqlcj.runtime.SqlArray.of("<enum type>", <parameter>, <EnumType>::label)`.
+`org.sqlcj.runtime.SqlArray.of("<enum type>", <parameter>, <EnumType>::label)`,
+and an array of `INTERVAL` carries the text of its elements, as
+`org.sqlcj.runtime.SqlArray.of("interval", <parameter>,
+org.sqlcj.runtime.SqlInterval::format)`.
 
 `JdbcQueryExecutor` builds the value with `Connection.createArrayOf` on the
 connection the operation runs on and binds it with
@@ -530,8 +555,11 @@ reads each element as a scalar of that type is read, a `String` element with
 `getString`, for the same reason a scalar of one of those types is; an array of
 an enum is read
 as `org.sqlcj.runtime.SqlArray.getList(resultSet, position, String.class,
-<EnumType>::fromLabel)`. Both go through the JDBC `java.sql.Array` API alone, so
-neither the runtime nor the generated code depends on a driver.
+<EnumType>::fromLabel)`, and an array of `INTERVAL` as
+`org.sqlcj.runtime.SqlArray.getList(resultSet, position, String.class,
+org.sqlcj.runtime.SqlInterval::parse)`. All of them go through the JDBC
+`java.sql.Array` API alone, so neither the runtime nor the generated code
+depends on a driver.
 
 Nulls are carried in both directions:
 
@@ -540,7 +568,8 @@ Nulls are carried in both directions:
   receives a SQL `NULL` rather than an empty array,
 - a `null` element is bound as a `NULL` element of the array,
 - a SQL `NULL` column reads back as a `null` list, an empty array as an empty
-  list, and a `NULL` element as a `null` element.
+  list, and a `NULL` element as a `null` element, so a `NULL` element of an
+  `INTERVAL[]` is a `null` `SqlInterval`.
 
 A declared multidimensional array, such as `integer[][]`, and an array of
 `BYTEA`, `JSON`, `JSONB`, or an unmapped element type have no Java mapping and
@@ -1024,6 +1053,23 @@ Type table:
   covers the generated `UntypedText` argument, the `SqlArray` argument of a
   `citext` array, the `getString` and `getList` reads, and compilation of the
   generated source.
+- `SqlIntervalTest` covers every `postgres`-style text PostgreSQL 16 writes,
+  the rejection of `sql_standard`, `iso_8601`, and `postgres_verbose` text, the
+  text `format()` writes, and each `Period` and `Duration` conversion with its
+  unrepresentable-component and overflow failures;
+  `DefaultSchemaParserTest.shouldParsePostgresTypeSpellings`,
+  `DefaultSchemaParserTest.shouldModelOneDimensionalArrayColumns`, and
+  `DefaultSchemaParserTest.shouldRecordUnsupportedColumnType` cover the
+  `INTERVAL` fields and precision spellings, the array through every statement
+  that types a column, and `interval[][]` staying unmapped;
+  `JavaCodeGeneratorTest.shouldWrapIntervalArgumentsAndReadThemThroughSqlInterval`
+  covers the generated binding, the `SqlInterval` import, the parsing reads, and
+  compilation of the generated source; and
+  `PostgresIntegrationTest.shouldRoundTripIntervalValues` executes a round trip
+  of a value holding months, days, and a time part, a negative value, an array
+  holding a null element, a null scalar, a write under session
+  `IntervalStyle sql_standard`, and a `now() - :age::interval` filter, against
+  PostgreSQL 16.
 - `JavaCodeGeneratorTest.shouldWrapJsonArgumentsAndReadJsonColumnsAsText` and
   `JavaCodeGeneratorTest.shouldGenerateCompilableJavaSourceForJsonTypes` cover
   the generated `UntypedText` argument at every binding position of a JSON
