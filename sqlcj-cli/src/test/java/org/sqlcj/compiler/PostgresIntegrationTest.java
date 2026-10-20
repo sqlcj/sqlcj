@@ -194,8 +194,9 @@ class PostgresIntegrationTest {
 
     /**
      * A snapshot that declares every accepted floating-point, binary, and time
-     * spelling, each of them nullable so that one row can carry values and
-     * another can carry nulls.
+     * spelling, the {@code FLOAT} spellings whose precision selects
+     * {@code REAL} and {@code DOUBLE PRECISION} included, each of them nullable
+     * so that one row can carry values and another can carry nulls.
      */
     private static final String MEASUREMENT_SCHEMA = """
         CREATE TABLE measurements
@@ -203,8 +204,10 @@ class PostgresIntegrationTest {
             id        BIGINT PRIMARY KEY,
             amount    REAL,
             ratio     FLOAT4,
+            rate      FLOAT(24),
             total     DOUBLE PRECISION,
             average   FLOAT8,
+            weight    FLOAT,
             payload   BYTEA,
             opened_at TIME,
             closed_at TIME(3) WITHOUT TIME ZONE
@@ -2482,7 +2485,9 @@ class PostgresIntegrationTest {
      * Proves that the floating-point, binary, and time spellings round trip
      * through generated code: one row is written with non-null values and one
      * with nulls, and both are read back as {@code Float}, {@code Double},
-     * {@code byte[]}, and {@code LocalTime} components.
+     * {@code byte[]}, and {@code LocalTime} components. A {@code FLOAT(24)}
+     * column round trips as a {@code Float} and a {@code FLOAT} column as a
+     * {@code Double}, which is the type each precision selects.
      */
     @Test
     void shouldRoundTripFloatingPointBinaryAndTimeValues() throws Exception {
@@ -2493,11 +2498,13 @@ class PostgresIntegrationTest {
             """
                 -- name: InsertMeasurement :exec
                 INSERT INTO measurements
-                    (id, amount, ratio, total, average, payload, opened_at, closed_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+                    (id, amount, ratio, rate, total, average, weight, payload,
+                     opened_at, closed_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);
 
                 -- name: GetMeasurement :one
-                SELECT id, amount, ratio, total, average, payload, opened_at, closed_at
+                SELECT id, amount, ratio, rate, total, average, weight, payload,
+                       opened_at, closed_at
                 FROM measurements
                 WHERE id = $1;
                 """
@@ -2516,6 +2523,8 @@ class PostgresIntegrationTest {
                 Long.class,
                 Float.class,
                 Float.class,
+                Float.class,
+                Double.class,
                 Double.class,
                 Double.class,
                 byte[].class,
@@ -2530,8 +2539,10 @@ class PostgresIntegrationTest {
                     1L,
                     1.5f,
                     2.25f,
+                    5.75f,
                     3.5d,
                     4.125d,
+                    6.0625d,
                     payload,
                     openedAt,
                     closedAt
@@ -2540,7 +2551,19 @@ class PostgresIntegrationTest {
 
             assertEquals(
                 1,
-                insertMethod.invoke(repository, 2L, null, null, null, null, null, null, null)
+                insertMethod.invoke(
+                    repository,
+                    2L,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                )
             );
 
             Method queryMethod = repository.getClass().getMethod("getMeasurement", Long.class);
@@ -2554,8 +2577,10 @@ class PostgresIntegrationTest {
                     "id",
                     "amount",
                     "ratio",
+                    "rate",
                     "total",
                     "average",
+                    "weight",
                     "payload",
                     "openedAt",
                     "closedAt"
@@ -2568,6 +2593,8 @@ class PostgresIntegrationTest {
                     Long.class,
                     Float.class,
                     Float.class,
+                    Float.class,
+                    Double.class,
                     Double.class,
                     Double.class,
                     byte[].class,
@@ -2579,8 +2606,10 @@ class PostgresIntegrationTest {
 
             assertEquals(1.5f, component(result, "amount"));
             assertEquals(2.25f, component(result, "ratio"));
+            assertEquals(5.75f, component(result, "rate"));
             assertEquals(3.5d, component(result, "total"));
             assertEquals(4.125d, component(result, "average"));
+            assertEquals(6.0625d, component(result, "weight"));
             assertArrayEquals(
                 payload,
                 assertInstanceOf(byte[].class, component(result, "payload"))
@@ -2595,8 +2624,10 @@ class PostgresIntegrationTest {
             assertEquals(2L, component(nullResult, "id"));
             assertNull(component(nullResult, "amount"));
             assertNull(component(nullResult, "ratio"));
+            assertNull(component(nullResult, "rate"));
             assertNull(component(nullResult, "total"));
             assertNull(component(nullResult, "average"));
+            assertNull(component(nullResult, "weight"));
             assertNull(component(nullResult, "payload"));
             assertNull(component(nullResult, "openedAt"));
             assertNull(component(nullResult, "closedAt"));

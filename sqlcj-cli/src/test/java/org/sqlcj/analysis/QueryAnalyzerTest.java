@@ -6192,8 +6192,9 @@ class QueryAnalyzerTest {
 
     /**
      * A cast type sqlcj does not map, including an array of more than one
-     * dimension, is rejected naming the placeholder it would have typed and
-     * the declared type.
+     * dimension and a {@code FLOAT} precision PostgreSQL rejects, is rejected
+     * naming the placeholder it would have typed and the declared type, whose
+     * text carries such a precision.
      */
     @ParameterizedTest
     @CsvSource(
@@ -6201,7 +6202,8 @@ class QueryAnalyzerTest {
         value = {
             "SELECT id FROM users WHERE id = $1::money|$1|MONEY",
             "SELECT id FROM users WHERE id = $1::int[][]|$1|INT[][]",
-            "SELECT id FROM users WHERE id = :value::money|:value|MONEY"
+            "SELECT id FROM users WHERE id = :value::money|:value|MONEY",
+            "SELECT id FROM users WHERE id = :value::float(54)|:value|FLOAT(54)"
         }
     )
     void shouldRejectUnsupportedCastType(String sql, String placeholder, String type) {
@@ -13446,6 +13448,46 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(new QueryColumn("n", ColumnType.INTERVAL, true, null, array)),
             model.columns()
+        );
+    }
+
+    /**
+     * A cast states the floating-point type a {@code FLOAT} precision selects
+     * for a placeholder and for a result column, scalar and one-dimensional
+     * array alike: no precision and {@code 53} are {@code DOUBLE PRECISION}
+     * and {@code 24} is {@code REAL}.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "float|DOUBLE_PRECISION|false",
+            "float(24)|REAL|false",
+            "FLOAT(53)|DOUBLE_PRECISION|false",
+            "float(24)[]|REAL|true"
+        }
+    )
+    void shouldTypeAFloatCast(String castType, ColumnType type, boolean array) {
+        String sql = "SELECT :value::%s AS value FROM users WHERE id = :id"
+            .formatted(castType);
+
+        QueryModel model = analyzer.analyze(
+            new Query("ReadValue", QueryType.ONE, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("value", type, true, null, array)),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "value", type, null, array),
+                new QueryParameter(2, "id", ColumnType.BIGINT)
+            ),
+            model.parameters()
         );
     }
 }
