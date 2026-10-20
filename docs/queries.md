@@ -360,13 +360,14 @@ GROUP BY r.author_id;
   and each is nullable, because each reads `NULL` over no row, over a
   `NOT NULL` column included.
 - `MIN` and `MAX` take their column's own type, its enum type, its array
-  spelling, and its blank-padded spelling included, except that one of a scalar
+  spelling, and its blank-padded spelling included, an `INTERVAL` column
+  included, which PostgreSQL 16 orders, except that one of a scalar
   `CIDR` column is an `INET`, because PostgreSQL 16 defines the aggregate over
   `INET` alone and compares a `CIDR` as the `INET` it converts to. PostgreSQL 16
   defines neither for a scalar `BOOLEAN`, `UUID`, `BYTEA`, `JSON`, `JSONB`,
   `MACADDR`, or `MACADDR8` column, so a `MIN` or `MAX` of one is rejected.
-- `SUM` and `AVG` take one scalar numeric column and generate the type
-  PostgreSQL 16 defines for it:
+- `SUM` and `AVG` take one scalar numeric or `INTERVAL` column and generate
+  the type PostgreSQL 16 defines for it:
 
 | Column type | `SUM` | `AVG` |
 | --- | --- | --- |
@@ -374,6 +375,7 @@ GROUP BY r.author_id;
 | `BIGINT`, `DECIMAL` | `DECIMAL`, a `BigDecimal` | `DECIMAL`, a `BigDecimal` |
 | `REAL` | `REAL`, a `Float` | `DOUBLE PRECISION`, a `Double` |
 | `DOUBLE PRECISION` | `DOUBLE PRECISION`, a `Double` | `DOUBLE PRECISION`, a `Double` |
+| `INTERVAL` | `INTERVAL`, an `org.sqlcj.runtime.SqlInterval` | `INTERVAL`, an `org.sqlcj.runtime.SqlInterval` |
 
 - A column of a type sqlcj does not map is rejected as
   `Column '<name>' has unsupported type <type>` when a `MIN`, `MAX`, `SUM`, or
@@ -389,7 +391,8 @@ GROUP BY r.author_id;
 - Every other aggregate is still an unsupported result expression, including a
   qualified `pg_catalog.count(*)` or `pg_catalog.max(id)`, an aggregate of two
   arguments, a subscripted argument such as `MIN(labels[1])`, a `SUM` or `AVG`
-  of a non-numeric or array column, and the `FILTER` and `OVER` forms.
+  of a column of any other type or of an array column, and the `FILTER` and
+  `OVER` forms.
 
 A read may also project a computed value by stating its type in a cast:
 
@@ -411,7 +414,7 @@ WHERE author_id = $1;
   column's declared type is, so a cast may name a declared enum type or a
   one-dimensional array such as `::text[]`. A cast type sqlcj does not map is
   rejected with
-  `Result column 'total' has unsupported cast type INTERVAL`, naming the result
+  `Result column 'total' has unsupported cast type MONEY`, naming the result
   column and the declared type.
 - The component is always nullable, because the cast operand is not analyzed
   and so whether it can read as `NULL` is unknown at compile time.
@@ -1221,7 +1224,7 @@ string literal, a quoted identifier, or a comment is not a parameter.
   type may be any type a column may declare and sqlcj maps, including a declared
   enum name, written unquoted and matched case-insensitively, and a
   one-dimensional array, which binds a `List`. A cast type sqlcj does not map,
-  such as `INTERVAL` or a multi-dimensional `INT[][]`, is rejected naming the
+  such as `MONEY` or a multi-dimensional `INT[][]`, is rejected naming the
   placeholder and the type.
 - A named cast placeholder keeps its own name. An indexed cast placeholder
   keeps the name of the column whose value it is — a compared column, the
@@ -1651,10 +1654,10 @@ query name, and its header line.
   `INSERT INTO stages (id, labels[1]) VALUES ($1, $2)` — as an unanalyzed
   placeholder location. A cast states the type in each of those locations, and
   the array column of a subscripted write target must still exist.
-- A cast type sqlcj does not map, such as `$1::interval` or a
+- A cast type sqlcj does not map, such as `$1::money` or a
   multi-dimensional `$1::int[][]`, which is rejected naming the placeholder and
   the declared type, or the result column and the declared type when the cast
-  is a projection such as `id::interval AS i`.
+  is a projection such as `id::money AS i`.
 - A `LIKE`-family pattern placeholder that is negated, uses another keyword such
   as `SIMILAR TO`, carries an `ESCAPE` clause or a `BINARY` modifier, tests a
   non-text column, or stands as the tested value. These restrict the uncast
@@ -1890,6 +1893,17 @@ Reads:
   `LIKE` pattern, an `= ANY` list, a cast, a `MIN` and a `MAX`, a set operation,
   and a merged join column, with the `MIN` and `MAX` of `macaddr` and
   `macaddr8` and the pairs with another type that stay rejected.
+- `QueryAnalyzerTest.shouldTypeAScalarPlaceholderOfAnIntervalColumn`,
+  `QueryAnalyzerTest.shouldTypeAListParameterOfAnIntervalColumn`,
+  `QueryAnalyzerTest.shouldTypeAnIntervalCast`,
+  `QueryAnalyzerTest.shouldTypeACastIntervalPlaceholderInATimestampExpression`,
+  and `QueryAnalyzerTest.shouldTypeAggregatesOfAnIntervalColumn` cover an
+  `INTERVAL` column in a comparison, an `IN` list, a `BETWEEN` range, an
+  `= ANY` list, a cast of every fields and precision spelling, a cast
+  placeholder inside `now() - :age::interval`, and a `MIN`, `MAX`, `SUM`, and
+  `AVG`, and
+  `PostgresIntegrationTest.shouldRoundTripIntervalValues` executes the round
+  trip and the `now() - :age::interval` filter against PostgreSQL 16.
 - `QueryAnalyzerTest.shouldResolveRangeBoundParametersFromTestedColumn`,
   `QueryAnalyzerTest.shouldResolveNegatedRangeBoundParameters`,
   `QueryAnalyzerTest.shouldResolveRangeBoundParametersInTextualBindingOrder`,
