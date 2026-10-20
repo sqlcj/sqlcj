@@ -281,7 +281,10 @@ Type spellings are matched case-insensitively, after parenthesized type
 arguments are removed and remaining whitespace is collapsed to single spaces.
 A declared length, precision, or scale is therefore accepted and ignored:
 `VARCHAR(255)`, `DECIMAL(10, 2)`, and `timestamp(3) with time zone` are all
-accepted and map exactly like their unparameterized spellings.
+accepted and map exactly like their unparameterized spellings. `FLOAT(p)` is
+the one exception, because PostgreSQL lets its precision select the type: a
+precision of `1` through `24` is `REAL` and one of `25` through `53` is
+`DOUBLE PRECISION`.
 
 | Accepted SQL spellings | Java type | Notes |
 | --- | --- | --- |
@@ -297,8 +300,8 @@ accepted and map exactly like their unparameterized spellings.
 | `TIMESTAMP`, `TIMESTAMP WITHOUT TIME ZONE` | `java.time.LocalDateTime` | |
 | `TIMESTAMP WITH TIME ZONE`, `TIMESTAMPTZ` | `java.time.OffsetDateTime` | PostgreSQL normalizes the stored value to the session time zone, so a value read back equals the written value by instant rather than by offset. |
 | `DECIMAL`, `NUMERIC` | `java.math.BigDecimal` | |
-| `REAL`, `FLOAT4` | `Float` | |
-| `DOUBLE PRECISION`, `FLOAT8` | `Double` | |
+| `REAL`, `FLOAT4`, `FLOAT(1)` through `FLOAT(24)` | `Float` | |
+| `DOUBLE PRECISION`, `FLOAT8`, `FLOAT`, `FLOAT(25)` through `FLOAT(53)` | `Double` | A `FLOAT` without a precision is `DOUBLE PRECISION`, as PostgreSQL defines it. Any other precision, such as `FLOAT(0)` and `FLOAT(54)`, is rejected by PostgreSQL and has no mapping; it is recorded with its own precision, as in `FLOAT(54)`, because `FLOAT` alone is mapped. |
 | `UUID` | `java.util.UUID` | |
 | `BYTEA` | `byte[]` | A record compares an array component by reference, so two row records holding equal bytes are not `equals`. |
 | `JSON` | `String` | The JSON text itself. PostgreSQL stores it as written, so it reads back exactly as written. sqlcj never parses, validates, or normalizes it. |
@@ -942,9 +945,9 @@ Nullability itself is parsed from `NOT NULL` only:
 Null binding and null reading are executed against PostgreSQL for the nullable
 columns of the integration schema snapshots, which cover `SMALLINT`, `VARCHAR`,
 `TEXT`, `BOOLEAN`, `DATE`, `TIMESTAMP`, `DECIMAL`, `UUID`,
-`TIMESTAMP WITH TIME ZONE`, `REAL`, `DOUBLE PRECISION`, `BYTEA`, `TIME`, `JSON`,
-`JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`, `MACADDR8`, an enum type, and an
-array of every mapped element type.
+`TIMESTAMP WITH TIME ZONE`, `REAL`, `DOUBLE PRECISION`, `FLOAT(24)`, `FLOAT`,
+`BYTEA`, `TIME`, `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`,
+`MACADDR8`, an enum type, and an array of every mapped element type.
 
 ## Unsupported Types and DDL
 
@@ -960,14 +963,19 @@ listed in [Supported Column Types](#supported-column-types) are mapped:
 
 These spellings of otherwise mapped families are unmapped as well:
 
-- `FLOAT` and `FLOAT(p)`, whose precision selects `REAL` or `DOUBLE PRECISION`,
+- a `FLOAT(p)` whose precision PostgreSQL rejects, such as `FLOAT(0)` and
+  `FLOAT(54)`,
 - `TIME WITH TIME ZONE` and `TIMETZ`.
 
 A column of such a type does not fail the schema. It is recorded with its
 declared type, written as the canonical spelling of that type — upper case, with
 parenthesized type arguments removed — followed by `[]` for each declared array
 dimension, so `xml` is recorded as `XML`, `jsonb[]` as `JSONB[]`,
-and `integer[][]` as `INTEGER[][]`.
+and `integer[][]` as `INTEGER[][]`. A `FLOAT` precision PostgreSQL rejects is
+the one type argument kept, so `float(54)` is recorded as `FLOAT(54)` and
+`float(0)[]` as `FLOAT(0)[]`, because `FLOAT` alone names a mapped type; the
+precision of a mapped `FLOAT` is removed like any other type argument, so
+`float(24)[][]` is recorded as `FLOAT[][]`.
 
 A recorded column fails only the analysis of a query that
 
@@ -1033,6 +1041,19 @@ Type table:
   `DefaultSchemaParserTest.shouldParseAddedColumnTypes`, and
   `DefaultSchemaParserTest.shouldParsePostgresTypeSpellings` cover the accepted
   spellings, their case-insensitive forms, and the ignored type arguments.
+- `DefaultSchemaParserTest.shouldParsePostgresTypeSpellings`,
+  `DefaultSchemaParserTest.shouldModelOneDimensionalArrayColumns`, and
+  `DefaultSchemaParserTest.shouldRecordUnsupportedColumnType` cover the
+  `FLOAT` spellings of each precision boundary, their arrays through every
+  statement that types a column, and the rejected `float(0)` and `float(54)`
+  recorded with their own precision beside a `float(24)[][]` recorded without
+  it; `QueryAnalyzerTest.shouldTypeAFloatCast` and
+  `QueryAnalyzerTest.shouldRejectUnsupportedCastType` cover the cast and the
+  cast placeholder of each mapped precision, scalar and array, and the
+  `FLOAT(54)` placeholder diagnostic; and
+  `PostgresIntegrationTest.shouldRoundTripFloatingPointBinaryAndTimeValues`
+  executes a round trip of a `FLOAT(24)` and a `FLOAT` column, with values and
+  nulls, against PostgreSQL 16.
 - `PostgresIntegrationTest.shouldExecuteGeneratedOneQueryAgainstPostgres`,
   `PostgresIntegrationTest.shouldExecuteGeneratedWriteAgainstPostgres`,
   `PostgresIntegrationTest.shouldRoundTripSerialUuidAndTimestampWithTimeZoneValues`,

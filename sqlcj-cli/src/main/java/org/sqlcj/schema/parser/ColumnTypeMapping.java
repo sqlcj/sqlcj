@@ -25,6 +25,9 @@ public final class ColumnTypeMapping {
     /** The array dimension groups a declared type text ends with. */
     private static final Pattern TRAILING_DIMENSIONS = Pattern.compile("(\\[[^\\[\\]]*\\])+$");
 
+    /** The precision a {@code FLOAT} declaration states, as in {@code (24)}. */
+    private static final Pattern FLOAT_PRECISION = Pattern.compile("\\(\\s*(\\d+)\\s*\\)");
+
     /**
      * One declared SQL type and the type sqlcj maps it to.
      *
@@ -65,12 +68,20 @@ public final class ColumnTypeMapping {
      * dimension is an array of its declared element type; a declaration of more
      * dimensions, and an array whose element type has no array mapping, is
      * recorded like any other unmapped type.
+     *
+     * <p>A type argument is ignored, except that a {@code FLOAT} precision
+     * selects the type it maps to, as PostgreSQL defines it; see
+     * {@link #floatType(String, int)}.
      */
     public MappedType map(ColDataType declaredType, List<EnumType> enums) {
         String elementText = elementText(declaredType.getDataType());
         String typeName = typeName(elementText);
         int arrayDimensions = arrayDimensions(declaredType);
         boolean array = arrayDimensions == 1;
+
+        if (typeName.equals("FLOAT")) {
+            return floatType(elementText, arrayDimensions);
+        }
 
         if (arrayDimensions <= 1) {
             ColumnType type = columnType(typeName);
@@ -114,6 +125,81 @@ public final class ColumnTypeMapping {
             typeName + "[]".repeat(arrayDimensions),
             typeName
         );
+    }
+
+    /**
+     * Maps a declared {@code FLOAT}, whose precision selects the type it maps
+     * to, as PostgreSQL defines it: no precision and a precision of
+     * {@code 25} through {@code 53} are {@code DOUBLE PRECISION}, and a
+     * precision of {@code 1} through {@code 24} is {@code REAL}. Both map as
+     * their own spellings do, an array of one dimension included.
+     *
+     * <p>Any other precision, which PostgreSQL rejects, is unmapped and is
+     * recorded with its own precision, as in {@code FLOAT(54)}, because
+     * {@code FLOAT} alone names a mapped type.
+     */
+    private MappedType floatType(String elementText, int arrayDimensions) {
+        String precision = floatPrecision(elementText);
+
+        ColumnType type = precision == null
+            ? ColumnType.DOUBLE_PRECISION
+            : floatPrecisionType(precision);
+
+        if (type != null) {
+            if (arrayDimensions <= 1) {
+                return new MappedType(type, null, arrayDimensions == 1, false, null, "FLOAT");
+            }
+
+            return unmappedFloat("FLOAT", arrayDimensions);
+        }
+
+        return unmappedFloat("FLOAT(%s)".formatted(precision), arrayDimensions);
+    }
+
+    /** A {@code FLOAT} declaration sqlcj does not map, under a recorded text. */
+    private MappedType unmappedFloat(String recordedName, int arrayDimensions) {
+        return new MappedType(
+            null,
+            null,
+            false,
+            false,
+            recordedName + "[]".repeat(arrayDimensions),
+            "FLOAT"
+        );
+    }
+
+    /**
+     * The precision a declared {@code FLOAT} element type states, or
+     * {@code null} when it states none.
+     */
+    private String floatPrecision(String elementText) {
+        Matcher matcher = FLOAT_PRECISION.matcher(elementText);
+
+        return matcher.find()
+            ? matcher.group(1)
+            : null;
+    }
+
+    /**
+     * The type a declared {@code FLOAT} precision selects, or {@code null} for
+     * a precision PostgreSQL rejects. A precision of more than two digits is
+     * out of range in any case, so a declared precision never has to fit an
+     * {@code int}.
+     */
+    private ColumnType floatPrecisionType(String precision) {
+        if (precision.length() > 2) {
+            return null;
+        }
+
+        int bits = Integer.parseInt(precision);
+
+        if (bits >= 1 && bits <= 24) {
+            return ColumnType.REAL;
+        }
+
+        return bits >= 25 && bits <= 53
+            ? ColumnType.DOUBLE_PRECISION
+            : null;
     }
 
     /**

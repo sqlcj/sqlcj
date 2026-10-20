@@ -373,6 +373,12 @@ class DefaultSchemaParserTest {
             "double precision, DOUBLE_PRECISION",
             "FLOAT8, DOUBLE_PRECISION",
             "float8, DOUBLE_PRECISION",
+            "FLOAT, DOUBLE_PRECISION",
+            "float, DOUBLE_PRECISION",
+            "float(1), REAL",
+            "FLOAT(24), REAL",
+            "float (25), DOUBLE_PRECISION",
+            "FLOAT(53), DOUBLE_PRECISION",
             "BYTEA, BYTEA",
             "bytea, BYTEA",
             "TIME, TIME",
@@ -502,18 +508,22 @@ class DefaultSchemaParserTest {
      * fails. The recorded text is the canonical spelling of the declared type,
      * followed by {@code []} per declared array dimension.
      *
-     * <p>{@code FLOAT} and {@code FLOAT(p)}, whose precision selects the type,
-     * and the time-zone-aware time spellings are unmapped beside the mapped
-     * floating-point, binary, and time spellings. An array of more than one
-     * dimension, an array of an unmapped element type, and an array of
-     * {@code BYTEA}, {@code JSON}, or {@code JSONB} are recorded as well.
+     * <p>A {@code FLOAT} precision PostgreSQL rejects, and the time-zone-aware
+     * time spellings, are unmapped beside the mapped floating-point, binary,
+     * and time spellings. Such a precision is kept in the recorded text,
+     * because {@code FLOAT} alone names a mapped type, and the precision of a
+     * mapped {@code FLOAT} is removed like any other type argument. An array of
+     * more than one dimension, an array of an unmapped element type, and an
+     * array of {@code BYTEA}, {@code JSON}, or {@code JSONB} are recorded as
+     * well.
      */
     @ParameterizedTest
     @CsvSource(
         {
             "XML, XML",
-            "FLOAT, FLOAT",
-            "float(24), FLOAT",
+            "float(0), FLOAT(0)",
+            "float(54), FLOAT(54)",
+            "'float(24)[][]', FLOAT[][]",
             "TIMETZ, TIMETZ",
             "time with time zone, TIME WITH TIME ZONE",
             "bytea[], BYTEA[]",
@@ -593,7 +603,10 @@ class DefaultSchemaParserTest {
             "timestamptz[], TIMESTAMP_WITH_TIME_ZONE",
             "'numeric(10, 2)[3]', DECIMAL",
             "REAL[], REAL",
+            "'float(24)[]', REAL",
             "DOUBLE PRECISION[], DOUBLE_PRECISION",
+            "FLOAT[], DOUBLE_PRECISION",
+            "'float(53)[]', DOUBLE_PRECISION",
             "uuid[], UUID",
             "citext[], CITEXT",
             "inet[], INET",
