@@ -151,6 +151,47 @@ that fails it has already changed the database.
 A failed operation on a caller-owned connection leaves the connection open, so
 the application decides whether to continue or roll back.
 
+`QueryExecutor.executeBatch` executes one statement once per argument list, in
+the order of the lists, as one JDBC batch on one connection. Each list is bound
+exactly as the arguments of a single execution are bound, and the counts the
+driver reported are returned in that order, unchanged. An empty batch executes
+nothing, obtains no connection, and returns an empty array. Its transaction
+handling follows the connection it runs on:
+
+- On a connection obtained from a `DataSource` in auto-commit mode the batch is
+  one transaction, all or nothing: auto-commit is disabled for the batch, a
+  successful batch is committed, a failing one is rolled back, and auto-commit
+  is restored only after a successful commit or rollback.
+- A connection the `DataSource` hands out already in a transaction, as a
+  `TransactionAwareDataSourceProxy` does inside a Spring-managed transaction,
+  takes part in that transaction: the batch is never committed, rolled back, or
+  reconfigured, and that transaction decides its outcome.
+- On a caller-owned connection the batch never commits, rolls back, or changes
+  auto-commit, as no other operation does either. With the PostgreSQL driver a
+  failed batch on a caller-owned connection in auto-commit mode is not atomic
+  and may leave the rows written before the failing one committed, so a batch
+  on a caller-owned connection is run with auto-commit disabled or through
+  `JdbcTransactions`.
+
+Every `SQLException` a batch raises, a `java.sql.BatchUpdateException`
+included, is translated into the same `QueryExecutionException` as every other
+operation's, and a failure to roll back, to restore auto-commit, or to close
+the obtained connection that follows it is attached to that failure as a
+suppressed `QueryExecutionException`. An unchecked failure of a batch on a
+connection obtained from a `DataSource` is rethrown unchanged, as the same
+instance, after the batch is rolled back, when auto-commit was disabled for it,
+and the connection is closed, with a rollback, restore, or close failure
+attached to it as a suppressed `QueryExecutionException`.
+
+The counts a batch returns are the driver's own. The PostgreSQL driver reports
+the exact affected-row count of each statement of the batch, `0` for a
+statement that affected no row included. With `reWriteBatchedInserts=true` it
+rewrites a group of batched inserts into one multi-row insert and then reports
+`java.sql.Statement.SUCCESS_NO_INFO`, which is `-2`, for every row of that
+group, while a row left outside the rewritten group reports its real count: a
+three-row insert batch reports `-2`, `-2`, `1`. Batched updates and deletes are
+never rewritten and report exact counts.
+
 The runtime is blocking and synchronous. An executor built on a caller-owned
 connection inherits that connection's confinement to a single thread at a time.
 
@@ -1607,6 +1648,25 @@ Connection ownership and transactions:
   `shouldCloseStatementWhenExecutionFailsOnCallerOwnedConnection`,
   `shouldCloseStatementWhenCardinalityFailsOnCallerOwnedConnection`, and
   `shouldWrapSqlExceptionForCallerOwnedConnection`.
+- `JdbcQueryExecutorTest` covers `executeBatch` on both construction paths: the
+  counts of each row in batch order in
+  `shouldReturnPerRowCountsForABatchInsert`,
+  `shouldReturnPerRowCountsForABatchUpdate`, and
+  `shouldReturnPerRowCountsForABatchDelete`, the last two including a row that
+  affected none; the argument binding of each row in
+  `shouldBindUntypedTextOfEachBatchRow` and
+  `shouldBindSqlArrayOfEachBatchRow`; the batch that executes nothing in
+  `shouldExecuteNothingForAnEmptyBatch` and `shouldRejectANullBatch`; the
+  transaction handling of each connection in
+  `shouldRollBackADataSourceBatchWhoseRowFails`, which also asserts the
+  restored auto-commit, the closed connection and statement, and the
+  `BatchUpdateException` cause,
+  `shouldReleaseADataSourceConnectionWhenABatchFailsWithAnUncheckedException`,
+  which asserts the same rollback, restore, and close for an unchecked failure
+  rethrown untranslated,
+  `shouldLeaveADataSourceConnectionAlreadyInATransactionUncommitted`, and
+  `shouldLeaveCallerOwnedConnectionUnchangedForABatch`; and the failure
+  translation of both paths in `shouldWrapSqlExceptionForExecuteBatch`.
 - `PostgresIntegrationTest.shouldCommitGeneratedOperationsOnCallerOwnedConnection`
   and
   `PostgresIntegrationTest.shouldRollBackGeneratedOperationsOnCallerOwnedConnection`
