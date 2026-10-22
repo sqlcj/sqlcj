@@ -901,7 +901,8 @@ public final class QueryAnalyzer {
 
             ColumnTypeMapping.MappedType type = columnTypeMapping.map(
                 cast.getColDataType(),
-                schema.enums()
+                schema.enums(),
+                schema.domains()
             );
 
             if (!type.mapped()) {
@@ -5879,7 +5880,8 @@ public final class QueryAnalyzer {
 
         ColumnTypeMapping.MappedType type = columnTypeMapping.map(
             cast.getColDataType(),
-            schema.enums()
+            schema.enums(),
+            schema.domains()
         );
 
         if (!type.mapped()) {

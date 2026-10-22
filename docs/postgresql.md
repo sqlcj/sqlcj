@@ -215,9 +215,11 @@ file, a list of files, or a directory of `.sql` migration files; see
 order the files are read in.
 
 - One rule decides every statement: only the `CREATE TABLE`, `DROP TABLE`, and
-  `ALTER TABLE` forms listed in [Ordered Table DDL](#ordered-table-ddl) and the
+  `ALTER TABLE` forms listed in [Ordered Table DDL](#ordered-table-ddl), the
   `CREATE TYPE ... AS ENUM` and `ALTER TYPE ... ADD VALUE`, `RENAME TO`, and
-  `RENAME VALUE` forms listed in [Enum Types](#enum-types) update the schema
+  `RENAME VALUE` forms listed in [Enum Types](#enum-types), and the
+  `CREATE DOMAIN`, `ALTER DOMAIN ... RENAME TO`, and `DROP DOMAIN` forms listed
+  in [Domain Types](#domain-types) update the schema
   model, and every other statement a schema file records is accepted and
   leaves it unchanged. Only the few
   statements listed in [Ignored Statements](#ignored-statements) are rejected
@@ -260,9 +262,14 @@ rather than rejecting it:
   which sqlcj's parser cannot read but which cannot change a column either, and
   its sequences and `SET DEFAULT nextval(...)` statements,
 - its constraint and index statements, its `OWNER TO` statements, and its
-  grants, policies, comments, extensions, domains, composite types, functions,
+  grants, policies, comments, extensions, composite types, functions,
   triggers, views, and materialized views, and
 - the tables, types, and statements of every schema other than `public`.
+
+A dump's `CREATE DOMAIN` statements are modeled rather than ignored, including
+the forms sqlcj's parser cannot read: a domain with a `CONSTRAINT ... CHECK`
+over an operator and one with a `COLLATE` and a `NOT NULL DEFAULT`; see
+[Domain Types](#domain-types).
 
 A dump writes a partition as a plain `CREATE TABLE` followed by
 `ALTER TABLE ONLY ... ATTACH PARTITION`, so the partition is modeled with its
@@ -311,6 +318,7 @@ precision of `1` through `24` is `REAL` and one of `25` through `53` is
 | `MACADDR`, `MACADDR8` | `String` | PostgreSQL's own text of the address, as in `08:00:2b:01:02:03`. |
 | `INTERVAL`, with any fields and any precision, such as `INTERVAL YEAR TO MONTH` and `INTERVAL(3)` | `org.sqlcj.runtime.SqlInterval` | A record of `int months`, `int days`, and `long microseconds`, which is PostgreSQL's own representation: none of the three converts into another without a calendar, because a month is 28 to 31 days and a day is 23, 24, or 25 hours across a daylight-saving change. The fields and the precision of the spelling are ignored, as PostgreSQL ignores them for the stored value. `SqlInterval.of(java.time.Period)` and `SqlInterval.of(java.time.Duration)` build one, and `toPeriod()` and `toDuration()` convert back, each throwing `java.time.DateTimeException` when the value holds a component the target cannot hold: a `Period` holds no time part and a `Duration` holds no month. `toDuration()` counts a day as 24 hours, as `Duration.ofDays` does and as PostgreSQL compares two intervals. |
 | The name of an enum type the schema declares | The generated Java enum of that type | Matched without SQL identifier delimiters and case-insensitively, as PostgreSQL resolves an unquoted type name. A `public`-qualified name resolves as its unqualified name, so `public.mood` and `"public"."mood"` are the type `mood`, and a name qualified with any other schema never resolves. See [Enum Types](#enum-types). |
+| The name of a domain the schema declares | The Java type of the type the domain is declared over | A domain is a name for its base type, so a column or a cast of it has that type's Java type, binding, and reading, a domain over a domain and a domain over an array type included. Matched without SQL identifier delimiters and case-insensitively, and a `public`-qualified name resolves as its unqualified name, as an enum type's name does. A built-in spelling resolves before a domain and a domain before an enum type. A domain over a type that is not listed above, and an array of a domain, such as `email_address[]`, have no mapping. See [Domain Types](#domain-types). |
 | A one-dimensional array of any spelling above except `BYTEA`, `JSON`, and `JSONB`, written `type[]` or `type[n]` | `java.util.List<T>` of the element's Java type | The declared size is ignored, as PostgreSQL ignores it. See [Array Types](#array-types). |
 
 Any spelling that is not listed above has no Java mapping. Such a column is
@@ -489,6 +497,70 @@ Two entries of one package that use one enum type must define its labels alike,
 and a generated enum must not collide with another generated type of the
 package; both are documented in
 [Generated Java Names](configuration.md#generated-java-names).
+
+## Domain Types
+
+`CREATE DOMAIN <name> AS <type>` adds a domain to the schema, and a column or
+a cast whose declared type names it is the type the domain is declared over: it
+carries that type's mapped type, Java type, binding, and reading. A domain is
+never generated as a Java type of its own:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS citext;
+
+CREATE DOMAIN email_address AS citext;
+
+CREATE TABLE users (
+    id    bigserial PRIMARY KEY,
+    email email_address NOT NULL
+);
+```
+
+A query that reads or binds `email` therefore takes and returns a `String`,
+exactly as it does for the `citext` the domain is declared over, and the
+argument is bound the same way.
+
+- A domain over a domain is the type at the end of the chain, and a domain over
+  a one-dimensional array type, such as `text[]`, is an array column and a
+  `List` of the element's Java type.
+- A column's nullability comes from its own declaration alone, so a domain's
+  own `NOT NULL` never makes a column of it non-null: PostgreSQL reports such a
+  column as nullable, and a left join reads it as `null` for an unmatched row.
+- A domain over a type sqlcj does not map, and an array of a domain, such as
+  `email_address[]`, have no Java type. Such a column is recorded with its
+  declared type and fails only a query that uses it; see
+  [Unsupported Types and DDL](#unsupported-types-and-ddl).
+- A built-in spelling resolves before a domain and a domain before an enum
+  type, as PostgreSQL resolves a declared name, so a domain never falls through
+  to an enum type of the same name.
+- A column of a domain over an enum type is a column of that enum type, so it
+  binds and reads the one Java enum the package generates for the enum type
+  itself. PostgreSQL 16 defines no `=`, no `= ANY`, and no `MIN` or `MAX` for
+  such a domain, though it writes, reads, and orders one, so a query may
+  insert, assign, read, and `ORDER BY` such a column but not compare it.
+- A domain over `citext` is compared, matched, and ordered ignoring case, as
+  the `citext` itself is, through an equality, a `LIKE`, an `ILIKE`, and an
+  `= ANY(citext[])` alike.
+
+These statements update the domains the statements and files before them left:
+
+| Statement | Handling |
+| --- | --- |
+| `CREATE DOMAIN ... AS <type>` | Adds the domain over the type it is declared over, resolved against the enum types and the domains the statements before it left. A `COLLATE`, a `DEFAULT`, and a constraint are accepted and not modeled. |
+| A `CREATE DOMAIN` sqlcj's parser cannot read, such as the `CONSTRAINT ... CHECK ((VALUE OPERATOR(public.~~) ...))` and `COLLATE ... NOT NULL DEFAULT` forms `pg_dump` writes | Modeled from the statement's own words: the words before its first `COLLATE`, `DEFAULT`, `CONSTRAINT`, `NOT`, `NULL`, or `CHECK` outside parentheses state the name and the base type alone and are read again as a `CREATE DOMAIN` of their own. Words whose base type does not read either model the domain over no type, so a column of it is recorded with its declared type; words that state no name at all are rejected with the parser's own reason. |
+| A `CREATE DOMAIN` whose name a modeled domain already has | Replaces that domain in its position, because the `DROP DOMAIN` that freed the name may be one sqlcj never sees. |
+| `ALTER DOMAIN ... RENAME TO <name>` and `ALTER TYPE ... RENAME TO <name>` of a modeled domain | Renames the domain in its position, keeping the type it is declared over, so a column declared afterwards resolves through the new name. A column already resolved keeps the type its own statement gave it. |
+| A rename whose new name a modeled domain has, and a `CREATE TYPE ... AS ENUM` of a modeled domain's name | Removes that domain, because PostgreSQL holds one type of a name at a time. |
+| `ALTER TYPE ... RENAME TO` of an enum type | Renames the enum type in every domain over it, so a column of such a domain still reads the one modeled enum. |
+| Every other `ALTER DOMAIN` action, readable or not: `SET DEFAULT`, `DROP DEFAULT`, `SET NOT NULL`, `DROP NOT NULL`, `ADD`, `DROP`, `RENAME`, and `VALIDATE CONSTRAINT`, `OWNER TO`, and `SET SCHEMA` | Ignored. None of them can change the type a column of the domain has, and a domain's own `NOT NULL` never decides a column's nullability. |
+| `DROP DOMAIN [IF EXISTS] <name>[, <name> ...]`, with or without `CASCADE` or `RESTRICT` | Removes every modeled domain it names and skips every other name. sqlcj's parser reads no `DROP DOMAIN` at all, so the statement is classified by its own words, each name an identifier optionally qualified with a schema. A column already resolved keeps the type its own statement gave it, and a column declared afterwards is recorded with its declared type. |
+| A `DROP DOMAIN` whose words state no such statement | Rejected as `Unsupported schema statement: DROP DOMAIN at line <n>`, because sqlcj cannot tell what it would drop. |
+| A `CREATE DOMAIN`, `ALTER DOMAIN`, or `DROP DOMAIN` name qualified with a schema other than `public` | Ignored before anything it states is resolved, as every other statement of another schema is; a `DROP DOMAIN` skips such a name among its names. |
+
+Domain names are matched case-insensitively, after their SQL identifier
+delimiters are removed, and resolve in the one namespace sqlcj models, so
+`CREATE DOMAIN public.email_address` and
+`CREATE DOMAIN "public"."email_address"` declare the domain `email_address`.
 
 ## Array Types
 
@@ -707,8 +779,10 @@ statements and files before it left it. There is no list of accepted kinds to
 keep up to date.
 
 The modeled statements are the `CREATE TABLE`, `DROP TABLE`, and `ALTER TABLE`
-forms of [Ordered Table DDL](#ordered-table-ddl) and the
-`CREATE TYPE ... AS ENUM` and `ALTER TYPE` forms of [Enum Types](#enum-types).
+forms of [Ordered Table DDL](#ordered-table-ddl), the
+`CREATE TYPE ... AS ENUM` and `ALTER TYPE` forms of [Enum Types](#enum-types),
+and the `CREATE DOMAIN`, `ALTER DOMAIN ... RENAME TO`, and `DROP DOMAIN` forms
+of [Domain Types](#domain-types).
 Everything else a migration history holds is ignored, including
 
 - `CREATE INDEX`, `CREATE UNIQUE INDEX`, `ALTER INDEX`, and `DROP INDEX`,
@@ -730,7 +804,7 @@ Everything else a migration history holds is ignored, including
   `SELECT pg_catalog.set_config(...)` a `pg_dump` snapshot opens with,
 - `CREATE POLICY`, `DROP POLICY`, `CREATE ROLE`, `CREATE USER`, and
   `ALTER ROLE`,
-- `CREATE DOMAIN`, `ALTER DOMAIN`, and `DROP DOMAIN`,
+- every `ALTER DOMAIN` action other than `RENAME TO` of a modeled domain,
 - `CREATE RULE` and `CREATE EVENT TRIGGER`,
 - a `CREATE TYPE` of a composite, range, or shell type, and `DROP TYPE`,
 - a `CREATE TABLE`, `ALTER TABLE`, `CREATE TYPE`, or `ALTER TYPE` whose own
@@ -754,11 +828,15 @@ what they would do to the schema model:
 | An `ALTER TYPE ... SET SCHEMA <other schema>` of a modeled enum type | `Unsupported ALTER TYPE action: SET SCHEMA <schema> at line <n>` |
 | A statement sqlcj's parser cannot read that opens as table or type DDL, outside the `ALTER TABLE` actions below and the names of another schema below | The parser's own reason with the line and column of the unexpected token, as in `Encountered unexpected token: "DATA" at line 18, column 41` |
 | A statement sqlcj's parser reports only as opaque text, or as several statements, and that opens as table or type DDL | `Unsupported schema statement: ALTER FOREIGN TABLE at line <n>`, quoting the opening words |
+| A `DROP DOMAIN` whose words state no such statement, and a `CREATE DOMAIN` sqlcj's parser cannot read whose words state no name | `Unsupported schema statement: DROP DOMAIN at line <n>` and the parser's own reason; see [Domain Types](#domain-types) |
 
 A statement opens as table DDL when its first words are `CREATE`, `ALTER`, or
 `DROP`, then any of `GLOBAL`, `LOCAL`, `TEMP`, `TEMPORARY`, `UNLOGGED`, or
 `FOREIGN`, then `TABLE`, and as type DDL when they are `CREATE` or `ALTER`, then
-`TYPE`. The words are matched case-insensitively and the diagnostic quotes them
+`TYPE`. An unreadable statement whose first words are `CREATE DOMAIN` or
+`DROP DOMAIN` is classified before those openings, because both change the
+domains the schema models; see [Domain Types](#domain-types). The words are
+matched case-insensitively and the diagnostic quotes them
 in upper case, single-spaced, so both
 `ALTER FOREIGN TABLE ft ADD COLUMN x integer` and its lower-case spelling are
 rejected as `Unsupported schema statement: ALTER FOREIGN TABLE at line <n>`.
@@ -880,6 +958,9 @@ statement makes indirectly is never seen:
 - `DROP TYPE ... CASCADE` drops every column of the dropped type, and sqlcj
   never models those columns as dropped; `DROP TYPE` itself is ignored, so the
   enum stays modeled with its labels; see [Enum Types](#enum-types).
+  `DROP DOMAIN ... CASCADE` drops every column of the dropped domain the same
+  way, and sqlcj removes the domain alone; see
+  [Domain Types](#domain-types).
 
 ## Nulls
 
@@ -956,7 +1037,7 @@ listed in [Supported Column Types](#supported-column-types) are mapped:
 
 - multidimensional arrays, such as `integer[][]`, and arrays of `BYTEA`,
   `JSON`, `JSONB`, or an unmapped element type,
-- domain types,
+- a domain over an unmapped type, and an array of a domain,
 - range types,
 - composite types,
 - spatial types.
@@ -1232,6 +1313,68 @@ Enum types:
   `pg_enum` in `enumsortorder`, and round trips a null and a non-null value as
   an `INSERT` value, an equality predicate, and a result component.
 
+Domain types:
+
+- `DefaultSchemaParserTest.shouldModelDomainsOverTheTypesTheyAreDeclaredOver`
+  covers a domain over an integer with a check, over `citext`, over
+  `public.citext`, over `text[]`, over an enum type, over another domain, over
+  the blank-padded `CHAR`, and over the unmapped `money`, under an unqualified,
+  a `public`-qualified, and a quoted name, beside the domain of another schema
+  that is ignored, and
+  `DefaultSchemaParserTest.shouldReplaceAModeledDomainByCreateDomainInItsPosition`
+  covers the replaced domain.
+- `DefaultSchemaParserTest.shouldModelColumnsOfADeclaredDomain` covers the
+  domain column through `CREATE TABLE`, `ADD COLUMN`, and
+  `ALTER COLUMN ... TYPE`, including the array of a domain, the domain over an
+  unmapped type, and the other-schema name that stay recorded;
+  `DefaultSchemaParserTest.shouldModelAColumnOfADomainOverAnEnumType` covers
+  the enum column a domain over an enum type leaves; and
+  `DefaultSchemaParserTest.shouldKeepTheOwnNullabilityOfAColumnOfANotNullDomain`
+  covers the nullability of a column of a `NOT NULL` domain with and without
+  its own `NOT NULL`.
+- `DefaultSchemaParserTest.shouldModelTheUnreadableCreateDomainFormsOfADump`
+  covers both `pg_dump` forms sqlcj's parser cannot read,
+  `DefaultSchemaParserTest.shouldModelAnUnreadableCreateDomainOverAnUnreadableBaseType`
+  covers the name-only fallback, and
+  `DefaultSchemaParserTest.shouldIgnoreAnUnreadableCreateDomainOfAnotherSchema`
+  covers the unreadable domain of another schema.
+- `DefaultSchemaParserTest.shouldRenameAModeledDomainThroughAlterDomainAndAlterType`
+  covers both renames and the column declared after them,
+  `DefaultSchemaParserTest.shouldRemoveTheModeledDomainARenameTakesTheNameOf`
+  covers the domain a rename removes,
+  `DefaultSchemaParserTest.shouldRenameARenamedEnumTypeInTheDomainsOverIt`
+  covers the enum rename that reaches the domains over it, and
+  `DefaultSchemaParserTest.shouldResolveTheLastDeclaredTypeOfOneName` covers
+  the enum and domain name reuse in both orders.
+- `DefaultSchemaParserTest.shouldDropTheModeledDomainsADropDomainNames` and
+  `DefaultSchemaParserTest.shouldDropAModeledDomainNamedAnyAcceptedWay` cover
+  `DROP DOMAIN` with `IF EXISTS`, several names, `CASCADE`, and `RESTRICT`, the
+  skipped names, the unchanged column, and the column declared afterwards;
+  `DefaultSchemaParserTest.shouldRejectADropDomainItsWordsDoNotState` covers
+  the diagnostic of a `DROP DOMAIN` its words cannot classify; and
+  `DefaultSchemaParserTest.shouldIgnoreTheDomainStatementsThatCannotChangeAModeledDomain`
+  covers every ignored `ALTER DOMAIN` action, readable and unreadable, and the
+  renames of a domain sqlcj does not model.
+- `QueryAnalyzerTest.shouldTypeAPlaceholderOfADomainColumn` covers the
+  comparison, `IN`, `LIKE`, and `= ANY` placeholders a column of a domain over
+  `citext` types, `QueryAnalyzerTest.shouldTypeACastToADomain` covers the cast
+  to a domain over `citext` and over an integer,
+  `QueryAnalyzerTest.shouldRejectACastToADomainItDoesNotMap` covers the
+  rejected array, unmapped-base, and other-schema cast types, and
+  `QueryAnalyzerTest.shouldRejectQueryThatReadsAColumnOfADomainOverAnUnmappedType`
+  covers the recorded column a query reads.
+- `PostgresIntegrationTest.shouldRoundTripDomainValues` runs the domain DDL,
+  the `pg_dump` operator-check form included, against PostgreSQL 16 and
+  executes the generated code: a domain over `citext` compared
+  case-insensitively by `=` and by `= ANY`, a domain over an integer with a
+  check, a domain over an enum type written and read back as the generated
+  enum, a domain over `text[]` holding a null element, and a `null` read
+  through a left join from a column of a `NOT NULL` domain.
+- `ReferenceServiceIntegrationTest.shouldGenerateIdenticalRepositoriesFromHistorySnapshotAndDump`
+  generates one byte-identical tree from the migration history, the
+  hand-written snapshot, and the dump of the reference service, whose `email`
+  column is a column of a domain over `citext`.
+
 `CREATE TABLE` table:
 
 - `DefaultSchemaParserTest.shouldParseTableConstraints`,
@@ -1344,7 +1487,8 @@ Ignored statements:
   spelling per statement kind JSqlParser parses, including the lower-case
   `ALTER INDEX` form, a dollar-quoted `CREATE OR REPLACE FUNCTION` and a
   dollar-quoted `CREATE PROCEDURE`, the views, schemas, session, privilege,
-  role, policy, domain, and non-enum `CREATE TYPE` statements, and the opaque
+  role, policy, non-rename `ALTER DOMAIN`, and non-enum `CREATE TYPE`
+  statements, and the opaque
   `ALTER FUNCTION`, `ALTER SCHEMA`, `CREATE AGGREGATE`, and `CREATE CAST`; and
   `DefaultSchemaParserTest.shouldIgnoreConstraintAlterTableActions` covers the
   named and unnamed constraint actions.
@@ -1371,7 +1515,7 @@ Ignored statements:
   covers one spelling per statement kind sqlcj's parser cannot read, including
   the untagged, tagged, and `LANGUAGE` forms of `DO`, `DROP TYPE`, every
   `COMMENT ON` target the parser does not read, `SET search_path TO a, b`,
-  `DROP POLICY`, `DROP DOMAIN`, `VACUUM`, `LOCK TABLE`, `BEGIN`, `COPY ... TO`,
+  `DROP POLICY`, `VACUUM`, `LOCK TABLE`, `BEGIN`, `COPY ... TO`,
   `CREATE RULE`, `CREATE EVENT TRIGGER`, and the single-quoted, `RETURN`, and
   tagged function and procedure bodies.
 - `DefaultSchemaParserTest.shouldIgnoreTheUnreadableAlterTableActionsThatCannotChangeAColumn`

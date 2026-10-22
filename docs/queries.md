@@ -1222,10 +1222,11 @@ string literal, a quoted identifier, or a comment is not a parameter.
   `UPDATE` or `DO UPDATE` assignment, a `WITH` body, and a subquery at any
   depth, such as `EXISTS`, `IN (SELECT ...)`, or a scalar subquery. The cast
   type may be any type a column may declare and sqlcj maps, including a declared
-  enum name, written unquoted and matched case-insensitively, and a
+  enum name and a declared domain name, which is the type the domain is
+  declared over, both written unquoted and matched case-insensitively, and a
   one-dimensional array, which binds a `List`. A cast type sqlcj does not map,
-  such as `MONEY` or a multi-dimensional `INT[][]`, is rejected naming the
-  placeholder and the type.
+  such as `MONEY`, a multi-dimensional `INT[][]`, or an array of a domain, is
+  rejected naming the placeholder and the type.
 - A named cast placeholder keeps its own name. An indexed cast placeholder
   keeps the name of the column whose value it is — a compared column, the
   tested column of `IN` or `BETWEEN`, the tested column of a plain `LIKE` or

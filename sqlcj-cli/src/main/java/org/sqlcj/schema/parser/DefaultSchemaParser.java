@@ -9,10 +9,12 @@ import net.sf.jsqlparser.statement.Statement;
 import net.sf.jsqlparser.statement.Statements;
 import net.sf.jsqlparser.statement.UnsupportedStatement;
 import net.sf.jsqlparser.statement.alter.Alter;
+import net.sf.jsqlparser.statement.alter.AlterDomain;
 import net.sf.jsqlparser.statement.alter.AlterExpression;
 import net.sf.jsqlparser.statement.alter.AlterExpressionPartition;
 import net.sf.jsqlparser.statement.alter.AlterOperation;
 import net.sf.jsqlparser.statement.alter.AlterType;
+import net.sf.jsqlparser.statement.create.domain.CreateDomain;
 import net.sf.jsqlparser.statement.create.table.CheckConstraint;
 import net.sf.jsqlparser.statement.create.table.ColumnDefinition;
 import net.sf.jsqlparser.statement.create.table.CreateTable;
@@ -26,6 +28,7 @@ import net.sf.jsqlparser.statement.drop.Drop;
 import org.sqlcj.schema.Column;
 import org.sqlcj.schema.Constraint;
 import org.sqlcj.schema.ConstraintType;
+import org.sqlcj.schema.DomainType;
 import org.sqlcj.schema.EnumType;
 import org.sqlcj.schema.Schema;
 import org.sqlcj.schema.Table;
@@ -35,6 +38,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 public class DefaultSchemaParser implements SchemaParser {
 
@@ -51,6 +55,17 @@ public class DefaultSchemaParser implements SchemaParser {
         "FOREIGN"
     );
 
+    /**
+     * One SQL identifier, delimited or not, as the lexer reports it. The letter
+     * and digit classes are Unicode-aware, because PostgreSQL and the lexer
+     * both read an unquoted identifier written with non-ASCII letters, such as
+     * {@code café}, as one identifier.
+     */
+    private static final Pattern IDENTIFIER = Pattern.compile(
+        "[\\p{Alpha}_][\\p{Alnum}_$]*|\"[^\"]*\"",
+        Pattern.UNICODE_CHARACTER_CLASS
+    );
+
     /** Resolves the type a column declaration states. */
     private final ColumnTypeMapping columnTypeMapping = new ColumnTypeMapping();
 
@@ -58,12 +73,13 @@ public class DefaultSchemaParser implements SchemaParser {
     public Schema parse(Schema schema, String sql) {
         List<Table> tables = new ArrayList<>(schema.tables());
         List<EnumType> enums = new ArrayList<>(schema.enums());
+        List<DomainType> domains = new ArrayList<>(schema.domains());
 
         for (SchemaSourceSplitter.SourceStatement statement : SchemaSourceSplitter.split(sql)) {
-            apply(statement, tables, enums);
+            apply(statement, tables, enums, domains);
         }
 
-        return new Schema(tables, enums);
+        return new Schema(tables, enums, domains);
     }
 
     /**
@@ -79,11 +95,17 @@ public class DefaultSchemaParser implements SchemaParser {
      * table or type in a schema sqlcj does not model, and an unreadable
      * {@code ALTER TABLE} when every one of its top-level actions cannot change
      * a modeled column.
+     *
+     * <p>An unreadable {@code CREATE DOMAIN} and every {@code DROP DOMAIN},
+     * which the parser never reads at all, are classified by their words
+     * before the table and type openings, because both change the domains the
+     * schema models.
      */
     private void apply(
         SchemaSourceSplitter.SourceStatement statement,
         List<Table> tables,
-        List<EnumType> enums
+        List<EnumType> enums,
+        List<DomainType> domains
     ) {
         Statements parsed = null;
         JSQLParserException failure = null;
@@ -99,7 +121,19 @@ public class DefaultSchemaParser implements SchemaParser {
                 && parsed.size() == 1
                 && !(parsed.get(0) instanceof UnsupportedStatement)
         ) {
-            apply(parsed.get(0), statement.line(), tables, enums);
+            apply(parsed.get(0), statement.line(), tables, enums, domains);
+
+            return;
+        }
+
+        if (statesWords(statement.tokens(), 0, "CREATE", "DOMAIN")) {
+            applyUnreadableCreateDomain(statement, failure, enums, domains);
+
+            return;
+        }
+
+        if (statesWords(statement.tokens(), 0, "DROP", "DOMAIN")) {
+            applyDropDomain(statement, domains);
 
             return;
         }
@@ -333,7 +367,8 @@ public class DefaultSchemaParser implements SchemaParser {
      *
      * <p>Only the statements sqlcj models are applied: {@code CREATE TABLE},
      * {@code ALTER TABLE}, {@code DROP TABLE},
-     * {@code CREATE TYPE ... AS ENUM}, and {@code ALTER TYPE}. Every other
+     * {@code CREATE TYPE ... AS ENUM}, {@code ALTER TYPE},
+     * {@code CREATE DOMAIN}, and {@code ALTER DOMAIN}. Every other
      * statement a schema source may record is ignored and is not resolved
      * against the schema at all.
      *
@@ -342,14 +377,20 @@ public class DefaultSchemaParser implements SchemaParser {
      * {@link SchemaNamespace}. {@code DROP TABLE} is the one statement that
      * carries on, skipping such a name among its names.
      */
-    private void apply(Statement statement, int line, List<Table> tables, List<EnumType> enums) {
+    private void apply(
+        Statement statement,
+        int line,
+        List<Table> tables,
+        List<EnumType> enums,
+        List<DomainType> domains
+    ) {
         if (statement instanceof CreateTable createTable) {
             if (SchemaNamespace.isModeled(createTable.getTable())) {
-                applyCreateTable(createTable, line, enums, tables);
+                applyCreateTable(createTable, line, enums, domains, tables);
             }
         } else if (statement instanceof Alter alter) {
             if (SchemaNamespace.isModeled(alter.getTable())) {
-                applyAlterTable(alter, line, enums, tables);
+                applyAlterTable(alter, line, enums, domains, tables);
             }
         } else if (statement instanceof Drop drop && drop.getObjectType() == Drop.ObjectType.TABLE) {
             applyDropTable(drop, tables);
@@ -357,9 +398,13 @@ public class DefaultSchemaParser implements SchemaParser {
             statement instanceof CreateType createType
                 && createType.getDefinition() instanceof EnumTypeDefinition definition
         ) {
-            applyCreateEnumType(createType, definition, enums);
+            applyCreateEnumType(createType, definition, enums, domains);
         } else if (statement instanceof AlterType alterType) {
-            applyAlterType(alterType, line, enums, tables);
+            applyAlterType(alterType, line, enums, domains, tables);
+        } else if (statement instanceof CreateDomain createDomain) {
+            applyCreateDomain(createDomain, enums, domains);
+        } else if (statement instanceof AlterDomain alterDomain) {
+            applyAlterDomain(alterDomain, domains);
         }
     }
 
@@ -416,21 +461,27 @@ public class DefaultSchemaParser implements SchemaParser {
      * Appends one enum type with its declared labels, and replaces a modeled
      * enum of the same name in its position, because the {@code DROP TYPE} that
      * freed the name is never seen. A repeated label fails, as PostgreSQL
-     * rejects it. An enum is the only type sqlcj models; a {@code CREATE TYPE}
-     * of any other kind is ignored, and a column of such a type is recorded
-     * with its declared type. A type of a schema sqlcj does not model is
-     * ignored as well.
+     * rejects it. An enum is the only kind of {@code CREATE TYPE} sqlcj
+     * models; one of any other kind is ignored, and a column of such a type is
+     * recorded with its declared type. A type of a schema sqlcj does not model
+     * is ignored as well.
+     *
+     * <p>A modeled domain of the name is removed, because PostgreSQL holds one
+     * type of a name at a time, so the declared enum takes the name over.
      */
     private void applyCreateEnumType(
         CreateType createType,
         EnumTypeDefinition definition,
-        List<EnumType> enums
+        List<EnumType> enums,
+        List<DomainType> domains
     ) {
         String typeName = SchemaNamespace.modeledTypeName(createType.getName());
 
         if (typeName == null) {
             return;
         }
+
+        removeDomain(domains, typeName);
 
         int index = indexOfEnum(enums, typeName);
 
@@ -467,11 +518,16 @@ public class DefaultSchemaParser implements SchemaParser {
      * type being resolved at all: ownership and the attribute actions of a
      * composite type. Every other action sqlcj models resolves the type, and an
      * action sqlcj does not model is rejected naming the action.
+     *
+     * <p>{@code RENAME TO} is the one action a domain shares with an enum
+     * type, because PostgreSQL renames a domain through {@code ALTER TYPE} as
+     * well; every other action names an enum type.
      */
     private void applyAlterType(
         AlterType alterType,
         int line,
         List<EnumType> enums,
+        List<DomainType> domains,
         List<Table> tables
     ) {
         AlterType.Action action = alterType.getAction();
@@ -496,7 +552,14 @@ public class DefaultSchemaParser implements SchemaParser {
 
         switch (action) {
             case RENAME_VALUE -> renameEnumLabel(alterType, typeName, index, enums);
-            case RENAME -> renameEnumType(alterType, typeName, index, enums, tables);
+            case RENAME -> renameType(
+                MultiPartName.unquote(alterType.getNewName()),
+                typeName,
+                index,
+                enums,
+                domains,
+                tables
+            );
             case SET_SCHEMA -> moveEnumTypeToSchema(alterType, line, index);
             default -> throw unsupportedAlterTypeAction(String.valueOf(action), line);
         }
@@ -551,26 +614,51 @@ public class DefaultSchemaParser implements SchemaParser {
     }
 
     /**
+     * Renames the one modeled type of {@code typeName}: a modeled domain of
+     * that name, which {@code ALTER TYPE} and {@code ALTER DOMAIN} rename
+     * alike, and otherwise the modeled enum type at {@code index}.
+     */
+    private void renameType(
+        String newName,
+        String typeName,
+        int index,
+        List<EnumType> enums,
+        List<DomainType> domains,
+        List<Table> tables
+    ) {
+        int domain = indexOfDomain(domains, typeName);
+
+        if (domain >= 0) {
+            renameDomain(newName, domain, domains);
+
+            return;
+        }
+
+        renameEnumType(newName, typeName, index, enums, domains, tables);
+    }
+
+    /**
      * Renames one enum type in its position, keeping its labels, and renames
      * the type of every column of it, scalar and array alike, because a column
-     * names its enum type by that name. A modeled enum of the new name is
-     * removed, because the {@code DROP TYPE} that freed the name is never seen;
-     * a column still naming it keeps that name, so it is modeled as a column of
+     * names its enum type by that name, and of every domain over it. A modeled
+     * enum or domain of the new name is removed, because the
+     * {@code DROP TYPE} that freed the name is never seen; a column still
+     * naming the renamed enum keeps that name, so it is modeled as a column of
      * the renamed enum with its labels, the column PostgreSQL would have
      * removed.
      */
     private void renameEnumType(
-        AlterType alterType,
+        String newName,
         String typeName,
         int index,
         List<EnumType> enums,
+        List<DomainType> domains,
         List<Table> tables
     ) {
         if (index < 0) {
             return;
         }
 
-        String newName = MultiPartName.unquote(alterType.getNewName());
         int replaced = indexOfEnum(enums, newName);
         int renamed = index;
 
@@ -585,6 +673,10 @@ public class DefaultSchemaParser implements SchemaParser {
         enums.set(renamed, new EnumType(newName, enums.get(renamed).labels()));
 
         tables.replaceAll(table -> renameColumnEnumType(table, typeName, newName));
+
+        removeDomain(domains, newName);
+
+        domains.replaceAll(domain -> renameDomainEnumType(domain, typeName, newName));
     }
 
     /**
@@ -685,6 +777,358 @@ public class DefaultSchemaParser implements SchemaParser {
     }
 
     /**
+     * Appends one domain over the type it is declared over, resolved against
+     * the enum types and the domains the statements before it left, so a
+     * domain over a domain carries the same type its base does. A domain over
+     * a type sqlcj does not map is modeled with no type, so a column of it is
+     * recorded with its declared type.
+     *
+     * <p>A modeled domain of the same name is replaced in its position,
+     * because the {@code DROP DOMAIN} that freed the name may be one sqlcj
+     * never sees. A domain of a schema sqlcj does not model is ignored.
+     */
+    private void applyCreateDomain(
+        CreateDomain createDomain,
+        List<EnumType> enums,
+        List<DomainType> domains
+    ) {
+        String typeName = SchemaNamespace.modeledTypeName(createDomain.getName());
+
+        if (typeName == null) {
+            return;
+        }
+
+        ColumnTypeMapping.MappedType base = columnTypeMapping.map(
+            createDomain.getDataType(),
+            enums,
+            domains
+        );
+
+        addDomain(
+            base.mapped()
+                ? new DomainType(
+                    typeName,
+                    base.type(),
+                    base.enumType(),
+                    base.array(),
+                    base.blankPadded()
+                )
+                : new DomainType(typeName, null, null, false, false),
+            domains
+        );
+    }
+
+    /**
+     * Models one {@code CREATE DOMAIN} the parser cannot read, which is the
+     * form {@code pg_dump} writes for a domain with a constraint or a
+     * {@code COLLATE}, from the statement's own words: the words before its
+     * first top-level constraint word state the name and the base type alone,
+     * so they are parsed again as a {@code CREATE DOMAIN} of their own and
+     * applied like a readable one.
+     *
+     * <p>Words that still do not parse that way state a name but a base type
+     * sqlcj cannot resolve, so the domain is modeled over no type, and words
+     * that state no name at all fail the statement with the parser's own
+     * reason. A domain of a schema sqlcj does not model is ignored, like a
+     * readable one.
+     */
+    private void applyUnreadableCreateDomain(
+        SchemaSourceSplitter.SourceStatement statement,
+        JSQLParserException failure,
+        List<EnumType> enums,
+        List<DomainType> domains
+    ) {
+        List<String> tokens = statement.tokens();
+
+        if (namesAnotherSchema("CREATE DOMAIN", tokens)) {
+            return;
+        }
+
+        int nameEnd = afterTypeName(tokens, 2);
+
+        if (nameEnd < 0) {
+            if (failure != null) {
+                throw unreadableStatement(statement, failure);
+            }
+
+            throw unsupportedOpening("CREATE DOMAIN", statement.line());
+        }
+
+        String typeName = SchemaNamespace.modeledTypeName(declaredName(tokens, 2, nameEnd));
+
+        if (typeName == null) {
+            return;
+        }
+
+        CreateDomain createDomain = declaredCreateDomain(tokens, nameEnd);
+
+        if (createDomain != null) {
+            applyCreateDomain(createDomain, enums, domains);
+
+            return;
+        }
+
+        addDomain(new DomainType(typeName, null, null, false, false), domains);
+    }
+
+    /**
+     * The {@code CREATE DOMAIN} the words of an unreadable one state up to its
+     * first constraint word, or {@code null} when those words do not parse as
+     * exactly one {@code CREATE DOMAIN}. A constraint word is {@code COLLATE},
+     * {@code DEFAULT}, {@code CONSTRAINT}, {@code NOT}, {@code NULL}, or
+     * {@code CHECK} written outside parentheses after the domain's name, which
+     * is where PostgreSQL ends the base type.
+     */
+    private CreateDomain declaredCreateDomain(List<String> tokens, int typeFrom) {
+        int depth = 0;
+        int end = tokens.size();
+
+        for (int i = typeFrom; i < tokens.size(); i++) {
+            String token = tokens.get(i);
+
+            if ("(".equals(token)) {
+                depth++;
+            } else if (")".equals(token)) {
+                depth--;
+            } else if (depth == 0 && isDomainConstraintWord(token)) {
+                end = i;
+
+                break;
+            }
+        }
+
+        try {
+            Statements parsed = CCJSqlParserUtil.parseStatements(
+                String.join(" ", tokens.subList(0, end))
+            );
+
+            return parsed.size() == 1 && parsed.get(0) instanceof CreateDomain createDomain
+                ? createDomain
+                : null;
+        } catch (JSQLParserException e) {
+            return null;
+        }
+    }
+
+    private boolean isDomainConstraintWord(String token) {
+        return switch (upperCase(token)) {
+            case "COLLATE", "DEFAULT", "CONSTRAINT", "NOT", "NULL", "CHECK" -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Renames one modeled domain in its position. Every other
+     * {@code ALTER DOMAIN} action leaves the domains unchanged: none of them
+     * can change the type a column of the domain has, and a domain's own
+     * {@code NOT NULL} never decides a column's nullability. A domain sqlcj
+     * does not model, one of a schema it does not model included, is ignored.
+     */
+    private void applyAlterDomain(AlterDomain alterDomain, List<DomainType> domains) {
+        if (alterDomain.getAction() != AlterDomain.Action.RENAME) {
+            return;
+        }
+
+        String typeName = SchemaNamespace.modeledTypeName(alterDomain.getName());
+
+        if (typeName == null) {
+            return;
+        }
+
+        int index = indexOfDomain(domains, typeName);
+
+        if (index >= 0) {
+            renameDomain(MultiPartName.unquote(alterDomain.getNewName()), index, domains);
+        }
+    }
+
+    /**
+     * Removes every modeled domain one {@code DROP DOMAIN} names, which is
+     * decided from the statement's own words, because the parser reads no
+     * {@code DROP DOMAIN} at all. A name sqlcj does not model, one of another
+     * schema included, is skipped, as a {@code DROP TABLE} skips one.
+     *
+     * <p>The columns of a dropped domain are not changed: PostgreSQL removes
+     * them only with {@code CASCADE}, and a column already resolved keeps the
+     * type its own statement gave it in any case.
+     *
+     * <p>Words that state no such statement are rejected naming the opening,
+     * because sqlcj cannot tell what they would drop.
+     */
+    private void applyDropDomain(
+        SchemaSourceSplitter.SourceStatement statement,
+        List<DomainType> domains
+    ) {
+        List<String> names = droppedDomainNames(statement.tokens());
+
+        if (names == null) {
+            throw unsupportedOpening("DROP DOMAIN", statement.line());
+        }
+
+        for (String declaredName : names) {
+            String typeName = SchemaNamespace.modeledTypeName(declaredName);
+
+            if (typeName != null) {
+                removeDomain(domains, typeName);
+            }
+        }
+    }
+
+    /**
+     * The declared names of one {@code DROP DOMAIN}, whose words must state
+     * {@code DROP DOMAIN [IF EXISTS] <name> [, <name> ...]
+     * [CASCADE | RESTRICT]}, or {@code null} when they state anything else.
+     */
+    private List<String> droppedDomainNames(List<String> tokens) {
+        int index = 2;
+
+        if (statesWords(tokens, index, "IF", "EXISTS")) {
+            index += 2;
+        }
+
+        List<String> names = new ArrayList<>();
+
+        while (true) {
+            int end = afterTypeName(tokens, index);
+
+            if (end < 0) {
+                return null;
+            }
+
+            names.add(declaredName(tokens, index, end));
+
+            index = end;
+
+            if (!statesWords(tokens, index, ",")) {
+                break;
+            }
+
+            index++;
+        }
+
+        if (statesWords(tokens, index, "CASCADE") || statesWords(tokens, index, "RESTRICT")) {
+            index++;
+        }
+
+        return index == tokens.size()
+            ? names
+            : null;
+    }
+
+    /**
+     * The index after the possibly qualified type name that begins at
+     * {@code index}, or {@code -1} when the words state no such name. Each
+     * part is one identifier, delimited or not, and the parts are separated by
+     * dots, as the lexer reports them.
+     */
+    private int afterTypeName(List<String> tokens, int index) {
+        while (true) {
+            if (index >= tokens.size() || !IDENTIFIER.matcher(tokens.get(index)).matches()) {
+                return -1;
+            }
+
+            index++;
+
+            if (!statesWords(tokens, index, ".")) {
+                return index;
+            }
+
+            index++;
+        }
+    }
+
+    /**
+     * The declared name the words from {@code from} to {@code to} state,
+     * joined without spaces, so a qualified name reads as one text whatever
+     * whitespace was written around its dots.
+     */
+    private String declaredName(List<String> tokens, int from, int to) {
+        return String.join("", tokens.subList(from, to));
+    }
+
+    /**
+     * Appends one domain, and replaces a modeled domain of the same name in
+     * its position.
+     */
+    private void addDomain(DomainType domain, List<DomainType> domains) {
+        int index = indexOfDomain(domains, domain.name());
+
+        if (index < 0) {
+            domains.add(domain);
+
+            return;
+        }
+
+        domains.set(index, domain);
+    }
+
+    /**
+     * Renames one domain in its position, keeping the type it is declared
+     * over. A modeled domain of the new name is removed, because PostgreSQL
+     * holds one type of a name at a time.
+     */
+    private void renameDomain(String newName, int index, List<DomainType> domains) {
+        int replaced = indexOfDomain(domains, newName);
+        int renamed = index;
+
+        if (replaced >= 0 && replaced != index) {
+            domains.remove(replaced);
+
+            if (replaced < index) {
+                renamed--;
+            }
+        }
+
+        DomainType domain = domains.get(renamed);
+
+        domains.set(
+            renamed,
+            new DomainType(
+                newName,
+                domain.type(),
+                domain.enumType(),
+                domain.array(),
+                domain.blankPadded()
+            )
+        );
+    }
+
+    /** Removes the modeled domain of {@code typeName}, if the schema has one. */
+    private void removeDomain(List<DomainType> domains, String typeName) {
+        int index = indexOfDomain(domains, typeName);
+
+        if (index >= 0) {
+            domains.remove(index);
+        }
+    }
+
+    /** Names {@code newName} as the enum type of a domain over {@code oldName}. */
+    private DomainType renameDomainEnumType(DomainType domain, String oldName, String newName) {
+        if (domain.enumType() == null || !domain.enumType().equalsIgnoreCase(oldName)) {
+            return domain;
+        }
+
+        return new DomainType(
+            domain.name(),
+            domain.type(),
+            newName,
+            domain.array(),
+            domain.blankPadded()
+        );
+    }
+
+    /** Domain names are matched case-insensitively, as a column names them. */
+    private int indexOfDomain(List<DomainType> domains, String typeName) {
+        for (int i = 0; i < domains.size(); i++) {
+            if (domains.get(i).name().equalsIgnoreCase(typeName)) {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    /**
      * Appends one table. A repeated table name fails, as PostgreSQL rejects it,
      * unless the statement declares {@code IF NOT EXISTS}. A clause that states
      * columns sqlcj cannot determine is rejected naming the clause.
@@ -693,6 +1137,7 @@ public class DefaultSchemaParser implements SchemaParser {
         CreateTable createTable,
         int line,
         List<EnumType> enums,
+        List<DomainType> domains,
         List<Table> tables
     ) {
         String tableName = createTable.getTable().getUnquotedName();
@@ -707,7 +1152,7 @@ public class DefaultSchemaParser implements SchemaParser {
 
         rejectUnsupportedCreateTableClause(createTable, line);
 
-        tables.add(parseTable(createTable, line, enums, tables));
+        tables.add(parseTable(createTable, line, enums, domains, tables));
     }
 
     /**
@@ -826,7 +1271,13 @@ public class DefaultSchemaParser implements SchemaParser {
      * of the altered table. {@code ALTER TABLE IF EXISTS} covers only the table,
      * so a missing column of an existing table still fails.
      */
-    private void applyAlterTable(Alter alter, int line, List<EnumType> enums, List<Table> tables) {
+    private void applyAlterTable(
+        Alter alter,
+        int line,
+        List<EnumType> enums,
+        List<DomainType> domains,
+        List<Table> tables
+    ) {
         String tableName = alter.getTable().getUnquotedName();
 
         int index = indexOfTable(tables, tableName);
@@ -848,7 +1299,7 @@ public class DefaultSchemaParser implements SchemaParser {
         }
 
         for (AlterExpression expression : alter.getAlterExpressions()) {
-            applyToTableAndPartitions(line, expression, enums, tables, index);
+            applyToTableAndPartitions(line, expression, enums, domains, tables, index);
         }
     }
 
@@ -915,12 +1366,13 @@ public class DefaultSchemaParser implements SchemaParser {
         int line,
         AlterExpression expression,
         List<EnumType> enums,
+        List<DomainType> domains,
         List<Table> tables,
         int index
     ) {
         String tableName = tables.get(index).name();
 
-        tables.set(index, applyAlterExpression(line, expression, enums, tables, index));
+        tables.set(index, applyAlterExpression(line, expression, enums, domains, tables, index));
 
         if (!propagatesToPartitions(expression)) {
             return;
@@ -930,7 +1382,7 @@ public class DefaultSchemaParser implements SchemaParser {
             String parent = tables.get(i).partitionOf();
 
             if (parent != null && parent.equalsIgnoreCase(tableName)) {
-                applyToTableAndPartitions(line, expression, enums, tables, i);
+                applyToTableAndPartitions(line, expression, enums, domains, tables, i);
             }
         }
     }
@@ -984,6 +1436,7 @@ public class DefaultSchemaParser implements SchemaParser {
         int line,
         AlterExpression expression,
         List<EnumType> enums,
+        List<DomainType> domains,
         List<Table> tables,
         int index
     ) {
@@ -991,7 +1444,7 @@ public class DefaultSchemaParser implements SchemaParser {
         AlterOperation operation = expression.getOperation();
 
         if (operation == AlterOperation.ADD && isNotEmpty(expression.getColDataTypeList())) {
-            return addColumns(expression, enums, table);
+            return addColumns(expression, enums, domains, table);
         }
 
         if (operation == AlterOperation.DROP && expression.getColumnName() != null) {
@@ -1007,7 +1460,7 @@ public class DefaultSchemaParser implements SchemaParser {
         }
 
         if (operation == AlterOperation.ALTER) {
-            return alterColumns(line, expression, enums, table);
+            return alterColumns(line, expression, enums, domains, table);
         }
 
         if (operation == AlterOperation.ATTACH_PARTITION || operation == AlterOperation.DETACH_PARTITION) {
@@ -1198,6 +1651,7 @@ public class DefaultSchemaParser implements SchemaParser {
         int line,
         AlterExpression expression,
         List<EnumType> enums,
+        List<DomainType> domains,
         Table table
     ) {
         if (isNotEmpty(expression.getColumnSetDefaultList()) || isNotEmpty(expression.getColumnDropDefaultList())) {
@@ -1206,7 +1660,7 @@ public class DefaultSchemaParser implements SchemaParser {
 
         if (isNotEmpty(expression.getColDataTypeList())) {
             if (statesNewTypes(expression.getColDataTypeList())) {
-                return changeColumnTypes(expression, enums, table);
+                return changeColumnTypes(expression, enums, domains, table);
             }
 
             if (ignoresColumnActions(expression.getColDataTypeList())) {
@@ -1296,12 +1750,17 @@ public class DefaultSchemaParser implements SchemaParser {
      * Appends each added column, typed exactly as a {@code CREATE TABLE} column
      * of the same declaration, and records its column-level constraints.
      */
-    private Table addColumns(AlterExpression expression, List<EnumType> enums, Table table) {
+    private Table addColumns(
+        AlterExpression expression,
+        List<EnumType> enums,
+        List<DomainType> domains,
+        Table table
+    ) {
         List<Column> columns = new ArrayList<>(table.columns());
         List<Constraint> constraints = new ArrayList<>(table.constraints());
 
         for (AlterExpression.ColumnDataType definition : expression.getColDataTypeList()) {
-            Column column = parseColumn(definition, enums);
+            Column column = parseColumn(definition, enums, domains);
 
             if (indexOfColumn(columns, column.name()) >= 0) {
                 if (expression.isUseIfNotExists()) {
@@ -1423,6 +1882,7 @@ public class DefaultSchemaParser implements SchemaParser {
     private Table changeColumnTypes(
         AlterExpression expression,
         List<EnumType> enums,
+        List<DomainType> domains,
         Table table
     ) {
         List<Column> columns = new ArrayList<>(table.columns());
@@ -1437,7 +1897,7 @@ public class DefaultSchemaParser implements SchemaParser {
             }
 
             Column column = columns.get(index);
-            Column retyped = parseColumn(definition, enums);
+            Column retyped = parseColumn(definition, enums, domains);
 
             columns.set(
                 index,
@@ -1673,6 +2133,7 @@ public class DefaultSchemaParser implements SchemaParser {
         CreateTable createTable,
         int line,
         List<EnumType> enums,
+        List<DomainType> domains,
         List<Table> tables
     ) {
         String tableName = createTable.getTable().getUnquotedName();
@@ -1697,7 +2158,7 @@ public class DefaultSchemaParser implements SchemaParser {
         } else {
             for (TableElement element : elements) {
                 if (element instanceof ColumnDefinition definition) {
-                    addColumn(columns, tableName, parseColumn(definition, enums));
+                    addColumn(columns, tableName, parseColumn(definition, enums, domains));
                     constraints.addAll(parseColumnConstraints(definition));
                 } else if (element instanceof LikeClause like) {
                     for (Column column : referencedTable(tables, like.getTable()).columns()) {
@@ -1759,10 +2220,15 @@ public class DefaultSchemaParser implements SchemaParser {
      * resolves or records with its declared type text instead of failing the
      * schema.
      */
-    private Column parseColumn(ColumnDefinition definition, List<EnumType> enums) {
+    private Column parseColumn(
+        ColumnDefinition definition,
+        List<EnumType> enums,
+        List<DomainType> domains
+    ) {
         ColumnTypeMapping.MappedType mappedType = columnTypeMapping.map(
             definition.getColDataType(),
-            enums
+            enums,
+            domains
         );
 
         return new Column(
