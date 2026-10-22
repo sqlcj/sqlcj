@@ -1374,6 +1374,13 @@ Domain types:
   generates one byte-identical tree from the migration history, the
   hand-written snapshot, and the dump of the reference service, whose `email`
   column is a column of a domain over `citext`.
+- `ReferenceServiceIntegrationTest.shouldExecuteTheGeneratedReferenceServiceTypes`
+  executes the reference service's uncast writes of its `email_address` domain
+  and its `citext` handle, the lookups that match either of them in any case
+  while reading back the stored spelling, its `inet` login address, and its
+  retention `interval`, which holds months, days, and a time part and reads
+  back as `null` once it is cleared, against PostgreSQL 16 through the
+  generated repository.
 
 `CREATE TABLE` table:
 
