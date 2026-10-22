@@ -63,4 +63,25 @@ public interface QueryExecutor {
      * Executes a write statement and returns its affected-row count.
      */
     int execute(String repository, String query, String sql, List<?> parameters);
+
+    /**
+     * Executes {@code sql} once per element of {@code batch}, in the order of
+     * the batch, as one JDBC batch. Each element holds the arguments of one
+     * execution, bound by the same rules as the arguments of every other
+     * operation.
+     *
+     * <p>The returned array holds the count the driver reported for each
+     * element, in the order of the batch and unchanged, so it may hold
+     * {@link java.sql.Statement#SUCCESS_NO_INFO} for a statement whose count
+     * the driver does not report. An empty batch executes nothing and returns
+     * an empty array.
+     *
+     * @throws NullPointerException if {@code batch} is {@code null}
+     */
+    int[] executeBatch(
+        String repository,
+        String query,
+        String sql,
+        List<? extends List<?>> batch
+    );
 }

@@ -54,9 +54,45 @@ import java.util.Optional;
  * statement has already executed, so a returning write that fails the check has
  * already changed the database.
  *
+ * <p>{@link #executeBatch} executes its SQL once per element of the batch, in
+ * the order of the batch, as one JDBC batch on one connection, binds each
+ * element exactly as a single execution binds its arguments, and returns the
+ * counts the driver reported, unchanged. An empty batch executes nothing,
+ * obtains no connection, and returns an empty array. Its transaction handling
+ * follows the connection it runs on:
+ *
+ * <ul>
+ * <li>On a connection obtained from the {@link DataSource} in auto-commit mode
+ * the batch is one transaction: auto-commit is disabled for it, a successful
+ * batch is committed, a failed one is rolled back, and auto-commit is restored
+ * only after a successful commit or rollback, because changing it during an
+ * open transaction commits that transaction.</li>
+ * <li>A connection the {@link DataSource} hands out with auto-commit already
+ * disabled is in a transaction of its own, so the batch takes part in it and is
+ * never committed, rolled back, or reconfigured.</li>
+ * <li>On a caller-owned connection the batch is never committed or rolled back,
+ * and the connection's auto-commit setting is never changed, as for every other
+ * operation.</li>
+ * </ul>
+ *
+ * <p>Every {@link SQLException} a batch raises, a
+ * {@link java.sql.BatchUpdateException} included, is translated into the same
+ * {@link QueryExecutionException} as every other operation's, and a failure to
+ * roll back, to restore auto-commit, or to close the obtained connection that
+ * follows it is attached to it as a suppressed
+ * {@link QueryExecutionException}.
+ *
+ * <p>An unchecked failure of a batch on a connection obtained from the
+ * {@link DataSource} is rethrown unchanged, as the same instance, after the
+ * batch is rolled back, when auto-commit was disabled for it, and the
+ * connection is closed. A failure to roll back, to restore auto-commit, or to
+ * close that connection is attached to it as a suppressed
+ * {@link QueryExecutionException}.
+ *
  * <p>In both paths the {@link PreparedStatement} and any {@link ResultSet}
  * opened for an operation are closed before that operation returns, on success,
- * on a cardinality failure, and on any other failure.
+ * on a cardinality failure, and on any other failure, and a connection obtained
+ * for an operation is closed on every path.
  *
  * <p>Every {@link SQLException} raised while acquiring a connection, preparing
  * a statement, binding parameters, executing, reading results, or closing a
@@ -185,6 +221,215 @@ public final class JdbcQueryExecutor implements QueryExecutor {
     @Override
     public int execute(String repository, String query, String sql, List<?> parameters) {
         return onStatement(repository, query, sql, parameters, PreparedStatement::executeUpdate);
+    }
+
+    @Override
+    public int[] executeBatch(
+        String repository,
+        String query,
+        String sql,
+        List<? extends List<?>> batch
+    ) {
+        if (Objects.requireNonNull(batch, "batch").isEmpty()) {
+            return new int[0];
+        }
+
+        String failureMessage = failureMessage(repository, query);
+
+        if (connection != null) {
+            try {
+                return addAndExecuteBatch(connection, sql, batch);
+            } catch (SQLException e) {
+                throw new QueryExecutionException(failureMessage, e);
+            }
+        }
+
+        return batchOnAcquiredConnection(failureMessage, sql, batch);
+    }
+
+    /**
+     * Runs the batch on a connection acquired for it, as one transaction when
+     * that connection is in auto-commit mode and as part of the connection's
+     * open transaction otherwise, and closes the connection on every path.
+     */
+    private int[] batchOnAcquiredConnection(
+        String failureMessage,
+        String sql,
+        List<? extends List<?>> batch
+    ) {
+        Connection acquired = acquireConnection(failureMessage);
+
+        QueryExecutionException failure = null;
+        boolean autoCommitDisabled = false;
+        boolean restoreAutoCommit = false;
+        int[] counts = null;
+
+        try {
+            if (acquired.getAutoCommit()) {
+                acquired.setAutoCommit(false);
+
+                autoCommitDisabled = true;
+            }
+
+            try {
+                counts = addAndExecuteBatch(acquired, sql, batch);
+            } catch (SQLException e) {
+                failure = new QueryExecutionException(failureMessage, e);
+
+                if (autoCommitDisabled) {
+                    restoreAutoCommit = rollBack(acquired, failureMessage, failure);
+                }
+            }
+
+            if (failure == null && autoCommitDisabled) {
+                try {
+                    acquired.commit();
+
+                    restoreAutoCommit = true;
+                } catch (SQLException e) {
+                    failure = new QueryExecutionException(failureMessage, e);
+                }
+            }
+        } catch (SQLException e) {
+            failure = new QueryExecutionException(failureMessage, e);
+        } catch (RuntimeException | Error e) {
+            discard(acquired, autoCommitDisabled, failureMessage, e);
+
+            throw e;
+        }
+
+        failure = release(acquired, restoreAutoCommit, failureMessage, failure);
+
+        if (failure != null) {
+            throw failure;
+        }
+
+        return counts;
+    }
+
+    private Connection acquireConnection(String failureMessage) {
+        try {
+            return Objects.requireNonNull(dataSource).getConnection();
+        } catch (SQLException e) {
+            throw new QueryExecutionException(failureMessage, e);
+        }
+    }
+
+    /**
+     * Prepares the statement once, adds one batch entry per argument list, and
+     * returns the counts the driver reported, closing the statement on every
+     * path.
+     */
+    private int[] addAndExecuteBatch(
+        Connection target,
+        String sql,
+        List<? extends List<?>> batch
+    ) throws SQLException {
+        try (PreparedStatement statement = target.prepareStatement(sql)) {
+            for (List<?> parameters : batch) {
+                bindParameters(target, statement, parameters);
+
+                statement.addBatch();
+            }
+
+            return statement.executeBatch();
+        }
+    }
+
+    /**
+     * Rolls the batch back and releases its connection after an unchecked
+     * failure, so that failure can be rethrown untranslated with a rollback,
+     * restore, or close failure attached to it as a suppressed
+     * {@link QueryExecutionException}.
+     */
+    private void discard(
+        Connection target,
+        boolean autoCommitDisabled,
+        String failureMessage,
+        Throwable failure
+    ) {
+        boolean restoreAutoCommit = autoCommitDisabled
+            && rollBack(target, failureMessage, failure);
+
+        QueryExecutionException released = release(
+            target,
+            restoreAutoCommit,
+            failureMessage,
+            null
+        );
+
+        if (released != null) {
+            failure.addSuppressed(released);
+        }
+    }
+
+    /**
+     * Rolls the failed batch back, attaching a rollback failure to the pending
+     * {@code failure} as suppressed, and reports whether the rollback
+     * succeeded, because a failed rollback leaves a transaction the restore of
+     * auto-commit would commit.
+     */
+    private boolean rollBack(
+        Connection target,
+        String failureMessage,
+        Throwable failure
+    ) {
+        try {
+            target.rollback();
+
+            return true;
+        } catch (SQLException e) {
+            failure.addSuppressed(new QueryExecutionException(failureMessage, e));
+
+            return false;
+        }
+    }
+
+    /**
+     * Restores auto-commit when asked and always closes the connection,
+     * returning the pending {@code failure} with a failure of either step
+     * attached to it as suppressed, that failure itself when none was pending,
+     * or {@code null} when nothing failed.
+     */
+    private QueryExecutionException release(
+        Connection target,
+        boolean restoreAutoCommit,
+        String failureMessage,
+        QueryExecutionException failure
+    ) {
+        QueryExecutionException pending = failure;
+
+        if (restoreAutoCommit) {
+            try {
+                target.setAutoCommit(true);
+            } catch (SQLException e) {
+                pending = attach(pending, failureMessage, e);
+            }
+        }
+
+        try {
+            target.close();
+        } catch (SQLException e) {
+            pending = attach(pending, failureMessage, e);
+        }
+
+        return pending;
+    }
+
+    private static QueryExecutionException attach(
+        QueryExecutionException pending,
+        String failureMessage,
+        SQLException e
+    ) {
+        QueryExecutionException failure = new QueryExecutionException(failureMessage, e);
+
+        if (pending == null) {
+            return failure;
+        }
+
+        pending.addSuppressed(failure);
+
+        return pending;
     }
 
     /**
