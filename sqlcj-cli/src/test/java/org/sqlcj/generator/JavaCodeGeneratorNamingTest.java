@@ -380,6 +380,18 @@ class JavaCodeGeneratorNamingTest {
             return 0;
         }
 
+        @Override
+        public int[] executeBatch(
+            String repository,
+            String query,
+            String sql,
+            List<? extends List<?>> batch
+        ) {
+            record(repository, query, sql);
+
+            return new int[0];
+        }
+
         private void record(String repository, String query, String sql) {
             this.repository = repository;
             this.query = query;

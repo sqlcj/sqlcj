@@ -9,6 +9,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
+import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -23,6 +24,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -508,6 +510,512 @@ class JdbcQueryExecutorTest {
         );
 
         assertInstanceOf(SQLException.class, exception.getCause());
+    }
+
+    /**
+     * A batch over a DataSource executes its SQL once per argument list, in
+     * batch order, reports the count of each one, and is committed.
+     */
+    @Test
+    void shouldReturnPerRowCountsForABatchInsert() {
+        int[] counts = executor.executeBatch(
+            REPOSITORY,
+            "InsertUsers",
+            "INSERT INTO users (id, name, active) VALUES (?, ?, ?)",
+            List.of(
+                List.of(4L, "Dora", true),
+                List.of(5L, "Eve", false)
+            )
+        );
+
+        assertArrayEquals(new int[] { 1, 1 }, counts);
+
+        assertEquals(
+            List.of(
+                new User(4L, "Dora"),
+                new User(5L, "Eve")
+            ),
+            executor.queryMany(
+                REPOSITORY,
+                "ListUsers",
+                "SELECT id, name FROM users WHERE id > ? ORDER BY id",
+                List.of(3L),
+                userMapper()
+            )
+        );
+    }
+
+    /** A row that affects nothing reports its own count of zero. */
+    @Test
+    void shouldReturnPerRowCountsForABatchUpdate() {
+        int[] counts = executor.executeBatch(
+            REPOSITORY,
+            "RenameUser",
+            "UPDATE users SET name = ? WHERE id = ?",
+            List.of(
+                List.of("Alicia", 1L),
+                List.of("Nobody", 999L),
+                List.of("Bobby", 2L)
+            )
+        );
+
+        assertArrayEquals(new int[] { 1, 0, 1 }, counts);
+
+        assertEquals(
+            List.of(
+                new User(1L, "Alicia"),
+                new User(2L, "Bobby"),
+                new User(3L, "Charlie")
+            ),
+            executor.queryMany(
+                REPOSITORY,
+                "ListUsers",
+                "SELECT id, name FROM users ORDER BY id",
+                List.of(),
+                userMapper()
+            )
+        );
+    }
+
+    @Test
+    void shouldReturnPerRowCountsForABatchDelete() {
+        int[] counts = executor.executeBatch(
+            REPOSITORY,
+            "DeleteUser",
+            "DELETE FROM users WHERE id = ?",
+            List.of(
+                List.of(1L),
+                List.of(999L),
+                List.of(3L)
+            )
+        );
+
+        assertArrayEquals(new int[] { 1, 0, 1 }, counts);
+
+        assertEquals(
+            List.of(new User(2L, "Bob")),
+            executor.queryMany(
+                REPOSITORY,
+                "ListUsers",
+                "SELECT id, name FROM users ORDER BY id",
+                List.of(),
+                userMapper()
+            )
+        );
+    }
+
+    /**
+     * An empty batch executes nothing: it obtains no connection of a
+     * DataSource, prepares no statement of a caller-owned connection, and
+     * returns an empty array.
+     */
+    @Test
+    void shouldExecuteNothingForAnEmptyBatch() throws SQLException {
+        JdbcResourceTracker tracker = new JdbcResourceTracker();
+
+        JdbcQueryExecutor dataSourceExecutor = new JdbcQueryExecutor(
+            tracker.track(DataSource.class, dataSource)
+        );
+
+        assertArrayEquals(
+            new int[0],
+            dataSourceExecutor.executeBatch(
+                REPOSITORY,
+                "InsertUsers",
+                "INSERT INTO users (id, name, active) VALUES (?, ?, ?)",
+                List.of()
+            )
+        );
+
+        assertTrue(tracker.connections.isEmpty());
+        assertEquals(List.of(), tracker.calls);
+
+        try (Connection connection = dataSource.getConnection()) {
+            JdbcResourceTracker connectionTracker = new JdbcResourceTracker();
+
+            JdbcQueryExecutor connectionExecutor = new JdbcQueryExecutor(
+                connectionTracker.track(Connection.class, connection)
+            );
+
+            assertArrayEquals(
+                new int[0],
+                connectionExecutor.executeBatch(
+                    REPOSITORY,
+                    "InsertUsers",
+                    "INSERT INTO users (id, name, active) VALUES (?, ?, ?)",
+                    List.of()
+                )
+            );
+
+            assertTrue(connectionTracker.statements.isEmpty());
+            assertEquals(List.of(), connectionTracker.calls);
+        }
+    }
+
+    @Test
+    void shouldRejectANullBatch() {
+        assertThrows(
+            NullPointerException.class,
+            () -> executor.executeBatch(
+                REPOSITORY,
+                "InsertUsers",
+                "INSERT INTO users (id, name, active) VALUES (?, ?, ?)",
+                null
+            )
+        );
+    }
+
+    /**
+     * An {@link UntypedText} argument of a batch row is bound as its text
+     * without a declared SQL type, exactly as a single execution binds it, and
+     * every other argument of that row keeps its untouched {@code setObject}
+     * binding.
+     */
+    @Test
+    void shouldBindUntypedTextOfEachBatchRow() throws SQLException {
+        BindingRecorder recorder = new BindingRecorder();
+
+        try (Connection connection = dataSource.getConnection()) {
+            JdbcQueryExecutor connectionExecutor = new JdbcQueryExecutor(
+                recorder.track(connection)
+            );
+
+            assertArrayEquals(
+                new int[] { 1, 1 },
+                connectionExecutor.executeBatch(
+                    REPOSITORY,
+                    "UpdateUserName",
+                    "UPDATE users SET name = ? WHERE id = ?",
+                    List.of(
+                        Arrays.asList(new UntypedText("Alicia"), 1L),
+                        Arrays.asList(new UntypedText(null), 2L)
+                    )
+                )
+            );
+        }
+
+        assertEquals(
+            List.of(
+                new BoundParameter(1, "Alicia", Types.OTHER),
+                new BoundParameter(2, 1L, null),
+                new BoundParameter(1, null, Types.OTHER),
+                new BoundParameter(2, 2L, null)
+            ),
+            recorder.bindings
+        );
+    }
+
+    /**
+     * A {@link SqlArray} argument of a batch row is bound as a server array
+     * built on the connection the batch runs on, and a null list of a row is
+     * bound as a SQL {@code NULL} array, exactly as a single execution binds
+     * either.
+     */
+    @Test
+    void shouldBindSqlArrayOfEachBatchRow() throws SQLException {
+        BindingRecorder recorder = new BindingRecorder();
+
+        try (Connection connection = dataSource.getConnection()) {
+            createTaggedTable(connection);
+
+            JdbcQueryExecutor connectionExecutor = new JdbcQueryExecutor(
+                recorder.track(connection)
+            );
+
+            assertArrayEquals(
+                new int[] { 1, 1 },
+                connectionExecutor.executeBatch(
+                    REPOSITORY,
+                    "InsertTagged",
+                    "INSERT INTO tagged (id, tags) VALUES (?, ?)",
+                    List.of(
+                        Arrays.asList(1L, new SqlArray("varchar", Arrays.asList("a", null))),
+                        Arrays.asList(2L, new SqlArray("varchar", null))
+                    )
+                )
+            );
+        }
+
+        assertEquals(
+            List.of(
+                new BoundParameter(1, 1L, null),
+                new BoundParameter(1, 2L, null)
+            ),
+            recorder.bindings
+        );
+
+        assertEquals(
+            List.of(new CreatedArray("varchar", Arrays.asList("a", null))),
+            recorder.createdArrays
+        );
+
+        assertEquals(List.of(2), recorder.arrayPositions);
+
+        assertEquals(
+            List.of(new BoundParameter(2, null, Types.ARRAY)),
+            recorder.nullBindings
+        );
+    }
+
+    /**
+     * A failing row of a batch over a DataSource rolls the whole batch back,
+     * so no row of it is written. The failure names the query and its
+     * repository, carries the driver's {@link BatchUpdateException}, and
+     * auto-commit is restored on the connection before it is closed.
+     */
+    @Test
+    void shouldRollBackADataSourceBatchWhoseRowFails() throws SQLException {
+        JdbcResourceTracker tracker = new JdbcResourceTracker();
+
+        JdbcQueryExecutor dataSourceExecutor = new JdbcQueryExecutor(
+            tracker.track(DataSource.class, dataSource)
+        );
+
+        QueryExecutionException exception = assertThrows(
+            QueryExecutionException.class,
+            () -> dataSourceExecutor.executeBatch(
+                REPOSITORY,
+                "InsertUsers",
+                "INSERT INTO users (id, name, active) VALUES (?, ?, ?)",
+                List.of(
+                    List.of(4L, "Dora", true),
+                    List.of(1L, "Duplicate", true),
+                    List.of(5L, "Eve", true)
+                )
+            )
+        );
+
+        assertEquals(
+            "Failed to execute query 'InsertUsers' in UsersRepository",
+            exception.getMessage()
+        );
+
+        assertInstanceOf(BatchUpdateException.class, exception.getCause());
+        assertEquals(0, exception.getSuppressed().length);
+
+        assertTrue(
+            executor.queryMany(
+                REPOSITORY,
+                "ListUsers",
+                "SELECT id, name FROM users WHERE id > ? ORDER BY id",
+                List.of(3L),
+                userMapper()
+            ).isEmpty()
+        );
+
+        assertEquals(
+            List.of(
+                "getConnection",
+                "setAutoCommit(false)",
+                "rollback",
+                "setAutoCommit(true)",
+                "close"
+            ),
+            tracker.calls
+        );
+
+        assertEquals(1, tracker.connections.size());
+        assertEquals(1, tracker.statements.size());
+
+        tracker.assertAllConnectionsClosed();
+        tracker.assertAllStatementsAndResultSetsClosed();
+    }
+
+    /**
+     * An unchecked failure of a batch over a DataSource, here a null argument
+     * list of a row, rolls the whole batch back, so no row of it is written.
+     * The failure is rethrown untranslated, and auto-commit is restored on the
+     * connection before it is closed.
+     */
+    @Test
+    void shouldReleaseADataSourceConnectionWhenABatchFailsWithAnUncheckedException()
+        throws SQLException {
+        JdbcResourceTracker tracker = new JdbcResourceTracker();
+
+        JdbcQueryExecutor dataSourceExecutor = new JdbcQueryExecutor(
+            tracker.track(DataSource.class, dataSource)
+        );
+
+        assertThrows(
+            NullPointerException.class,
+            () -> dataSourceExecutor.executeBatch(
+                REPOSITORY,
+                "InsertUsers",
+                "INSERT INTO users (id, name, active) VALUES (?, ?, ?)",
+                Arrays.asList(List.of(4L, "Dora", true), null)
+            )
+        );
+
+        assertEquals(
+            List.of(
+                "getConnection",
+                "setAutoCommit(false)",
+                "rollback",
+                "setAutoCommit(true)",
+                "close"
+            ),
+            tracker.calls
+        );
+
+        assertEquals(1, tracker.connections.size());
+        assertEquals(1, tracker.statements.size());
+
+        tracker.assertAllConnectionsClosed();
+        tracker.assertAllStatementsAndResultSetsClosed();
+
+        assertTrue(
+            executor.queryMany(
+                REPOSITORY,
+                "ListUsers",
+                "SELECT id, name FROM users WHERE id > ? ORDER BY id",
+                List.of(3L),
+                userMapper()
+            ).isEmpty()
+        );
+    }
+
+    /**
+     * A connection a DataSource hands out with auto-commit already disabled is
+     * in a transaction of its own, so the batch takes part in it and is never
+     * committed, rolled back, or reconfigured: closing that connection
+     * discards the batch.
+     */
+    @Test
+    void shouldLeaveADataSourceConnectionAlreadyInATransactionUncommitted() throws SQLException {
+        JdbcResourceTracker tracker = new JdbcResourceTracker()
+            .handingOutConnectionsInATransaction();
+
+        JdbcQueryExecutor dataSourceExecutor = new JdbcQueryExecutor(
+            tracker.track(DataSource.class, dataSource)
+        );
+
+        assertArrayEquals(
+            new int[] { 1, 1 },
+            dataSourceExecutor.executeBatch(
+                REPOSITORY,
+                "InsertUsers",
+                "INSERT INTO users (id, name, active) VALUES (?, ?, ?)",
+                List.of(
+                    List.of(4L, "Dora", true),
+                    List.of(5L, "Eve", false)
+                )
+            )
+        );
+
+        assertEquals(List.of("getConnection", "close"), tracker.calls);
+
+        assertEquals(1, tracker.connections.size());
+        assertEquals(1, tracker.statements.size());
+
+        tracker.assertAllConnectionsClosed();
+        tracker.assertAllStatementsAndResultSetsClosed();
+
+        assertTrue(
+            executor.queryMany(
+                REPOSITORY,
+                "ListUsers",
+                "SELECT id, name FROM users WHERE id > ? ORDER BY id",
+                List.of(3L),
+                userMapper()
+            ).isEmpty()
+        );
+    }
+
+    /**
+     * A batch on a caller-owned connection reports its counts and leaves the
+     * connection open, uncommitted, and configured as it was, so the
+     * application's own rollback discards the batch.
+     */
+    @Test
+    void shouldLeaveCallerOwnedConnectionUnchangedForABatch() throws SQLException {
+        JdbcResourceTracker tracker = new JdbcResourceTracker();
+
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+
+            int isolation = connection.getTransactionIsolation();
+
+            JdbcQueryExecutor connectionExecutor = new JdbcQueryExecutor(
+                tracker.track(Connection.class, connection)
+            );
+
+            assertArrayEquals(
+                new int[] { 1, 1 },
+                connectionExecutor.executeBatch(
+                    REPOSITORY,
+                    "InsertUsers",
+                    "INSERT INTO users (id, name, active) VALUES (?, ?, ?)",
+                    List.of(
+                        List.of(4L, "Dora", true),
+                        List.of(5L, "Eve", false)
+                    )
+                )
+            );
+
+            assertEquals(List.of(), tracker.calls);
+
+            assertEquals(1, tracker.statements.size());
+            tracker.assertAllStatementsAndResultSetsClosed();
+
+            assertFalse(connection.isClosed());
+            assertFalse(connection.getAutoCommit());
+            assertEquals(isolation, connection.getTransactionIsolation());
+
+            connection.rollback();
+
+            assertTrue(
+                connectionExecutor.queryMany(
+                    REPOSITORY,
+                    "ListUsers",
+                    "SELECT id, name FROM users WHERE id > ? ORDER BY id",
+                    List.of(3L),
+                    userMapper()
+                ).isEmpty()
+            );
+        }
+    }
+
+    @Test
+    void shouldWrapSqlExceptionForExecuteBatch() throws SQLException {
+        QueryExecutionException exception = assertThrows(
+            QueryExecutionException.class,
+            () -> executor.executeBatch(
+                REPOSITORY,
+                "DeleteUsers",
+                "DELETE FROM missing_table WHERE id = ?",
+                List.of(List.of(1L))
+            )
+        );
+
+        assertEquals(
+            "Failed to execute query 'DeleteUsers' in UsersRepository",
+            exception.getMessage()
+        );
+
+        assertInstanceOf(SQLException.class, exception.getCause());
+
+        try (Connection connection = dataSource.getConnection()) {
+            JdbcQueryExecutor connectionExecutor = new JdbcQueryExecutor(connection);
+
+            QueryExecutionException connectionException = assertThrows(
+                QueryExecutionException.class,
+                () -> connectionExecutor.executeBatch(
+                    REPOSITORY,
+                    "DeleteUsers",
+                    "DELETE FROM missing_table WHERE id = ?",
+                    List.of(List.of(1L))
+                )
+            );
+
+            assertEquals(
+                "Failed to execute query 'DeleteUsers' in UsersRepository",
+                connectionException.getMessage()
+            );
+
+            assertInstanceOf(SQLException.class, connectionException.getCause());
+
+            assertFalse(connection.isClosed());
+        }
     }
 
     @Test
@@ -1109,25 +1617,77 @@ class JdbcQueryExecutorTest {
      */
     private static final class JdbcResourceTracker {
 
+        /** The calls of an executor that are recorded, in call order. */
+        private static final List<String> RECORDED = List.of(
+            "setAutoCommit",
+            "commit",
+            "rollback",
+            "close"
+        );
+
         private final List<Connection> connections = new ArrayList<>();
 
         private final List<PreparedStatement> statements = new ArrayList<>();
 
         private final List<ResultSet> resultSets = new ArrayList<>();
 
+        private final List<String> calls = new ArrayList<>();
+
+        private boolean autoCommitAlreadyDisabled;
+
+        /**
+         * Hands out connections whose auto-commit is already disabled, without
+         * recording that preparation as a call of the executor.
+         */
+        private JdbcResourceTracker handingOutConnectionsInATransaction() {
+            autoCommitAlreadyDisabled = true;
+
+            return this;
+        }
+
         private <T> T track(Class<T> type, Object delegate) {
             return type.cast(
                 Proxy.newProxyInstance(
                     getClass().getClassLoader(),
                     new Class<?>[] { type },
-                    (proxy, method, arguments) -> record(invoke(delegate, method, arguments))
+                    (proxy, method, arguments) -> {
+                        recordCall(type, method, arguments);
+
+                        return record(invoke(delegate, method, arguments));
+                    }
                 )
             );
         }
 
-        private Object record(Object result) {
+        /**
+         * Records the connections an executor obtained from a tracked
+         * DataSource and the transaction calls it made on a connection, so a
+         * test can assert the transaction handling of an operation. A call on
+         * a tracked statement or result set is not a call of either kind.
+         */
+        private void recordCall(Class<?> type, Method method, Object[] arguments) {
+            if (type == DataSource.class && "getConnection".equals(method.getName())) {
+                calls.add("getConnection");
+            }
+
+            if (type != Connection.class || !RECORDED.contains(method.getName())) {
+                return;
+            }
+
+            calls.add(
+                "setAutoCommit".equals(method.getName())
+                    ? "setAutoCommit(%s)".formatted(arguments[0])
+                    : method.getName()
+            );
+        }
+
+        private Object record(Object result) throws SQLException {
             if (result instanceof Connection connection) {
                 connections.add(connection);
+
+                if (autoCommitAlreadyDisabled) {
+                    connection.setAutoCommit(false);
+                }
 
                 return track(Connection.class, connection);
             }
