@@ -7,7 +7,7 @@ RETURNING id, name, preferences, created_at;
 
 -- name: CreateUser :one
 INSERT INTO users (organization_id, email, display_name)
-VALUES (:organizationId, :email::text, :displayName)
+VALUES (:organizationId, :email, :displayName)
 RETURNING id, organization_id, display_name, created_at;
 
 -- name: CreateProject :one
@@ -155,7 +155,7 @@ WHERE memberships.role <> EXCLUDED.role;
 
 -- name: ClaimHandle :optional
 INSERT INTO users (organization_id, email, handle, display_name)
-VALUES (:organizationId, :email::text, :handle::text, :displayName)
+VALUES (:organizationId, :email, :handle, :displayName)
 ON CONFLICT (organization_id, handle) WHERE deleted_at IS NULL DO NOTHING
 RETURNING id, display_name;
 
@@ -349,3 +349,38 @@ FROM projects p
                        WHERE t.project_id = p.id
                        ORDER BY t.id DESC
                        LIMIT 1) latest ON TRUE;
+
+-- name: GetUserByEmail :optional
+SELECT id,
+       email,
+       handle,
+       display_name,
+       last_login_ip
+FROM users
+WHERE email = :email;
+
+-- name: GetUserByHandle :optional
+SELECT id,
+       email,
+       handle,
+       display_name
+FROM users
+WHERE organization_id = :organizationId
+  AND handle = :handle
+  AND deleted_at IS NULL;
+
+-- name: RecordLogin :exec
+UPDATE users
+SET last_login_ip = :lastLoginIp
+WHERE id = :id;
+
+-- name: SetRetentionPeriod :exec
+UPDATE organizations
+SET retention_period = :retentionPeriod
+WHERE id = :id;
+
+-- name: GetRetentionPeriod :optional
+SELECT id,
+       retention_period
+FROM organizations
+WHERE id = :id;

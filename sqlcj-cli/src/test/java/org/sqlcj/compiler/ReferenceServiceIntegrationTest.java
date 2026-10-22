@@ -12,6 +12,7 @@ import org.sqlcj.config.Config;
 import org.sqlcj.config.JavaConfig;
 import org.sqlcj.config.SqlConfig;
 import org.sqlcj.runtime.JdbcQueryExecutor;
+import org.sqlcj.runtime.SqlInterval;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.Container;
 import org.testcontainers.containers.PostgreSQLContainer;
@@ -1402,6 +1403,162 @@ class ReferenceServiceIntegrationTest {
                 componentsOf((List<?>) invoke(repository, "listPriorityLevels"), "level")
             );
         }
+    }
+
+    /**
+     * The generated repository executes the reference service's domain,
+     * {@code citext}, {@code inet}, and {@code interval} columns against the
+     * migrated database: the uncast writes of the {@code email_address} domain
+     * and of the {@code citext} handle, the lookups that match either of them
+     * in any case while reading back the stored spelling, the {@code inet}
+     * login address, and the retention interval, which holds months, days, and
+     * a time part and reads back as {@code null} once it is cleared.
+     *
+     * <p>The database is shared with the other tests of this class, and
+     * {@code users_email_key} is unique over every organization, so this one
+     * works inside its own organization and with email addresses no other test
+     * writes.
+     */
+    @Test
+    void shouldExecuteTheGeneratedReferenceServiceTypes() throws Exception {
+        Path generatedDirectory = tempDir.resolve("generated-types");
+
+        generate(List.of(migrations().toString()), generatedDirectory);
+
+        Path classesDirectory = compile(generatedDirectory, tempDir.resolve("classes-types"));
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Long organizationId = (Long) component(
+                invoke(repository, "createOrganization", "Type Test", "{}"),
+                "id"
+            );
+
+            Long userId = (Long) component(
+                invoke(
+                    repository,
+                    "createUser",
+                    organizationId,
+                    "Mary.Jackson@Example.com",
+                    "Mary Jackson"
+                ),
+                "id"
+            );
+
+            Object foundByEmail = ((Optional<?>) invoke(
+                repository,
+                "getUserByEmail",
+                "mary.jackson@example.com"
+            )).orElseThrow();
+
+            assertEquals(
+                userId,
+                component(foundByEmail, "id"),
+                "the column of a domain over citext matches an address in another case"
+            );
+
+            assertEquals(
+                "Mary.Jackson@Example.com",
+                component(foundByEmail, "email"),
+                "the domain column reads back the spelling it was written with"
+            );
+
+            assertEquals(
+                Optional.empty(),
+                invoke(repository, "getUserByEmail", "no.such.user@example.com"),
+                "an unused address reads no user"
+            );
+
+            Long handleUserId = (Long) component(
+                ((Optional<?>) invoke(
+                    repository,
+                    "claimHandle",
+                    organizationId,
+                    "Dorothy.Vaughan@Example.com",
+                    "Dorothy",
+                    "Dorothy Vaughan"
+                )).orElseThrow(),
+                "id"
+            );
+
+            Object foundByHandle = ((Optional<?>) invoke(
+                repository,
+                "getUserByHandle",
+                organizationId,
+                "DOROTHY"
+            )).orElseThrow();
+
+            assertEquals(
+                handleUserId,
+                component(foundByHandle, "id"),
+                "the citext handle matches a handle in another case"
+            );
+
+            assertEquals(
+                "Dorothy",
+                component(foundByHandle, "handle"),
+                "the citext column reads back the spelling it was written with"
+            );
+
+            assertEquals(
+                "Dorothy.Vaughan@Example.com",
+                component(foundByHandle, "email")
+            );
+
+            assertEquals(
+                1,
+                invoke(repository, "recordLogin", "192.0.2.10", userId),
+                "the inet write updates the user its placeholder names"
+            );
+
+            assertEquals(
+                "192.0.2.10",
+                component(
+                    ((Optional<?>) invoke(
+                        repository,
+                        "getUserByEmail",
+                        "MARY.JACKSON@EXAMPLE.COM"
+                    )).orElseThrow(),
+                    "lastLoginIp"
+                ),
+                "the inet column reads back the address that was recorded"
+            );
+
+            assertNull(
+                component(retentionPeriod(repository, organizationId), "retentionPeriod"),
+                "the interval column of a new organization is null"
+            );
+
+            SqlInterval retention = new SqlInterval(14, 3, 3_723_000_004L);
+
+            assertEquals(
+                1,
+                invoke(repository, "setRetentionPeriod", retention, organizationId)
+            );
+
+            assertEquals(
+                retention,
+                component(retentionPeriod(repository, organizationId), "retentionPeriod"),
+                "the interval reads back its months, days, and time part"
+            );
+
+            assertEquals(
+                1,
+                invoke(repository, "setRetentionPeriod", null, organizationId)
+            );
+
+            assertNull(
+                component(retentionPeriod(repository, organizationId), "retentionPeriod"),
+                "a cleared interval reads back null"
+            );
+        }
+    }
+
+    /** The one retention period read of one organization. */
+    private Object retentionPeriod(Object repository, Long organizationId) throws Exception {
+        return ((Optional<?>) invoke(repository, "getRetentionPeriod", organizationId))
+            .orElseThrow();
     }
 
     /**

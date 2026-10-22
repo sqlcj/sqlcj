@@ -2711,6 +2711,14 @@ Reference service:
   `JOIN LATERAL`, whose body reads the latest task of the project it is
   correlated to and returns no row for a project without tasks — against
   PostgreSQL 16 through the generated repository.
+- `ReferenceServiceIntegrationTest.shouldExecuteTheGeneratedReferenceServiceTypes`
+  executes the reference service's `CreateUser` and `ClaimHandle`, which bind
+  the `email_address` domain and the `citext` handle without a cast, its
+  `GetUserByEmail` and `GetUserByHandle`, which match either column in any
+  case and read back the stored spelling, its `RecordLogin`, which writes an
+  `inet` address, and its `SetRetentionPeriod` and `GetRetentionPeriod`, which
+  write and read an interval of months, days, and a time part and then clear
+  it to `null`, against PostgreSQL 16 through the generated repository.
 - `ReferenceServiceIntegrationTest.shouldRejectEachUnsupportedCatalogueQuery`
   covers the whole located diagnostic line, and the absence of generated
   output, of every entry of the reference service's unsupported query
