@@ -370,6 +370,48 @@ class PostgresIntegrationTest {
         """;
 
     /**
+     * A snapshot declaring one domain over each kind of base a domain may
+     * have, beside the tables whose columns name them. The
+     * {@code email_address} domain is written exactly as {@code pg_dump} does
+     * for a domain with an operator check, which sqlcj's parser cannot read,
+     * and {@code note} is a column of a {@code NOT NULL} domain read through a
+     * left join.
+     */
+    private static final String DOMAIN_SCHEMA = """
+        CREATE EXTENSION IF NOT EXISTS citext;
+
+        CREATE TYPE stage_setting AS ENUM ('indoor', 'outdoor');
+
+        CREATE DOMAIN public.email_address AS public.citext
+            CONSTRAINT email_address_check
+            CHECK ((VALUE OPERATOR(public.~~) '%@%'::public.citext));
+
+        CREATE DOMAIN positive AS integer CHECK (VALUE > 0);
+
+        CREATE DOMAIN contact_setting AS stage_setting;
+
+        CREATE DOMAIN tag_list AS text[];
+
+        CREATE DOMAIN required_text AS text NOT NULL;
+
+        CREATE TABLE contacts
+        (
+            id       BIGINT PRIMARY KEY,
+            email    public.email_address NOT NULL,
+            priority positive,
+            setting  contact_setting,
+            tags     tag_list
+        );
+
+        CREATE TABLE contact_notes
+        (
+            id         BIGINT PRIMARY KEY,
+            contact_id BIGINT,
+            note       required_text NOT NULL
+        );
+        """;
+
+    /**
      * A snapshot whose enum type is declared and then extended in the order the
      * statements state, so the modeled labels are PostgreSQL's own sort order.
      * The added labels are not used by this DDL itself, which PostgreSQL
@@ -730,6 +772,13 @@ class PostgresIntegrationTest {
         execute("DROP TABLE IF EXISTS region");
         execute("DROP TABLE IF EXISTS stage_events");
         execute("DROP TABLE IF EXISTS array_values");
+        execute("DROP TABLE IF EXISTS contact_notes");
+        execute("DROP TABLE IF EXISTS contacts");
+        execute("DROP DOMAIN IF EXISTS email_address");
+        execute("DROP DOMAIN IF EXISTS positive");
+        execute("DROP DOMAIN IF EXISTS contact_setting");
+        execute("DROP DOMAIN IF EXISTS tag_list");
+        execute("DROP DOMAIN IF EXISTS required_text");
         execute("DROP TYPE IF EXISTS stage_setting");
         execute("DROP TYPE IF EXISTS stage_setting_new");
         execute("DROP TABLE IF EXISTS albums");
@@ -3552,6 +3601,166 @@ class PostgresIntegrationTest {
                 List.of(1L, 2L, 3L, 4L),
                 ids(findRecent.invoke(repository, new SqlInterval(1, 0, 0)))
             );
+        }
+    }
+
+    /**
+     * Proves that a column of a domain round trips through generated code as
+     * the domain's base type does, over every base a domain may have: the
+     * {@code email_address} domain over {@code citext} is declared in the form
+     * {@code pg_dump} writes for an operator check, which sqlcj's parser
+     * cannot read, and its column is compared case-insensitively by {@code =}
+     * and by {@code = ANY}; a domain over an integer with a check, a domain
+     * over an enum type, and a domain over {@code text[]} holding a null
+     * element are written and read back as their base types.
+     *
+     * <p>PostgreSQL 16 defines no comparison for a domain over an enum type,
+     * so the enum domain is only written and read, and the note of a column of
+     * a {@code NOT NULL} domain reads as {@code null} through a left join,
+     * because an unmatched row reads every component of its source as
+     * {@code null}.
+     */
+    @Test
+    void shouldRoundTripDomainValues() throws Exception {
+        execute(DOMAIN_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(
+            DOMAIN_SCHEMA,
+            """
+                -- name: InsertContact :exec
+                INSERT INTO contacts (id, email, priority, setting, tags)
+                VALUES ($1, $2, $3, $4, $5);
+
+                -- name: InsertContactNote :exec
+                INSERT INTO contact_notes (id, contact_id, note)
+                VALUES ($1, $2, $3);
+
+                -- name: GetContact :one
+                SELECT id, email, priority, setting, tags
+                FROM contacts
+                WHERE id = $1;
+
+                -- name: FindContactByEmail :optional
+                SELECT id
+                FROM contacts
+                WHERE email = $1;
+
+                -- name: FindContactsByAnyEmail :many
+                SELECT id
+                FROM contacts
+                WHERE email = ANY($1);
+
+                -- name: ListContactNotes :many
+                SELECT c.id, n.note
+                FROM contacts c
+                LEFT JOIN contact_notes n ON n.contact_id = c.id
+                ORDER BY c.id;
+                """
+        );
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Class<?> stageSetting = Class.forName("generated.StageSetting", true, classLoader);
+
+            Object outdoor = stageSetting.getEnumConstants()[1];
+
+            Object repository = newRepository(classLoader);
+
+            Method insertMethod = repository.getClass().getMethod(
+                "insertContact",
+                Long.class,
+                String.class,
+                Integer.class,
+                stageSetting,
+                List.class
+            );
+
+            assertEquals(
+                1,
+                insertMethod.invoke(
+                    repository,
+                    1L,
+                    "Alice@Example.com",
+                    7,
+                    outdoor,
+                    Arrays.asList("alpha", null)
+                )
+            );
+
+            assertEquals(
+                1,
+                insertMethod.invoke(repository, 2L, "bob@example.com", null, null, null)
+            );
+
+            Method insertNote = repository.getClass().getMethod(
+                "insertContactNote",
+                Long.class,
+                Long.class,
+                String.class
+            );
+
+            assertEquals(1, insertNote.invoke(repository, 10L, 1L, "first note"));
+
+            Method getMethod = repository.getClass().getMethod("getContact", Long.class);
+
+            Object result = getMethod.invoke(repository, 1L);
+
+            assertEquals(
+                List.of("id", "email", "priority", "setting", "tags"),
+                recordComponentNames(result)
+            );
+
+            assertEquals(
+                List.of(Long.class, String.class, Integer.class, stageSetting, List.class),
+                recordComponentTypes(result)
+            );
+
+            assertEquals("Alice@Example.com", component(result, "email"));
+            assertEquals(7, component(result, "priority"));
+            assertEquals(outdoor, component(result, "setting"));
+            assertEquals(Arrays.asList("alpha", null), component(result, "tags"));
+
+            Object nullResult = getMethod.invoke(repository, 2L);
+
+            assertEquals("bob@example.com", component(nullResult, "email"));
+            assertNull(component(nullResult, "priority"));
+            assertNull(component(nullResult, "setting"));
+            assertNull(component(nullResult, "tags"));
+
+            Method findByEmail = repository.getClass().getMethod("findContactByEmail", String.class);
+
+            assertEquals(
+                1L,
+                component(
+                    assertInstanceOf(
+                        Optional.class,
+                        findByEmail.invoke(repository, "ALICE@EXAMPLE.COM")
+                    )
+                        .orElseThrow(),
+                    "id"
+                )
+            );
+
+            Method findByAnyEmail = repository.getClass().getMethod(
+                "findContactsByAnyEmail",
+                List.class
+            );
+
+            assertEquals(
+                List.of(1L),
+                ids(findByAnyEmail.invoke(repository, List.of("ALICE@EXAMPLE.COM", "nobody@x.com")))
+            );
+
+            Method listNotes = repository.getClass().getMethod("listContactNotes");
+
+            List<?> rows = (List<?>) listNotes.invoke(repository);
+
+            assertEquals(2, rows.size());
+
+            assertEquals(1L, component(rows.get(0), "id"));
+            assertEquals("first note", component(rows.get(0), "note"));
+
+            assertEquals(2L, component(rows.get(1), "id"));
+            assertNull(component(rows.get(1), "note"));
         }
     }
 

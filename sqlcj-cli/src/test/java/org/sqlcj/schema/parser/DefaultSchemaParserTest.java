@@ -8,6 +8,7 @@ import org.sqlcj.schema.Column;
 import org.sqlcj.schema.ColumnType;
 import org.sqlcj.schema.Constraint;
 import org.sqlcj.schema.ConstraintType;
+import org.sqlcj.schema.DomainType;
 import org.sqlcj.schema.EnumType;
 import org.sqlcj.schema.Schema;
 import org.sqlcj.schema.Table;
@@ -1089,7 +1090,6 @@ class DefaultSchemaParserTest {
             "CREATE USER reader;",
             "ALTER ROLE readonly NOLOGIN;",
             "ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO readonly;",
-            "CREATE DOMAIN positive AS INTEGER CHECK (VALUE > 0);",
             "ALTER DOMAIN positive DROP NOT NULL;",
             "CREATE TYPE address AS (street TEXT, city TEXT);",
             "CREATE TYPE bounds AS RANGE (subtype = numeric);",
@@ -1149,7 +1149,6 @@ class DefaultSchemaParserTest {
             "COMMENT ON CONSTRAINT users_email_key ON users IS 'the constraint';",
             "SET search_path TO app, public;",
             "DROP POLICY users_owner ON users;",
-            "DROP DOMAIN positive;",
             "VACUUM;",
             "VACUUM ANALYZE users;",
             "LOCK TABLE users IN ACCESS EXCLUSIVE MODE;",
@@ -2743,6 +2742,584 @@ class DefaultSchemaParserTest {
     }
 
     /**
+     * {@code CREATE DOMAIN} models one domain over the type it is declared
+     * over, under its unqualified or {@code public}-qualified name, so a
+     * domain over a domain carries the same type its base does. A domain over
+     * a type sqlcj does not map is modeled with no type, and a domain of a
+     * schema sqlcj does not model is ignored.
+     */
+    @Test
+    void shouldModelDomainsOverTheTypesTheyAreDeclaredOver() {
+        Schema schema = parser.parse(
+            enumSchema(),
+            """
+                CREATE DOMAIN positive AS integer CHECK (VALUE > 0);
+                CREATE DOMAIN email_address AS citext;
+                CREATE DOMAIN public.handle AS public.citext;
+                CREATE DOMAIN "Email" AS text;
+                CREATE DOMAIN tag_list AS text[];
+                CREATE DOMAIN setting AS stage_setting;
+                CREATE DOMAIN work_mail AS email_address;
+                CREATE DOMAIN code AS CHAR(4);
+                CREATE DOMAIN price AS money;
+                CREATE DOMAIN reporting.secret AS integer;
+                """
+        );
+
+        assertEquals(
+            List.of(
+                new DomainType("positive", ColumnType.INTEGER, null, false, false),
+                new DomainType("email_address", ColumnType.CITEXT, null, false, false),
+                new DomainType("handle", ColumnType.CITEXT, null, false, false),
+                new DomainType("Email", ColumnType.TEXT, null, false, false),
+                new DomainType("tag_list", ColumnType.TEXT, null, true, false),
+                new DomainType("setting", ColumnType.ENUM, "stage_setting", false, false),
+                new DomainType("work_mail", ColumnType.CITEXT, null, false, false),
+                new DomainType("code", ColumnType.VARCHAR, null, false, true),
+                new DomainType("price", null, null, false, false)
+            ),
+            schema.domains()
+        );
+    }
+
+    /**
+     * A {@code CREATE DOMAIN} of a name a modeled domain already has replaces
+     * that domain in its position, because the {@code DROP DOMAIN} that freed
+     * the name may be one sqlcj never sees.
+     */
+    @Test
+    void shouldReplaceAModeledDomainByCreateDomainInItsPosition() {
+        Schema schema = parser.parse(
+            domainSchema(),
+            "CREATE DOMAIN public.email_address AS text;"
+        );
+
+        assertEquals(
+            List.of(
+                new DomainType("positive", ColumnType.INTEGER, null, false, false),
+                new DomainType("email_address", ColumnType.TEXT, null, false, false),
+                new DomainType("tag_list", ColumnType.TEXT, null, true, false),
+                new DomainType("price", null, null, false, false),
+                new DomainType("setting", ColumnType.ENUM, "stage_setting", false, false)
+            ),
+            schema.domains()
+        );
+    }
+
+    /**
+     * A column whose declared type names a modeled domain is modeled as a
+     * column of the domain's base type, through every path that types a
+     * column, and a domain over an array type is an array column. The name is
+     * matched case-insensitively and without its SQL identifier delimiters, as
+     * PostgreSQL resolves it, and a {@code public}-qualified name resolves as
+     * its unqualified name.
+     *
+     * <p>An array of a domain, a domain over a type sqlcj does not map, and a
+     * domain name qualified with another schema are recorded with their
+     * declared type.
+     */
+    @Test
+    void shouldModelColumnsOfADeclaredDomain() {
+        Schema schema = parser.parse(
+            domainSchema(),
+            """
+                CREATE TABLE contacts (
+                    id       positive,
+                    email    EMAIL_ADDRESS NOT NULL,
+                    optional "email_address",
+                    labels   tag_list,
+                    emails   email_address[],
+                    amount   price,
+                    external reporting.email_address
+                );
+
+                ALTER TABLE contacts ADD COLUMN backup public.email_address;
+                ALTER TABLE contacts ALTER COLUMN optional TYPE tag_list;
+                """
+        );
+
+        assertEquals(
+            List.of(
+                new Column("id", ColumnType.INTEGER, true),
+                new Column("email", ColumnType.CITEXT, false),
+                new Column("optional", ColumnType.TEXT, true, null, null, true),
+                new Column("labels", ColumnType.TEXT, true, null, null, true),
+                new Column("emails", null, true, "EMAIL_ADDRESS[]"),
+                new Column("amount", null, true, "PRICE"),
+                new Column("external", null, true, "REPORTING.EMAIL_ADDRESS"),
+                new Column("backup", ColumnType.CITEXT, true)
+            ),
+            table(schema, "contacts").columns()
+        );
+    }
+
+    /**
+     * A column of a domain over an enum type is an enum column of that type,
+     * so it generates and reads the one Java enum of the enum type itself.
+     */
+    @Test
+    void shouldModelAColumnOfADomainOverAnEnumType() {
+        Schema schema = parser.parse(
+            domainSchema(),
+            "CREATE TABLE stages (setting setting NOT NULL, planned setting[]);"
+        );
+
+        assertEquals(
+            List.of(
+                new Column("setting", ColumnType.ENUM, false, null, "stage_setting"),
+                new Column("planned", null, true, "SETTING[]")
+            ),
+            table(schema, "stages").columns()
+        );
+    }
+
+    /**
+     * A column's nullability comes from its own declaration alone: a domain's
+     * own {@code NOT NULL} never makes a column of it non-null, because
+     * PostgreSQL reports the column itself as nullable.
+     */
+    @Test
+    void shouldKeepTheOwnNullabilityOfAColumnOfANotNullDomain() {
+        Schema schema = parser.parse(
+            """
+                CREATE DOMAIN required_text AS text NOT NULL;
+
+                CREATE TABLE notes (
+                    title    required_text,
+                    subtitle required_text NOT NULL
+                );
+                """
+        );
+
+        assertEquals(
+            List.of(
+                new Column("title", ColumnType.TEXT, true),
+                new Column("subtitle", ColumnType.TEXT, false)
+            ),
+            table(schema, "notes").columns()
+        );
+    }
+
+    /**
+     * The two {@code CREATE DOMAIN} forms {@code pg_dump} writes that sqlcj's
+     * parser cannot read, a domain with an operator check and one with a
+     * collation and a default, are modeled from their own words: the words
+     * before the first constraint word state the name and the base type alone
+     * and are read again as a {@code CREATE DOMAIN} of their own.
+     */
+    @Test
+    void shouldModelTheUnreadableCreateDomainFormsOfADump() {
+        Schema schema = parser.parse(
+            """
+                CREATE DOMAIN public.email_address AS public.citext
+                    CONSTRAINT email_address_check
+                    CHECK ((VALUE OPERATOR(public.~~) '%@%'::public.citext));
+
+                CREATE DOMAIN public.handle AS public.citext
+                    COLLATE pg_catalog."C" NOT NULL DEFAULT 'anonymous'::text;
+
+                CREATE TABLE users (
+                    email  public.email_address NOT NULL,
+                    handle public.handle
+                );
+                """
+        );
+
+        assertEquals(
+            List.of(
+                new DomainType("email_address", ColumnType.CITEXT, null, false, false),
+                new DomainType("handle", ColumnType.CITEXT, null, false, false)
+            ),
+            schema.domains()
+        );
+
+        assertEquals(
+            List.of(
+                new Column("email", ColumnType.CITEXT, false),
+                new Column("handle", ColumnType.CITEXT, true)
+            ),
+            table(schema, "users").columns()
+        );
+    }
+
+    /**
+     * An unreadable {@code CREATE DOMAIN} whose base type does not read either
+     * is modeled under the name its words state, over no type, so a column of
+     * it is recorded with its declared type.
+     */
+    @Test
+    void shouldModelAnUnreadableCreateDomainOverAnUnreadableBaseType() {
+        Schema schema = parser.parse(
+            """
+                CREATE DOMAIN tag_array AS integer ARRAY NOT NULL;
+
+                CREATE TABLE stages (tags tag_array);
+                """
+        );
+
+        assertEquals(
+            List.of(new DomainType("tag_array", null, null, false, false)),
+            schema.domains()
+        );
+
+        assertEquals(
+            List.of(new Column("tags", null, true, "TAG_ARRAY")),
+            table(schema, "stages").columns()
+        );
+    }
+
+    /**
+     * An unreadable {@code CREATE DOMAIN} of a domain qualified with a schema
+     * sqlcj does not model is ignored, as a readable one is, before its words
+     * are read any further.
+     */
+    @Test
+    void shouldIgnoreAnUnreadableCreateDomainOfAnotherSchema() {
+        Schema schema = domainSchema();
+
+        assertEquals(
+            schema,
+            parser.parse(
+                schema,
+                "CREATE DOMAIN reporting.email_address AS text "
+                    + "COLLATE pg_catalog.\"C\" NOT NULL DEFAULT 'x'::text;"
+            )
+        );
+    }
+
+    /**
+     * An unreadable {@code CREATE DOMAIN} whose name is written unquoted with
+     * non-ASCII letters is modeled over its base type, because the lexer
+     * reports such a name as one identifier, as PostgreSQL reads it.
+     */
+    @Test
+    void shouldModelAnUnreadableCreateDomainNamedWithNonAsciiLetters() {
+        Schema schema = parser.parse(
+            """
+                CREATE DOMAIN café AS integer NOT NULL DEFAULT 0;
+
+                CREATE TABLE orders (size café);
+                """
+        );
+
+        assertEquals(
+            List.of(new DomainType("café", ColumnType.INTEGER, null, false, false)),
+            schema.domains()
+        );
+
+        assertEquals(
+            List.of(new Column("size", ColumnType.INTEGER, true)),
+            table(schema, "orders").columns()
+        );
+    }
+
+    /**
+     * {@code ALTER DOMAIN ... RENAME TO} and {@code ALTER TYPE ... RENAME TO}
+     * both rename a modeled domain in its position, keeping the type it is
+     * declared over, so a column declared afterwards resolves through the new
+     * name. A column already resolved keeps the type its own statement gave
+     * it.
+     */
+    @Test
+    void shouldRenameAModeledDomainThroughAlterDomainAndAlterType() {
+        Schema schema = parser.parse(
+            parser.parse(domainSchema(), "CREATE TABLE contacts (email email_address);"),
+            """
+                ALTER DOMAIN email_address RENAME TO mail_address;
+                ALTER TYPE "mail_address" RENAME TO "Mail Address";
+                ALTER TABLE contacts ADD COLUMN second "Mail Address";
+                """
+        );
+
+        assertEquals(
+            List.of(
+                new DomainType("positive", ColumnType.INTEGER, null, false, false),
+                new DomainType("Mail Address", ColumnType.CITEXT, null, false, false),
+                new DomainType("tag_list", ColumnType.TEXT, null, true, false),
+                new DomainType("price", null, null, false, false),
+                new DomainType("setting", ColumnType.ENUM, "stage_setting", false, false)
+            ),
+            schema.domains()
+        );
+
+        assertEquals(
+            List.of(
+                new Column("email", ColumnType.CITEXT, true),
+                new Column("second", ColumnType.CITEXT, true)
+            ),
+            table(schema, "contacts").columns()
+        );
+    }
+
+    /**
+     * A rename onto the name of a modeled domain removes that domain, because
+     * PostgreSQL holds one type of a name at a time, whether the renamed type
+     * is a domain or an enum type.
+     */
+    @Test
+    void shouldRemoveTheModeledDomainARenameTakesTheNameOf() {
+        Schema renamedDomain = parser.parse(
+            domainSchema(),
+            "ALTER DOMAIN email_address RENAME TO tag_list;"
+        );
+
+        assertEquals(
+            List.of(
+                new DomainType("positive", ColumnType.INTEGER, null, false, false),
+                new DomainType("tag_list", ColumnType.CITEXT, null, false, false),
+                new DomainType("price", null, null, false, false),
+                new DomainType("setting", ColumnType.ENUM, "stage_setting", false, false)
+            ),
+            renamedDomain.domains()
+        );
+
+        Schema renamedEnum = parser.parse(
+            domainSchema(),
+            "ALTER TYPE stage_setting RENAME TO positive;"
+        );
+
+        assertEquals(
+            List.of(new EnumType("positive", List.of("indoor", "outdoor"))),
+            renamedEnum.enums()
+        );
+
+        assertEquals(
+            List.of(
+                new DomainType("email_address", ColumnType.CITEXT, null, false, false),
+                new DomainType("tag_list", ColumnType.TEXT, null, true, false),
+                new DomainType("price", null, null, false, false),
+                new DomainType("setting", ColumnType.ENUM, "positive", false, false)
+            ),
+            renamedEnum.domains()
+        );
+    }
+
+    /**
+     * Renaming an enum type renames it in every domain over it, so a column
+     * declared afterwards still reads the one modeled enum.
+     */
+    @Test
+    void shouldRenameARenamedEnumTypeInTheDomainsOverIt() {
+        Schema schema = parser.parse(
+            parser.parse(domainSchema(), "CREATE TABLE stages (setting setting);"),
+            """
+                ALTER TYPE stage_setting RENAME TO stage_mood;
+                ALTER TABLE stages ADD COLUMN planned setting;
+                """
+        );
+
+        assertEquals(
+            List.of(new EnumType("stage_mood", List.of("indoor", "outdoor"))),
+            schema.enums()
+        );
+
+        assertEquals(
+            new DomainType("setting", ColumnType.ENUM, "stage_mood", false, false),
+            schema.domains().get(schema.domains().size() - 1)
+        );
+
+        assertEquals(
+            List.of(
+                new Column("setting", ColumnType.ENUM, true, null, "stage_mood"),
+                new Column("planned", ColumnType.ENUM, true, null, "stage_mood")
+            ),
+            table(schema, "stages").columns()
+        );
+    }
+
+    /**
+     * A {@code CREATE TYPE ... AS ENUM} of a name a modeled domain has removes
+     * that domain, and a {@code CREATE DOMAIN} of a name a modeled enum type
+     * has resolves as the domain, because PostgreSQL holds one type of a name
+     * at a time and a declaration resolves a domain before an enum type.
+     */
+    @Test
+    void shouldResolveTheLastDeclaredTypeOfOneName() {
+        Schema enumLast = parser.parse(
+            parser.parse("CREATE DOMAIN mood AS integer;"),
+            """
+                CREATE TYPE mood AS ENUM ('good');
+
+                CREATE TABLE stages (setting mood);
+                """
+        );
+
+        assertEquals(List.of(), enumLast.domains());
+
+        assertEquals(
+            List.of(new Column("setting", ColumnType.ENUM, true, null, "mood")),
+            table(enumLast, "stages").columns()
+        );
+
+        Schema domainLast = parser.parse(
+            enumSchema(),
+            """
+                CREATE DOMAIN stage_setting AS integer;
+
+                CREATE TABLE stages (setting stage_setting);
+                """
+        );
+
+        assertEquals(
+            List.of(new DomainType("stage_setting", ColumnType.INTEGER, null, false, false)),
+            domainLast.domains()
+        );
+
+        assertEquals(
+            List.of(new Column("setting", ColumnType.INTEGER, true)),
+            table(domainLast, "stages").columns()
+        );
+    }
+
+    /**
+     * {@code DROP DOMAIN} removes every modeled domain it names, which sqlcj
+     * decides from the statement's own words, because its parser reads no
+     * {@code DROP DOMAIN} at all. A name sqlcj does not model is skipped, and
+     * a column already resolved keeps the type its own statement gave it,
+     * while a column declared afterwards is recorded with its declared type.
+     */
+    @Test
+    void shouldDropTheModeledDomainsADropDomainNames() {
+        Schema schema = parser.parse(
+            parser.parse(domainSchema(), "CREATE TABLE contacts (email email_address);"),
+            """
+                DROP DOMAIN IF EXISTS email_address, public.positive, reporting.price, missing
+                    CASCADE;
+
+                ALTER TABLE contacts ADD COLUMN second email_address;
+                """
+        );
+
+        assertEquals(
+            List.of(
+                new DomainType("tag_list", ColumnType.TEXT, null, true, false),
+                new DomainType("price", null, null, false, false),
+                new DomainType("setting", ColumnType.ENUM, "stage_setting", false, false)
+            ),
+            schema.domains()
+        );
+
+        assertEquals(
+            List.of(
+                new Column("email", ColumnType.CITEXT, true),
+                new Column("second", null, true, "EMAIL_ADDRESS")
+            ),
+            table(schema, "contacts").columns()
+        );
+    }
+
+    /**
+     * Every {@code DROP DOMAIN} form PostgreSQL accepts drops the modeled
+     * domain it names, whatever case and SQL identifier delimiters it is
+     * written with.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "DROP DOMAIN positive;",
+            "DROP DOMAIN IF EXISTS positive;",
+            "DROP DOMAIN positive CASCADE;",
+            "drop domain positive restrict;",
+            "DROP DOMAIN \"positive\";",
+            "DROP DOMAIN public.positive;"
+        }
+    )
+    void shouldDropAModeledDomainNamedAnyAcceptedWay(String statement) {
+        assertEquals(
+            List.of(
+                new DomainType("email_address", ColumnType.CITEXT, null, false, false),
+                new DomainType("tag_list", ColumnType.TEXT, null, true, false),
+                new DomainType("price", null, null, false, false),
+                new DomainType("setting", ColumnType.ENUM, "stage_setting", false, false)
+            ),
+            parser.parse(domainSchema(), statement).domains()
+        );
+    }
+
+    /**
+     * A {@code DROP DOMAIN} of a name written unquoted with non-ASCII letters
+     * drops the domain it names, because the lexer reports such a name as one
+     * identifier, as PostgreSQL reads it, so a column declared afterwards is
+     * recorded with its declared type.
+     */
+    @Test
+    void shouldDropAModeledDomainNamedWithNonAsciiLetters() {
+        Schema schema = parser.parse(
+            """
+                CREATE DOMAIN café AS integer;
+
+                DROP DOMAIN café;
+
+                CREATE TABLE orders (size café);
+                """
+        );
+
+        assertEquals(List.of(), schema.domains());
+
+        assertEquals(
+            List.of(new Column("size", null, true, "CAFÉ")),
+            table(schema, "orders").columns()
+        );
+    }
+
+    /**
+     * A {@code DROP DOMAIN} whose words state no such statement is rejected
+     * naming its opening, because sqlcj cannot tell what it would drop.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "DROP DOMAIN;",
+            "DROP DOMAIN positive CASCADE RESTRICT;",
+            "DROP DOMAIN positive,;",
+            "DROP DOMAIN (positive);",
+            "DROP DOMAIN positive.;"
+        }
+    )
+    void shouldRejectADropDomainItsWordsDoNotState(String statement) {
+        Schema schema = domainSchema();
+
+        assertEquals(
+            "Unsupported schema statement: DROP DOMAIN at line 1",
+            assertThrows(
+                UnsupportedOperationException.class,
+                () -> parser.parse(schema, statement)
+            )
+                .getMessage()
+        );
+    }
+
+    /**
+     * Every {@code ALTER DOMAIN} action other than a rename of a modeled
+     * domain leaves the domains unchanged: none of them can change the type a
+     * column of the domain has, and a domain's own {@code NOT NULL} never
+     * decides a column's nullability. An unreadable {@code ALTER DOMAIN} is
+     * ignored as well, because it does not open as table or type DDL, and a
+     * rename of a domain sqlcj does not model names none of its domains.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "ALTER DOMAIN email_address SET NOT NULL;",
+            "ALTER DOMAIN email_address DROP NOT NULL;",
+            "ALTER DOMAIN email_address SET DEFAULT 'x';",
+            "ALTER DOMAIN email_address OWNER TO app;",
+            "ALTER DOMAIN email_address SET SCHEMA archive;",
+            "ALTER DOMAIN email_address ADD CONSTRAINT email_check CHECK (VALUE <> '');",
+            "ALTER DOMAIN email_address ADD CONSTRAINT email_check "
+                + "CHECK ((VALUE OPERATOR(public.~~) '%@%'::public.citext)) NOT VALID;",
+            "ALTER DOMAIN reporting.email_address RENAME TO mail_address;",
+            "ALTER DOMAIN missing RENAME TO mail_address;",
+            "ALTER TYPE missing RENAME TO mail_address;"
+        }
+    )
+    void shouldIgnoreTheDomainStatementsThatCannotChangeAModeledDomain(String statement) {
+        Schema schema = domainSchema();
+
+        assertEquals(schema, parser.parse(schema, statement));
+    }
+
+    /**
      * A {@code LIKE} copies its source's columns, types, and nullability, in
      * the position it stands in, whatever {@code INCLUDING} and
      * {@code EXCLUDING} options it states, and whether its source is named
@@ -3628,6 +4205,23 @@ class DefaultSchemaParserTest {
     /** A schema declaring the enum type the enum tests apply statements to. */
     private Schema enumSchema() {
         return parser.parse("CREATE TYPE stage_setting AS ENUM ('indoor', 'outdoor');");
+    }
+
+    /**
+     * A schema declaring the enum type of {@link #enumSchema()} and one domain
+     * over each kind of base the domain tests apply statements to.
+     */
+    private Schema domainSchema() {
+        return parser.parse(
+            enumSchema(),
+            """
+                CREATE DOMAIN positive AS integer;
+                CREATE DOMAIN email_address AS citext;
+                CREATE DOMAIN tag_list AS text[];
+                CREATE DOMAIN price AS money;
+                CREATE DOMAIN setting AS stage_setting;
+                """
+        );
     }
 
     /** The schema {@code statements} leave when applied to the base schema. */

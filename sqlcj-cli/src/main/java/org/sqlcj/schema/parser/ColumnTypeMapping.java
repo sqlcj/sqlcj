@@ -2,6 +2,7 @@ package org.sqlcj.schema.parser;
 
 import net.sf.jsqlparser.statement.create.table.ColDataType;
 import org.sqlcj.schema.ColumnType;
+import org.sqlcj.schema.DomainType;
 import org.sqlcj.schema.EnumType;
 
 import java.util.List;
@@ -11,7 +12,7 @@ import java.util.regex.Pattern;
 
 /**
  * Maps one declared SQL type to the type sqlcj models, against the enum types
- * a schema declares.
+ * and the domains a schema declares.
  *
  * <p>A schema column states its type in a column definition and a query states
  * it in a cast, so both resolve their type here and report an unmapped type
@@ -72,8 +73,17 @@ public final class ColumnTypeMapping {
      * <p>A type argument is ignored, except that a {@code FLOAT} precision
      * selects the type it maps to, as PostgreSQL defines it; see
      * {@link #floatType(String, int)}.
+     *
+     * <p>A built-in spelling is resolved before a domain and a domain before an
+     * enum type, as PostgreSQL resolves a declared name: a domain is the type
+     * it is declared over, so it carries that type's mapping; see
+     * {@link #declaredDomain(String, List)}.
      */
-    public MappedType map(ColDataType declaredType, List<EnumType> enums) {
+    public MappedType map(
+        ColDataType declaredType,
+        List<EnumType> enums,
+        List<DomainType> domains
+    ) {
         String elementText = elementText(declaredType.getDataType());
         String typeName = typeName(elementText);
         int arrayDimensions = arrayDimensions(declaredType);
@@ -102,6 +112,23 @@ public final class ColumnTypeMapping {
                     );
                 }
             } else {
+                DomainType domain = declaredDomain(elementText, domains);
+
+                if (domain != null) {
+                    if (!array && domain.type() != null) {
+                        return new MappedType(
+                            domain.type(),
+                            domain.enumType(),
+                            domain.array(),
+                            domain.blankPadded(),
+                            null,
+                            typeName
+                        );
+                    }
+
+                    return unmappedType(typeName, arrayDimensions);
+                }
+
                 EnumType enumType = declaredEnum(elementText, enums);
 
                 if (enumType != null) {
@@ -117,6 +144,11 @@ public final class ColumnTypeMapping {
             }
         }
 
+        return unmappedType(typeName, arrayDimensions);
+    }
+
+    /** A declaration sqlcj does not map, recorded with its declared text. */
+    private MappedType unmappedType(String typeName, int arrayDimensions) {
         return new MappedType(
             null,
             null,
@@ -228,6 +260,29 @@ public final class ColumnTypeMapping {
         return type != ColumnType.BYTEA
             && type != ColumnType.JSON
             && type != ColumnType.JSONB;
+    }
+
+    /**
+     * The domain an unmapped declared element type names, or {@code null} when
+     * the schema declares no such domain. The name is resolved in the one
+     * namespace sqlcj models, exactly as an enum type's name is.
+     *
+     * <p>A declaration that names a domain never resolves as an enum type of
+     * the same name, because PostgreSQL holds one type of a name at a time: an
+     * array of a domain and a domain over a type sqlcj does not map are
+     * recorded with their declared type rather than resolved further.
+     */
+    private DomainType declaredDomain(String elementText, List<DomainType> domains) {
+        String typeName = SchemaNamespace.modeledTypeName(elementText);
+
+        if (typeName == null) {
+            return null;
+        }
+
+        return domains.stream()
+            .filter(domain -> domain.name().equalsIgnoreCase(typeName))
+            .findFirst()
+            .orElse(null);
     }
 
     /**

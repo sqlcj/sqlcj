@@ -8,6 +8,7 @@ import org.sqlcj.parser.Query;
 import org.sqlcj.parser.QueryType;
 import org.sqlcj.schema.Column;
 import org.sqlcj.schema.ColumnType;
+import org.sqlcj.schema.DomainType;
 import org.sqlcj.schema.EnumType;
 import org.sqlcj.schema.Schema;
 import org.sqlcj.schema.Table;
@@ -492,6 +493,33 @@ class QueryAnalyzerTest {
                 ),
                 List.of()
             )
+        )
+    );
+
+    /**
+     * A schema whose {@code contacts} table carries a column of a domain over
+     * {@code citext} and one of a domain over the unmapped {@code money},
+     * which the parser recorded with its declared type, beside the domains a
+     * cast may name: one over {@code citext}, one over {@code integer}, and
+     * one over {@code money}.
+     */
+    private static final Schema domainSchema = new Schema(
+        List.of(
+            new Table(
+                "contacts",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("email", ColumnType.CITEXT, false),
+                    new Column("amount", null, true, "PRICE")
+                ),
+                List.of()
+            )
+        ),
+        List.of(),
+        List.of(
+            new DomainType("email_address", ColumnType.CITEXT, null, false, false),
+            new DomainType("positive", ColumnType.INTEGER, null, false, false),
+            new DomainType("price", null, null, false, false)
         )
     );
 
@@ -13488,6 +13516,128 @@ class QueryAnalyzerTest {
                 new QueryParameter(2, "id", ColumnType.BIGINT)
             ),
             model.parameters()
+        );
+    }
+
+    /**
+     * A placeholder a column of a domain types is a parameter of the domain's
+     * base type, in a comparison, an {@code IN} list, a {@code LIKE} pattern,
+     * and an {@code = ANY} list alike, so the generated method takes the base
+     * type's Java type and PostgreSQL compares the bound value as the domain.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT id FROM contacts WHERE email = $1|false",
+            "SELECT id FROM contacts WHERE email IN ($1)|false",
+            "SELECT id FROM contacts WHERE email LIKE $1|false",
+            "SELECT id FROM contacts WHERE email = ANY($1)|true"
+        }
+    )
+    void shouldTypeAPlaceholderOfADomainColumn(String sql, boolean array) {
+        QueryModel model = analyzer.analyze(
+            new Query("FindContacts", QueryType.MANY, sql),
+            parser.parse(sql),
+            domainSchema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "email", ColumnType.CITEXT, null, array)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * A cast may name a domain, which states the domain's base type for a
+     * placeholder and for a result column, under its unqualified or its
+     * {@code public}-qualified name.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "email_address|CITEXT",
+            "public.email_address|CITEXT",
+            "positive|INTEGER"
+        }
+    )
+    void shouldTypeACastToADomain(String castType, ColumnType type) {
+        String sql = "SELECT :value::%s AS value FROM contacts WHERE id = :id"
+            .formatted(castType);
+
+        QueryModel model = analyzer.analyze(
+            new Query("ReadValue", QueryType.ONE, sql),
+            parser.parse(sql),
+            domainSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("value", type, true, null, false)),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "value", type, null, false),
+                new QueryParameter(2, "id", ColumnType.BIGINT)
+            ),
+            model.parameters()
+        );
+    }
+
+    /**
+     * An array of a domain, a domain over a type sqlcj does not map, and a
+     * domain name qualified with another schema have no Java type, so a cast
+     * naming one is rejected naming the placeholder it would have typed and
+     * the type as the schema records it.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "email_address[]|EMAIL_ADDRESS[]",
+            "price|PRICE",
+            "reporting.email_address|REPORTING.EMAIL_ADDRESS"
+        }
+    )
+    void shouldRejectACastToADomainItDoesNotMap(String castType, String type) {
+        String sql = "SELECT id FROM contacts WHERE id = :value::%s".formatted(castType);
+
+        Query query = new Query("FindContact", QueryType.OPTIONAL, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, domainSchema)
+        );
+
+        assertEquals(
+            "Placeholder :value has unsupported cast type %s".formatted(type),
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A column of a domain over a type sqlcj does not map is recorded with its
+     * declared type, so a query that reads it fails naming that type, as it
+     * does for any other recorded column.
+     */
+    @Test
+    void shouldRejectQueryThatReadsAColumnOfADomainOverAnUnmappedType() {
+        String sql = "SELECT id, amount FROM contacts";
+
+        Query query = new Query("ListContacts", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, domainSchema)
+        );
+
+        assertEquals(
+            "Column 'amount' has unsupported type PRICE",
+            exception.getMessage()
         );
     }
 }
