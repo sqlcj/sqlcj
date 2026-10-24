@@ -13,6 +13,7 @@ import org.sqlcj.config.SqlConfig;
 import org.sqlcj.runtime.JdbcQueryExecutor;
 import org.sqlcj.runtime.JdbcTransactions;
 import org.sqlcj.runtime.QueryCardinalityException;
+import org.sqlcj.runtime.QueryExecutionException;
 import org.sqlcj.runtime.QueryExecutor;
 import org.sqlcj.runtime.SqlInterval;
 import org.testcontainers.DockerClientFactory;
@@ -31,6 +32,7 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -628,6 +630,26 @@ class PostgresIntegrationTest {
         SELECT name
         FROM users
         ORDER BY id;
+        """;
+
+    /**
+     * Queries used by the batch tests: a batch insert, update, and delete of
+     * the {@code users} table.
+     */
+    private static final String BATCH_QUERIES = """
+        -- name: InsertUsers :batchexec
+        INSERT INTO users (id, code, name)
+        VALUES ($1, $2, $3);
+
+        -- name: RenameUsers :batchexec
+        UPDATE users
+        SET name = $2
+        WHERE id = $1;
+
+        -- name: DeleteUsers :batchexec
+        DELETE
+        FROM users
+        WHERE id = $1;
         """;
 
     /**
@@ -6027,6 +6049,233 @@ class PostgresIntegrationTest {
             );
 
             assertEquals(List.of(), listUserNames(classLoader));
+        }
+    }
+
+    /**
+     * Runs one batch insert, one batch update, and one batch delete of 5,000
+     * rows each. Every batch reports the count PostgreSQL reported for each of
+     * its rows, in the order of the batch: 1 for each inserted and each deleted
+     * row, and 1 for each updated row except the one whose key matches no row,
+     * which reports 0 in its own position.
+     */
+    @Test
+    void shouldExecuteGeneratedBatchWritesOfThousandsOfRowsAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile(BATCH_QUERIES);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Class<?> insertParams = paramsType(repository, "InsertUsersParams");
+            Class<?> renameParams = paramsType(repository, "RenameUsersParams");
+            Class<?> deleteParams = paramsType(repository, "DeleteUsersParams");
+
+            List<Object> inserts = new ArrayList<>();
+
+            for (long id = 1; id <= 5000; id++) {
+                inserts.add(params(insertParams, id, (int) id, "User " + id));
+            }
+
+            assertEquals(
+                List.of("id", "code", "name"),
+                recordComponentNames(inserts.get(0))
+            );
+
+            assertEquals(
+                List.of(Long.class, Integer.class, String.class),
+                recordComponentTypes(inserts.get(0))
+            );
+
+            int[] expected = new int[5000];
+
+            Arrays.fill(expected, 1);
+
+            assertArrayEquals(expected, batch(repository, "insertUsers", inserts));
+            assertEquals(5000L, userCount());
+
+            List<Object> renames = new ArrayList<>();
+
+            for (long id = 1; id <= 5000; id++) {
+                renames.add(
+                    params(renameParams, id == 2500 ? 90000L : id, "Renamed " + id)
+                );
+            }
+
+            int[] expectedRenames = new int[5000];
+
+            Arrays.fill(expectedRenames, 1);
+            expectedRenames[2499] = 0;
+
+            assertArrayEquals(expectedRenames, batch(repository, "renameUsers", renames));
+
+            List<Object> deletes = new ArrayList<>();
+
+            for (long id = 1; id <= 5000; id++) {
+                deletes.add(params(deleteParams, id));
+            }
+
+            assertArrayEquals(expected, batch(repository, "deleteUsers", deletes));
+            assertEquals(0L, userCount());
+        }
+    }
+
+    /**
+     * A driver that rewrites batched inserts reports
+     * {@code Statement.SUCCESS_NO_INFO} for every row of the rewritten group
+     * and the real count of the row left outside it, and the generated method
+     * returns those counts unchanged.
+     */
+    @Test
+    void shouldReturnTheDriverCountsOfRewrittenBatchedInsertsAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile(BATCH_QUERIES);
+
+        PGSimpleDataSource rewritingDataSource = new PGSimpleDataSource();
+
+        rewritingDataSource.setUrl(postgres.getJdbcUrl());
+        rewritingDataSource.setUser(postgres.getUsername());
+        rewritingDataSource.setPassword(postgres.getPassword());
+        rewritingDataSource.setReWriteBatchedInserts(true);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(
+                classLoader,
+                new JdbcQueryExecutor(rewritingDataSource)
+            );
+
+            Class<?> insertParams = paramsType(repository, "InsertUsersParams");
+
+            int[] counts = batch(
+                repository,
+                "insertUsers",
+                List.of(
+                    params(insertParams, 1L, 1, "Alice"),
+                    params(insertParams, 2L, 2, "Bob"),
+                    params(insertParams, 3L, 3, "Carol")
+                )
+            );
+
+            assertEquals(Statement.SUCCESS_NO_INFO, counts[0]);
+            assertArrayEquals(new int[] { -2, -2, 1 }, counts);
+            assertEquals(3L, userCount());
+        }
+    }
+
+    /**
+     * A row of a batch that violates the primary key fails the whole batch:
+     * the generated method reports the usual runtime failure, caused by the
+     * driver's {@code BatchUpdateException} carrying PostgreSQL's unique
+     * violation state, and the batch run over the data source leaves no row.
+     */
+    @Test
+    void shouldLeaveNoRowWhenAGeneratedBatchRowFailsAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile(BATCH_QUERIES);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Class<?> insertParams = paramsType(repository, "InsertUsersParams");
+
+            List<Object> inserts = new ArrayList<>();
+
+            for (long id = 1; id <= 3000; id++) {
+                inserts.add(
+                    params(insertParams, id == 2000 ? 1L : id, (int) id, "User " + id)
+                );
+            }
+
+            InvocationTargetException thrown = assertThrows(
+                InvocationTargetException.class,
+                () -> batch(repository, "insertUsers", inserts)
+            );
+
+            QueryExecutionException failure = assertInstanceOf(
+                QueryExecutionException.class,
+                thrown.getCause()
+            );
+
+            assertEquals(
+                "Failed to execute query 'InsertUsers' in UsersRepository",
+                failure.getMessage()
+            );
+
+            BatchUpdateException cause = assertInstanceOf(
+                BatchUpdateException.class,
+                failure.getCause()
+            );
+
+            assertEquals("23505", cause.getSQLState());
+            assertEquals(0L, userCount());
+        }
+    }
+
+    /**
+     * A batch holding a {@code null} row fails while the generated method
+     * builds its argument lists, so the executor is never reached and no row
+     * is written.
+     */
+    @Test
+    void shouldExecuteNothingWhenAGeneratedBatchHoldsANullRowAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile(BATCH_QUERIES);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Class<?> insertParams = paramsType(repository, "InsertUsersParams");
+
+            List<Object> inserts = new ArrayList<>();
+
+            inserts.add(params(insertParams, 1L, 1, "Alice"));
+            inserts.add(null);
+
+            InvocationTargetException thrown = assertThrows(
+                InvocationTargetException.class,
+                () -> batch(repository, "insertUsers", inserts)
+            );
+
+            assertInstanceOf(NullPointerException.class, thrown.getCause());
+            assertEquals(0L, userCount());
+        }
+    }
+
+    /** The nested parameter record of one generated batch method. */
+    private Class<?> paramsType(Object repository, String typeName) throws Exception {
+        return Class.forName(
+            repository.getClass().getName() + "$" + typeName,
+            true,
+            repository.getClass().getClassLoader()
+        );
+    }
+
+    /**
+     * One row of a generated batch, built through the canonical constructor of
+     * its parameter record.
+     */
+    private Object params(Class<?> paramsType, Object... values) throws Exception {
+        Class<?>[] componentTypes = Arrays.stream(paramsType.getRecordComponents())
+            .<Class<?>>map(RecordComponent::getType)
+            .toArray(Class<?>[]::new);
+
+        return paramsType.getConstructor(componentTypes).newInstance(values);
+    }
+
+    /** Runs one generated batch method over the rows of one list. */
+    private int[] batch(Object repository, String methodName, List<Object> rows) throws Exception {
+        return (int[]) repository
+            .getClass()
+            .getMethod(methodName, List.class)
+            .invoke(repository, rows);
+    }
+
+    /** The number of rows the {@code users} table holds. */
+    private long userCount() throws Exception {
+        try (
+            Connection connection = dataSource.getConnection();
+            Statement statement = connection.createStatement();
+            ResultSet resultSet = statement.executeQuery("SELECT count(*) FROM users")
+        ) {
+            assertTrue(resultSet.next());
+
+            return resultSet.getLong(1);
         }
     }
 

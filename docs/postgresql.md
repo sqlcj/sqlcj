@@ -151,12 +151,13 @@ that fails it has already changed the database.
 A failed operation on a caller-owned connection leaves the connection open, so
 the application decides whether to continue or roll back.
 
-`QueryExecutor.executeBatch` executes one statement once per argument list, in
-the order of the lists, as one JDBC batch on one connection. Each list is bound
-exactly as the arguments of a single execution are bound, and the counts the
-driver reported are returned in that order, unchanged. An empty batch executes
-nothing, obtains no connection, and returns an empty array. Its transaction
-handling follows the connection it runs on:
+`QueryExecutor.executeBatch`, which the method of a
+[`:batchexec`](queries.md#batch-writes) query calls, executes one statement
+once per argument list, in the order of the lists, as one JDBC batch on one
+connection. Each list is bound exactly as the arguments of a single execution
+are bound, and the counts the driver reported are returned in that order,
+unchanged. An empty batch executes nothing, obtains no connection, and returns
+an empty array. Its transaction handling follows the connection it runs on:
 
 - On a connection obtained from a `DataSource` in auto-commit mode the batch is
   one transaction, all or nothing: auto-commit is disabled for the batch, a
@@ -1667,6 +1668,23 @@ Connection ownership and transactions:
   `shouldLeaveADataSourceConnectionAlreadyInATransactionUncommitted`, and
   `shouldLeaveCallerOwnedConnectionUnchangedForABatch`; and the failure
   translation of both paths in `shouldWrapSqlExceptionForExecuteBatch`.
+- `PostgresIntegrationTest.shouldExecuteGeneratedBatchWritesOfThousandsOfRowsAgainstPostgres`
+  runs a 5,000-row insert, update, and delete batch of a generated
+  `:batchexec` method against PostgreSQL 16 and asserts the exact count of each
+  row in batch order, `0` included for the one updated row that matched none;
+  `PostgresIntegrationTest.shouldReturnTheDriverCountsOfRewrittenBatchedInsertsAgainstPostgres`
+  asserts the `-2`, `-2`, `1` a three-row insert reports over a data source
+  with `reWriteBatchedInserts=true`;
+  `PostgresIntegrationTest.shouldLeaveNoRowWhenAGeneratedBatchRowFailsAgainstPostgres`
+  asserts the `QueryExecutionException`, its `BatchUpdateException` cause with
+  SQL state `23505`, and the empty table a duplicate key at row 2,000 of 3,000
+  leaves;
+  `PostgresIntegrationTest.shouldExecuteNothingWhenAGeneratedBatchHoldsANullRowAgainstPostgres`
+  asserts the `NullPointerException` a `null` element raises before the
+  executor runs, and the empty table; and
+  `SpringTransactionIntegrationTest.shouldRollBackAGeneratedBatchWithTheDataSourceTransactionManager`
+  rolls a batch back with the `DataSourceTransactionManager` transaction it ran
+  in.
 - `PostgresIntegrationTest.shouldCommitGeneratedOperationsOnCallerOwnedConnection`
   and
   `PostgresIntegrationTest.shouldRollBackGeneratedOperationsOnCallerOwnedConnection`

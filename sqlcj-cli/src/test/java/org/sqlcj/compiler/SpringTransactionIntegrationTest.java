@@ -43,6 +43,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -88,9 +89,16 @@ class SpringTransactionIntegrationTest {
         );
         """;
 
-    /** One write and one ordered read, which is all these tests need. */
+    /**
+     * One write, one batch of the same write, and one ordered read, which is
+     * all these tests need.
+     */
     private static final String QUERIES = """
         -- name: InsertAuthor :exec
+        INSERT INTO authors (id, name)
+        VALUES ($1, $2);
+
+        -- name: InsertAuthors :batchexec
         INSERT INTO authors (id, name)
         VALUES ($1, $2);
 
@@ -245,6 +253,46 @@ class SpringTransactionIntegrationTest {
     }
 
     /**
+     * A generated batch made through the proxied repository inside a
+     * {@code DataSourceTransactionManager} transaction runs on the
+     * transaction's own connection: it reports one count per row, a read on
+     * the plain data source sees none of them while the transaction is open,
+     * and the failing callback rolls every row back.
+     */
+    @Test
+    void shouldRollBackAGeneratedBatchWithTheDataSourceTransactionManager() {
+        Object transactional = repository(transactionalDataSource);
+        Object plain = repository(dataSource);
+
+        CallbackFailure failure = new CallbackFailure();
+
+        assertSame(
+            failure,
+            assertThrows(
+                CallbackFailure.class,
+                () -> dataSourceTransactions().execute(status -> {
+                    assertArrayEquals(
+                        new int[] { 1, 1 },
+                        insertAuthors(
+                            transactional,
+                            List.of(
+                                insertAuthorsParams(1L, "Alice"),
+                                insertAuthorsParams(2L, "Bob")
+                            )
+                        )
+                    );
+
+                    assertEquals(List.of(), authorNames(plain));
+
+                    throw failure;
+                })
+            )
+        );
+
+        assertEquals(List.of(), authorNames(plain));
+    }
+
+    /**
      * A repository bound to the plain data source does not take part: its
      * write runs on a connection of its own and survives the rollback that
      * removes the write made through the proxied repository.
@@ -388,6 +436,37 @@ class SpringTransactionIntegrationTest {
                 .invoke(repository, id, name);
         } catch (ReflectiveOperationException failure) {
             throw new IllegalStateException("Failed to run the generated write", failure);
+        }
+    }
+
+    /** One row of the generated batch insert. */
+    private static Object insertAuthorsParams(long id, String name) {
+        try {
+            Class<?> paramsType = Class.forName(
+                "generated." + GROUP + "Repository$InsertAuthorsParams",
+                true,
+                classLoader
+            );
+
+            return paramsType
+                .getConstructor(Long.class, String.class)
+                .newInstance(id, name);
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException(
+                "Failed to build a row of the generated batch write",
+                failure
+            );
+        }
+    }
+
+    private static int[] insertAuthors(Object repository, List<Object> batch) {
+        try {
+            return (int[]) repository
+                .getClass()
+                .getMethod("insertAuthors", List.class)
+                .invoke(repository, batch);
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException("Failed to run the generated batch write", failure);
         }
     }
 

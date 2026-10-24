@@ -9,6 +9,8 @@ import org.sqlcj.analysis.QueryGroupModel;
 import org.sqlcj.analysis.QueryModel;
 import org.sqlcj.analysis.QueryParameter;
 import org.sqlcj.parser.QueryType;
+import org.sqlcj.runtime.QueryExecutor;
+import org.sqlcj.runtime.RowMapper;
 import org.sqlcj.schema.ColumnType;
 import org.sqlcj.schema.EnumType;
 
@@ -24,6 +26,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -1927,6 +1930,374 @@ class JavaCodeGeneratorTest {
         assertCompiles(file);
     }
 
+    /**
+     * A {@code :batchexec} write generates its nested parameter record in
+     * logical parameter order, where a result record would stand, and one
+     * method that takes a list of it and returns the driver's counts. It
+     * generates no result record and no row mapper, and imports
+     * {@code java.util.List} for the list it takes.
+     */
+    @Test
+    void shouldGenerateBatchExecMethodForWriteQuery() throws IOException {
+        QueryModel query = new QueryModel(
+            "InsertUser",
+            QueryType.BATCH_EXEC,
+            "users",
+            """
+                INSERT INTO users (id, name)
+                VALUES (?, ?)
+                """,
+            List.of(1, 2),
+            List.of(),
+            List.of(
+                new QueryParameter(1, "id", ColumnType.BIGINT),
+                new QueryParameter(2, "name", ColumnType.VARCHAR)
+            ),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public record InsertUserParams(
+                            Long id,
+                            String name
+                        ) {
+                        }
+                    """
+                    .stripTrailing()
+            )
+        );
+
+        assertTrue(
+            source.contains("public int[] insertUser(List<InsertUserParams> batch) {")
+        );
+
+        assertTrue(source.contains("return executor.executeBatch("));
+        assertTrue(source.contains("\"UsersRepository\","));
+        assertTrue(source.contains("\"InsertUser\","));
+        assertTrue(source.contains("INSERT INTO users (id, name)"));
+
+        assertTrue(
+            source.contains(
+                "batch.stream().map(params -> java.util.Arrays.asList("
+                    + "params.id(), params.name())).toList()"
+            )
+        );
+
+        assertTrue(source.contains("import java.util.List;"));
+
+        assertFalse(source.contains("public record InsertUserResult("));
+        assertFalse(source.contains("RowMapper"));
+        assertFalse(source.contains("UnsupportedOperationException"));
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A batch query that binds no parameter generates a parameter record
+     * without components, and a batch of it binds an empty argument list per
+     * row, rejecting a {@code null} row that no component would read.
+     */
+    @Test
+    void shouldGenerateParamsRecordWithoutComponentsForBatchQueryWithoutParameters()
+        throws IOException {
+        GeneratedFile file = generate(batchQueryWithoutParameters());
+
+        String source = file.content();
+
+        assertTrue(source.contains("public record TouchUsersParams() {"));
+
+        assertTrue(
+            source.contains("public int[] touchUsers(List<TouchUsersParams> batch) {")
+        );
+
+        assertTrue(
+            source.contains(
+                "batch.stream().map(java.util.Objects::requireNonNull)"
+                    + ".map(params -> java.util.Arrays.asList()).toList()"
+            )
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A {@code null} row of a batch query that binds no parameter fails while
+     * the generated method builds its argument lists, so the executor is never
+     * called.
+     */
+    @Test
+    void shouldRejectANullRowOfABatchQueryWithoutParametersBeforeTheExecutor()
+        throws Exception {
+        GeneratedFile file = generate(batchQueryWithoutParameters());
+
+        assertCompiles(file);
+
+        try (URLClassLoader classLoader = classLoader()) {
+            Class<?> repositoryType = Class.forName(
+                "generated.UsersRepository",
+                true,
+                classLoader
+            );
+
+            RecordingQueryExecutor executor = new RecordingQueryExecutor();
+
+            Object repository = repositoryType
+                .getConstructor(QueryExecutor.class)
+                .newInstance(executor);
+
+            Class<?> paramsType = Class.forName(
+                "generated.UsersRepository$TouchUsersParams",
+                true,
+                classLoader
+            );
+
+            List<Object> batch = new ArrayList<>();
+
+            batch.add(paramsType.getConstructor().newInstance());
+            batch.add(null);
+
+            InvocationTargetException thrown = assertThrows(
+                InvocationTargetException.class,
+                () -> repositoryType
+                    .getMethod("touchUsers", List.class)
+                    .invoke(repository, batch)
+            );
+
+            assertInstanceOf(NullPointerException.class, thrown.getCause());
+            assertEquals(0, executor.batches);
+        }
+    }
+
+    /** A batch query whose statement binds no parameter. */
+    private QueryModel batchQueryWithoutParameters() {
+        return new QueryModel(
+            "TouchUsers",
+            QueryType.BATCH_EXEC,
+            "users",
+            "UPDATE users SET updated_at = now()\n",
+            List.of(),
+            List.of(),
+            List.of(),
+            null
+        );
+    }
+
+    /**
+     * A batch query's record holds one component per logical parameter, while
+     * its argument list repeats that component at every binding position of
+     * its placeholder, in textual order.
+     */
+    @Test
+    void shouldRepeatABatchParamsComponentAtEveryBindingPosition() throws IOException {
+        QueryModel query = new QueryModel(
+            "InsertUsers",
+            QueryType.BATCH_EXEC,
+            "users",
+            """
+                INSERT INTO users (id, name)
+                VALUES (?, ?), (?, ?)
+                """,
+            List.of(1, 2, 3, 2),
+            List.of(),
+            List.of(
+                new QueryParameter(1, "id", ColumnType.BIGINT),
+                new QueryParameter(2, "name", ColumnType.VARCHAR),
+                new QueryParameter(3, "id", ColumnType.BIGINT)
+            ),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public record InsertUsersParams(
+                            Long id1,
+                            String name,
+                            Long id2
+                        ) {
+                        }
+                    """
+                    .stripTrailing()
+            )
+        );
+
+        assertTrue(
+            source.contains(
+                "batch.stream().map(params -> java.util.Arrays.asList("
+                    + "params.id1(), params.name(), params.id2(), params.name())).toList()"
+            )
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A batch parameter is wrapped exactly as the same parameter of a single
+     * execution is: an enum binds its label, a {@code JSONB} and an
+     * {@code INTERVAL} parameter their text, and an array its list with the
+     * element type's PostgreSQL name.
+     */
+    @Test
+    void shouldWrapBatchArgumentsLikeSingleExecutionArguments() throws IOException {
+        QueryModel query = new QueryModel(
+            "InsertStages",
+            QueryType.BATCH_EXEC,
+            "stages",
+            """
+                INSERT INTO stages (setting, payload, span, tags)
+                VALUES (?, ?, ?, ?)
+                """,
+            List.of(1, 2, 3, 4),
+            List.of(),
+            List.of(
+                new QueryParameter(1, "setting", ColumnType.ENUM, "stage_setting"),
+                new QueryParameter(2, "payload", ColumnType.JSONB),
+                new QueryParameter(3, "span", ColumnType.INTERVAL),
+                new QueryParameter(4, "tags", ColumnType.VARCHAR, null, true)
+            ),
+            null
+        );
+
+        GeneratedFile file = codeGenerator.generate(
+            new QueryGroupModel(
+                "Stages",
+                List.of(query),
+                List.of(new EnumType("stage_setting", List.of("indoor", "outdoor")))
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public record InsertStagesParams(
+                            StageSetting setting,
+                            String payload,
+                            SqlInterval span,
+                            List<String> tags
+                        ) {
+                        }
+                    """
+                    .stripTrailing()
+            )
+        );
+
+        assertTrue(
+            source.contains(
+                "batch.stream().map(params -> java.util.Arrays.asList("
+                    + "new org.sqlcj.runtime.UntypedText("
+                    + "params.setting() == null ? null : params.setting().label()), "
+                    + "new org.sqlcj.runtime.UntypedText(params.payload()), "
+                    + "new org.sqlcj.runtime.UntypedText("
+                    + "params.span() == null ? null : params.span().format()), "
+                    + "new org.sqlcj.runtime.SqlArray(\"varchar\", params.tags()))).toList()"
+            )
+        );
+
+        List<GeneratedFile> files = new ArrayList<>();
+
+        files.add(file);
+        files.addAll(codeGenerator.generateEnums());
+
+        assertCompiles(files.toArray(new GeneratedFile[0]));
+    }
+
+    /**
+     * A batch query's parameters are the components of its generated record, so
+     * a parameter named after an inherited {@link Object} member a record
+     * component cannot declare is disambiguated.
+     */
+    @Test
+    void shouldDisambiguateABatchParamsComponentFromAnInheritedMemberName() throws IOException {
+        QueryModel query = new QueryModel(
+            "InsertUser",
+            QueryType.BATCH_EXEC,
+            "users",
+            """
+                INSERT INTO users (hash_code)
+                VALUES (?)
+                """,
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "hash_code", ColumnType.VARCHAR)),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public record InsertUserParams(
+                            String hashCode1
+                        ) {
+                        }
+                    """
+                    .stripTrailing()
+            )
+        );
+
+        assertTrue(
+            source.contains(
+                "batch.stream().map(params -> java.util.Arrays.asList("
+                    + "params.hashCode1())).toList()"
+            )
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A Java enum must not take the name of a generated parameter record
+     * either, because their compiled class files are one path on a
+     * case-insensitive filesystem.
+     */
+    @Test
+    void shouldRejectAnEnumTypeThatCollidesWithAGeneratedParamsRecord() {
+        QueryGroupModel group = new QueryGroupModel(
+            GROUP,
+            List.of(
+                new QueryModel(
+                    "InsertUser",
+                    QueryType.BATCH_EXEC,
+                    "users",
+                    "INSERT INTO users (setting) VALUES (?)",
+                    List.of(1),
+                    List.of(),
+                    List.of(
+                        new QueryParameter(1, "setting", ColumnType.ENUM, "insert_user_params")
+                    ),
+                    null
+                )
+            ),
+            List.of(new EnumType("insert_user_params", List.of("indoor")))
+        );
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> codeGenerator.generate(group)
+        );
+
+        assertEquals(
+            "Enum type 'insert_user_params' generates InsertUserParams, "
+                + "which is equal ignoring case to the generated type InsertUserParams",
+            exception.getMessage()
+        );
+    }
+
     /** Compiles the generated files of one package together. */
     private void assertCompiles(GeneratedFile... files) throws IOException {
         Path sourceDirectory = tempDir.resolve("generated");
@@ -3752,5 +4123,61 @@ class JavaCodeGeneratorTest {
             new URL[] { tempDir.resolve("classes").toUri().toURL() },
             getClass().getClassLoader()
         );
+    }
+
+    /** An executor that counts the batches a generated method ran. */
+    private static final class RecordingQueryExecutor implements QueryExecutor {
+
+        private int batches;
+
+        @Override
+        public <T> T queryOne(
+            String repository,
+            String query,
+            String sql,
+            List<?> parameters,
+            RowMapper<T> mapper
+        ) {
+            return null;
+        }
+
+        @Override
+        public <T> Optional<T> queryOptional(
+            String repository,
+            String query,
+            String sql,
+            List<?> parameters,
+            RowMapper<T> mapper
+        ) {
+            return Optional.empty();
+        }
+
+        @Override
+        public <T> List<T> queryMany(
+            String repository,
+            String query,
+            String sql,
+            List<?> parameters,
+            RowMapper<T> mapper
+        ) {
+            return List.of();
+        }
+
+        @Override
+        public int execute(String repository, String query, String sql, List<?> parameters) {
+            return 0;
+        }
+
+        @Override
+        public int[] executeBatch(
+            String repository,
+            String query,
+            String sql,
+            List<? extends List<?>> batch
+        ) {
+            batches++;
+
+            return new int[batch.size()];
+        }
     }
 }

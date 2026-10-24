@@ -56,6 +56,8 @@ final class JavaNames {
 
     private static final String RESULT_SUFFIX = "Result";
 
+    private static final String PARAMS_SUFFIX = "Params";
+
     private static final String ROW_SUFFIX = "Row";
 
     private static final String MAPPER_SUFFIX = "Mapper";
@@ -119,13 +121,14 @@ final class JavaNames {
             queries.add(
                 new QueryNames(
                     row == null ? resultTypeNames.get(index) : row.typeName(),
+                    upperCamelCase(query.name(), null) + PARAMS_SUFFIX,
                     methodName,
                     row == null ? methodName + ROW_MAPPER_SUFFIX : row.mapperName(),
                     resolveNames(
                         query.parameters().stream()
                             .map(QueryParameter::name)
                             .toList(),
-                        reservedParameterNames,
+                        reservedParameterNames(query, reservedParameterNames),
                         query.name()
                     ),
                     resolveNames(
@@ -233,9 +236,13 @@ final class JavaNames {
      * The resolved Java identifiers of one generated repository method. A query
      * that returns one complete table row names the repository's shared row
      * record and row mapper instead of a record of its own.
+     *
+     * @param paramsTypeName the nested record a batch query takes one list of,
+     *                       whose components are this query's parameters
      */
     record QueryNames(
         String resultTypeName,
+        String paramsTypeName,
         String methodName,
         String rowMapperName,
         List<String> parameterNames,
@@ -492,6 +499,27 @@ final class JavaNames {
             .map(RowNames::mapperName)
             .filter(Objects::nonNull)
             .forEach(reserved::add);
+
+        return reserved;
+    }
+
+    /**
+     * The names one query's parameters avoid. A batch query's parameters are
+     * the components of its generated {@code Params} record, so they avoid the
+     * inherited {@link Object} member names a record component cannot use
+     * beside the generated names a method parameter avoids.
+     */
+    private static Set<String> reservedParameterNames(
+        QueryModel query,
+        Set<String> reservedParameterNames
+    ) {
+        if (query.type() != QueryType.BATCH_EXEC) {
+            return reservedParameterNames;
+        }
+
+        Set<String> reserved = new LinkedHashSet<>(reservedParameterNames);
+
+        reserved.addAll(RESERVED_MEMBER_NAMES);
 
         return reserved;
     }

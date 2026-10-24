@@ -38,7 +38,7 @@ WHERE id = $1;
 
 ## Annotations and Cardinality
 
-sqlcj accepts four annotations. Any other annotation is rejected.
+sqlcj accepts five annotations. Any other annotation is rejected.
 
 | Annotation | Accepted statements | Generated return type | Result when no row matches | Result when several rows match |
 | --- | --- | --- | --- | --- |
@@ -46,12 +46,14 @@ sqlcj accepts four annotations. Any other annotation is rejected.
 | `:optional` | `SELECT`, or a write with `RETURNING` | `Optional<`result record`>` | `Optional.empty()` | `QueryCardinalityException` |
 | `:many` | `SELECT`, or a write with `RETURNING` | `List<`result record`>` | an empty list | every row |
 | `:exec` | `INSERT`, `UPDATE`, `DELETE` without `RETURNING` | `int` affected-row count | `0` | the affected-row count |
+| `:batchexec` | `INSERT`, `UPDATE`, `DELETE` without `RETURNING`, executed once per batched row | `int[]`, one affected-row count per batched row | `0` in that row's own position | the affected-row count of each row |
 
 The annotation and the statement must agree:
 
 - a `SELECT` must be `:one`, `:optional`, or `:many`,
-- a write without `RETURNING` must be `:exec`,
-- a write with `RETURNING` must be `:one`, `:optional`, or `:many`.
+- a write without `RETURNING` must be `:exec` or `:batchexec`,
+- a write with `RETURNING` must be `:one`, `:optional`, or `:many`; a batch
+  returns no row, so `:batchexec` must not carry `RETURNING`.
 
 The three result annotations differ only in how many rows they accept:
 
@@ -1185,6 +1187,42 @@ before the statement or after the column list, where they belong to the row
 source, and either placement is analyzed and read the same way, on a `SELECT`
 and on a `VALUES` row source alike.
 
+### Batch writes
+
+A write without `RETURNING` may be declared `:batchexec` instead of `:exec`, in
+order to execute it once per row of one list as a single JDBC batch. Every
+statement shape `:exec` accepts is accepted — a single-row, multi-row, and
+`SELECT`-sourced `INSERT`, an `ON CONFLICT` upsert, an `UPDATE` with and without
+`FROM`, and a `DELETE` with and without `USING` — and the statement is analyzed
+exactly as `:exec` analyzes it, so its parameters, their types, and their
+binding order are the same.
+
+```sql
+-- name: InsertAuthors :batchexec
+INSERT INTO authors (name, bio)
+VALUES ($1, $2);
+```
+
+`InsertAuthors` generates the nested record
+`InsertAuthorsParams(String name, String bio)` and the method
+`int[] insertAuthors(List<InsertAuthorsParams> batch)`, which executes the
+statement once per element of `batch`, in the order of the list, as one JDBC
+batch through `QueryExecutor.executeBatch`, and returns the affected-row count
+the driver reported for each element, in that order and unchanged. An empty list
+executes nothing and returns an empty array.
+
+The record holds one component per parameter, in logical parameter order and
+with the Java types the `:exec` method's parameters have, so a repeated
+placeholder is one component bound at each of its positions and a query that
+binds no parameter generates a record without components. A `null` list raises
+`NullPointerException` while the method builds its batch, before the executor
+runs, and so does a `null` element, so such a call executes nothing.
+
+What a batch leaves behind when one of its rows fails, which transaction it
+runs in, and what the PostgreSQL driver reports when it rewrites batched
+inserts are stated in
+[PostgreSQL Support](postgresql.md#connection-ownership-and-transactions).
+
 ## Parameters
 
 A query writes its parameters either as PostgreSQL `$N` placeholders or as
@@ -1388,6 +1426,21 @@ included.
   `SqlRow.isNull` reads that range alone, stops at the first column that reads a
   value, and so leaves every other position of the result untouched.
 - A `:exec` query generates no result record and returns `int`.
+- A `:batchexec` query generates no result record and no `RowMapper` either.
+  Where a result record would stand, it generates a nested `public record` named
+  `<QueryName>Params` in upper camel case, whose components are the query's
+  parameters in logical order, named and typed as the `:exec` method's
+  parameters are, and it returns `int[]` from
+  `<method>(List<<QueryName>Params> batch)`. The method passes one argument list
+  per element to `executor.executeBatch`, built as
+  `batch.stream().map(params -> java.util.Arrays.asList(...)).toList()`, so each
+  argument is wrapped exactly as the same argument of a single execution is. A
+  query that binds no parameter reads no component, so its argument lists are
+  built with an added `.map(java.util.Objects::requireNonNull)` that rejects a
+  `null` element.
+  A component whose name a record cannot declare, because `Object` declares it,
+  is disambiguated as a repeated name is, so a `hash_code` parameter becomes
+  `hashCode1`.
 - Every generated method passes the repository class name and the query name to
   the executor, as the first two arguments of its call, so a runtime failure
   names the query the application called. A `JSON`, `JSONB`, `CITEXT`, `INET`,
@@ -1699,6 +1752,10 @@ query name, and its header line.
   than the write target, a bare `*` on a joined write, and a computed or
   unknown `RETURNING` item, and `RETURNING` on `:exec`; each is rejected as
   [`RETURNING`](#returning) states.
+- `RETURNING` on `:batchexec`, rejected as
+  `Write queries declared as :batchexec cannot use RETURNING, because a batch
+  returns no rows; remove RETURNING or declare the query as :one, :optional, or
+  :many`, because a batch returns no row at all.
 - The write shapes that change rows of more than the one analyzed table, on an
   `:exec` and on a returning write alike: an `UPDATE` that names several
   tables before `SET`, written with a comma or with a join, rejected as
@@ -1707,7 +1764,8 @@ query name, and its header line.
   `DELETE a FROM a JOIN b`, rejected as
   `A joined DELETE is not supported; write the other sources in
   DELETE ... USING.`
-- Any annotation other than `:one`, `:optional`, `:many`, and `:exec`.
+- Any annotation other than `:one`, `:optional`, `:many`, `:exec`, and
+  `:batchexec`.
 
 An unexpected failure of schema parsing, query analysis, or generation is not a
 diagnostic of the compiled input: it is reported as one line that names the
@@ -1768,9 +1826,11 @@ Query sources and annotations:
 - `QueryAnalyzerTest.shouldRejectSelectWithoutResultQueryType`,
   `QueryAnalyzerTest.shouldAnalyzeSelectDeclaredAsOptional`,
   `QueryAnalyzerTest.shouldRejectWriteWithoutExecQueryType`,
-  `QueryAnalyzerTest.shouldRejectReturningWriteDeclaredAsExec`, and
+  `QueryAnalyzerTest.shouldRejectReturningWriteDeclaredAsExec`,
+  `QueryAnalyzerTest.shouldRejectReturningWriteDeclaredAsBatchExec`, and
   `QueryAnalyzerTest.shouldAnalyzeReturningWriteForEveryResultQueryType` cover
-  annotation and statement agreement.
+  annotation and statement agreement, including the two diagnostics of a write
+  without and with `RETURNING`.
 - `JdbcQueryExecutorTest.shouldReturnTheRowWhenQueryOneFindsExactlyOneRow`,
   `JdbcQueryExecutorTest.shouldFailWhenQueryOneFindsNoRow`,
   `JdbcQueryExecutorTest.shouldFailWhenQueryOneFindsMoreThanOneRow`,
@@ -2499,6 +2559,34 @@ Writes and `RETURNING`:
   executes `DEFAULT`, a literal, `NULL`, `now()`, and `code + 1` in an `:exec`
   insert, a returning named insert, and an `:exec` update against
   PostgreSQL 16.
+- `QueryAnalyzerTest.shouldAnalyzeWriteWithoutReturningDeclaredAsBatchExec`
+  covers the batch writes the analyzer accepts: a single-row, multi-row, and
+  `SELECT`-sourced insert, an upsert, an update with and without `FROM`, and a
+  delete with and without `USING`, each analyzing to the model `:exec` gives
+  apart from its declared type.
+- `JavaCodeGeneratorTest.shouldGenerateBatchExecMethodForWriteQuery`,
+  `JavaCodeGeneratorTest.shouldGenerateParamsRecordWithoutComponentsForBatchQueryWithoutParameters`,
+  `JavaCodeGeneratorTest.shouldRejectANullRowOfABatchQueryWithoutParametersBeforeTheExecutor`,
+  `JavaCodeGeneratorTest.shouldRepeatABatchParamsComponentAtEveryBindingPosition`,
+  `JavaCodeGeneratorTest.shouldWrapBatchArgumentsLikeSingleExecutionArguments`,
+  `JavaCodeGeneratorTest.shouldDisambiguateABatchParamsComponentFromAnInheritedMemberName`,
+  and
+  `JavaCodeGeneratorTest.shouldRejectAnEnumTypeThatCollidesWithAGeneratedParamsRecord`
+  cover the generated parameter record and batch method, the record without
+  components and the `null` row it rejects before the executor is called, the
+  repeated component, the enum, `JSONB`, interval, and array arguments, the
+  component `Object` reserves, and the enum-name collision, each compiling the
+  generated source.
+- `PostgresIntegrationTest.shouldExecuteGeneratedBatchWritesOfThousandsOfRowsAgainstPostgres`,
+  `PostgresIntegrationTest.shouldReturnTheDriverCountsOfRewrittenBatchedInsertsAgainstPostgres`,
+  `PostgresIntegrationTest.shouldLeaveNoRowWhenAGeneratedBatchRowFailsAgainstPostgres`,
+  `PostgresIntegrationTest.shouldExecuteNothingWhenAGeneratedBatchHoldsANullRowAgainstPostgres`,
+  and
+  `SpringTransactionIntegrationTest.shouldRollBackAGeneratedBatchWithTheDataSourceTransactionManager`
+  execute the generated batches against PostgreSQL 16: 5,000-row insert,
+  update, and delete batches with their exact counts, the counts a rewriting
+  driver reports, a failing row and a `null` row that leave no row, and a batch
+  rolled back with the Spring-managed transaction it ran in.
 
 Unsupported queries and internal errors:
 

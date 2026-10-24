@@ -774,7 +774,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "Write queries without RETURNING must be declared as :exec",
+            "Write queries without RETURNING must be declared as :exec or :batchexec",
             exception.getMessage()
         );
     }
@@ -6742,6 +6742,86 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Write queries with RETURNING must be declared as :one, :optional, or :many",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * Every write without {@code RETURNING} that {@code :exec} accepts is
+     * accepted as {@code :batchexec} too, and analyzes to the model
+     * {@code :exec} gives apart from its declared type: the same executable
+     * SQL, the same parameters in logical order, and the same binding order.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "INSERT INTO users (id, name) VALUES ($1, $2)",
+            "INSERT INTO users (id, name) VALUES ($1, $2), ($3, $2)",
+            "INSERT INTO users (id, name) SELECT p.user_id, p.nickname FROM profiles p"
+                + " WHERE p.id = $1",
+            "INSERT INTO users (id, name) VALUES ($1, $2)"
+                + " ON CONFLICT (id) DO UPDATE SET name = $3",
+            "UPDATE users SET name = $2 WHERE id = $1",
+            "UPDATE users u SET name = $1 FROM profiles p WHERE p.user_id = u.id AND p.id = $2",
+            "DELETE FROM users WHERE id = $1",
+            "DELETE FROM users u USING profiles p WHERE p.user_id = u.id AND p.id = $1"
+        }
+    )
+    void shouldAnalyzeWriteWithoutReturningDeclaredAsBatchExec(String sql) {
+        QueryModel exec = analyzer.analyze(
+            new Query("WriteUsers", QueryType.EXEC, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        QueryModel batch = analyzer.analyze(
+            new Query("WriteUsers", QueryType.BATCH_EXEC, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(QueryType.BATCH_EXEC, batch.type());
+        assertTrue(batch.columns().isEmpty());
+
+        assertEquals(
+            new QueryModel(
+                exec.name(),
+                QueryType.BATCH_EXEC,
+                exec.table(),
+                exec.executableSql(),
+                exec.bindingParameterIndexes(),
+                exec.columns(),
+                exec.parameters(),
+                exec.rowTable()
+            ),
+            batch
+        );
+    }
+
+    /**
+     * A batch returns no row, so {@code :batchexec} cannot carry
+     * {@code RETURNING} at all.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "INSERT INTO users (id) VALUES ($1) RETURNING id",
+            "UPDATE users SET name = $2 WHERE id = $1 RETURNING id",
+            "DELETE FROM users WHERE id = $1 RETURNING id"
+        }
+    )
+    void shouldRejectReturningWriteDeclaredAsBatchExec(String sql) {
+        Query query = new Query("WriteUser", QueryType.BATCH_EXEC, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, schema)
+        );
+
+        assertEquals(
+            "Write queries declared as :batchexec cannot use RETURNING, because a batch returns"
+                + " no rows; remove RETURNING or declare the query as :one, :optional, or :many",
             exception.getMessage()
         );
     }
