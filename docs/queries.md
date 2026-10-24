@@ -466,12 +466,17 @@ the pattern through unchanged, so the caller supplies the `%` and `_` wildcards
 in the argument, as in `"Al%"`. A negated `NOT LIKE` or `NOT ILIKE`, another
 keyword such as `SIMILAR TO`, an `ESCAPE` clause, a `BINARY` modifier, a
 non-text tested column, and a placeholder as the tested value are rejected. A
-placeholder inside a computed pattern, such as `'%' || $1 || '%'`, is rejected
-as an unanalyzed placeholder location.
+placeholder inside a computed pattern, such as `'%' || $1 || '%'`, is not typed
+by this rule: its type comes from a cast of its own or from another occurrence
+of the same parameter, as in
+`(:q::text IS NULL OR name ILIKE '%' || :q || '%')`.
 
-`IS NULL` and `IS NOT NULL` bind no placeholder, but their column is resolved
-against the query sources, so an unknown, ambiguous, or badly qualified column
-is rejected.
+`IS NULL` and `IS NOT NULL` over a direct column bind no placeholder, but their
+column is resolved against the query sources, so an unknown, ambiguous, or badly
+qualified column is rejected. A tested value that is a placeholder rather than a
+column names no parameter after the predicate and is typed by its own cast or by
+another occurrence of the same parameter, which is how the optional filter tests
+whether its criterion was supplied.
 
 A `BETWEEN` or `NOT BETWEEN` bound that is a `$N` placeholder takes the tested
 column's type, so `code BETWEEN $1 AND $2` binds two `Integer` parameters named
@@ -581,7 +586,11 @@ WHERE name LIKE '%' || :term::text || '%';
 
 `ListUsersByName` generates `listUsersByName(String name)`, which returns every
 row for a null argument, and `SearchUsers` generates
-`searchUsers(String term)`. The cast itself reaches the database as written. A
+`searchUsers(String term)`. The cast itself reaches the database as written.
+One cast per parameter is enough, as
+[Parameters](#parameters) states, so the same two queries may be written
+`WHERE (:name IS NULL OR name = :name)` and
+`WHERE (:term::text IS NULL OR name LIKE '%' || :term || '%')`. A
 cast pattern states its own type, so the pattern restrictions above apply only
 to an uncast pattern: `name NOT LIKE $1::text`, `name SIMILAR TO $1::text`, and
 `name LIKE $1::text ESCAPE '!'` are accepted and typed `text`, whatever the
@@ -619,10 +628,12 @@ ORDER BY
 - The clause itself is still not analyzed: the ordering expression, including
   its column references, reaches the database as written, and sqlcj checks only
   the cast that types the placeholder.
-- An uncast `ORDER BY` placeholder, such as `ORDER BY $1`, is still rejected,
-  because nothing states its type. sqlcj never pastes a column name or a
-  direction into the SQL, so an ordering column chosen at run time stays
-  outside the subset.
+- An uncast `ORDER BY` placeholder, such as `ORDER BY $1`, is still rejected
+  unless another occurrence of the same parameter states the type, as
+  [Parameters](#parameters) states, because the clause states none itself:
+  `WHERE name = :s ORDER BY :s` executes `ORDER BY ?::varchar`. sqlcj never
+  pastes a column name or a direction into the SQL, so an ordering column
+  chosen at run time stays outside the subset.
 - An `ORDER BY` after the last branch of a set operation orders that whole
   result, which PostgreSQL restricts to an output column or a position, so a
   column reference there is checked as
@@ -770,7 +781,9 @@ LIMIT $1;
   query, as in `(SELECT id FROM users UNION SELECT id FROM profiles) LIMIT $1`,
   is not the query's own pagination clause, so an uncast placeholder there is
   rejected as an unanalyzed placeholder location, exactly as it is in
-  `(SELECT id FROM users) LIMIT $1`.
+  `(SELECT id FROM users) LIMIT $1`, unless another occurrence of the same
+  parameter states the type, as [Parameters](#parameters) states:
+  `(SELECT id FROM authors WHERE id = :n) LIMIT :n` executes `LIMIT ?::int8`.
 - A placeholder repeated across branches is one parameter whose occurrences
   must agree in type, and every parameter binds in the textual order of the
   statement, branch by branch.
@@ -912,11 +925,14 @@ wildcard standing for the columns of its source in schema order:
 A written column may carry an array subscript or slice, as in
 `SET labels[1] = $1::text` or `INSERT INTO stages (id, labels[1])`. Such a
 target is not a direct column: it writes one element or one range, so its value
-is not typed from the array column and a placeholder value needs a cast, while
-the array column itself must exist in the written table and the subscript
+is not typed from the array column and a placeholder value needs a stated type,
+while the array column itself must exist in the written table and the subscript
 reaches the database as written. An uncast placeholder written there is rejected
 as an unanalyzed placeholder location, in an `UPDATE` or `DO UPDATE` assignment,
-in a `VALUES` value, and in an item of an insert's `SELECT` alike.
+in a `VALUES` value, and in an item of an insert's `SELECT` alike, unless
+another occurrence of the same parameter states the type, as
+[Parameters](#parameters) states: `UPDATE authors SET labels[1] = :l WHERE
+name = :l` executes `SET labels[1] = ?::varchar`.
 
 ### Added sources in `UPDATE` and `DELETE`
 
@@ -1019,7 +1035,10 @@ WHERE id = :id;
 and keeps the assignment bound before the predicate. A cast placeholder that is
 the whole value, as in `SET bio = :bio::text`, is typed by its cast as well and
 named after its column. A value that contains an uncast placeholder, such as
-`COALESCE($2, bio)`, stays rejected.
+`COALESCE($2, bio)`, stays rejected unless another occurrence of the same
+parameter states the type, as [Parameters](#parameters) states:
+`SET bio = COALESCE(:bio, bio) WHERE id = :id AND bio = :bio` executes
+`COALESCE(?::text, bio)`.
 
 ### Upsert with `ON CONFLICT`
 
@@ -1229,7 +1248,11 @@ A query writes its parameters either as PostgreSQL `$N` placeholders or as
 `:name` placeholders, and one query uses one of the two forms. The compiler
 replaces each real placeholder token with a JDBC `?` and leaves every other
 character of the statement byte-for-byte unchanged, so `$1` or `:id` inside a
-string literal, a quoted identifier, or a comment is not a parameter.
+string literal, a quoted identifier, or a comment is not a parameter. The only
+other difference between the written and the executed statement is the
+`::<type>` sqlcj writes directly after the `?` of an occurrence it types from
+another occurrence of the same parameter, which the mixed-occurrence rule below
+states.
 
 - Placeholder indexes must be positive and contiguous from `$1`.
 - A named placeholder is a colon followed directly by an unquoted name of ASCII
@@ -1289,13 +1312,33 @@ string literal, a quoted identifier, or a comment is not a parameter.
   projected placeholder binds before a `WHERE` one and
   `OFFSET $2::int LIMIT $1::int` binds the offset first.
 - Occurrences of one placeholder may mix a cast and an uncast location, and the
-  parameter keeps the name and type of its first occurrence, so
-  `(:name::text IS NULL OR name = :name)` is one `String` parameter named
-  `name`.
+  parameter keeps the name and type of the first occurrence a clause or a cast
+  types, so `(:name::text IS NULL OR name = :name)` is one `String` parameter
+  named `name`.
+- One typed occurrence types the others, so one cast per parameter is enough.
+  An occurrence that neither a clause nor a cast types takes the parameter of
+  the first occurrence of the same placeholder, in textual order, that one of
+  them types, wherever the two stand — in another clause, inside an expression
+  no clause rule analyzes, or in a nested query — and sqlcj writes that
+  parameter's PostgreSQL type at it, `?::<type>` in place of `?`, so PostgreSQL
+  types the value bound there. The search filter
+  `(:q::text IS NULL OR name ILIKE '%' || :q || '%')` therefore executes as
+  `(?::text IS NULL OR name ILIKE '%' || ?::text || '%')`, and
+  `(:email IS NULL OR email = :email)`, whose type comes from the compared
+  column, as `(?::varchar IS NULL OR email = ?)`. A clause- or
+  cast-typed occurrence stays a bare `?`, so a query whose every occurrence one
+  of them types executes exactly the statement it writes. The written type is
+  PostgreSQL's own name of the parameter's type: `int2`, `int4`, `int8`,
+  `bool`, `varchar`, or `bpchar` for a blank-padded character type, `text`,
+  `date`, `time`, `timestamp`, `timestamptz`, `numeric`, `float4`, `float8`,
+  `uuid`, `bytea`, `json`, `jsonb`, `citext`, `inet`, `cidr`, `macaddr`,
+  `macaddr8`, `interval`, an enum type's declared name, or the element name
+  followed by `[]` for an array.
 - Mixing `$N` and `:name` placeholders in one query is rejected, as are
   anonymous `?` placeholders, a qualified name such as `:a.b`, a quoted name
   such as `:"x"`, and an `&name` placeholder.
-- A placeholder that neither a clause nor a cast types — for example
+- A placeholder neither a clause nor a cast types, at any occurrence of its
+  parameter — for example
   `ORDER BY $1`, `lower(name) = :name`, or `(:x)::int`, whose placeholder is not
   the direct operand of its cast — is rejected rather than left unbound, as
   `Cannot infer the type of :name in lower(name) = :name; state it with a cast,
@@ -1308,8 +1351,9 @@ string literal, a quoted identifier, or a comment is not a parameter.
   its clause and is named by the keyword that opens that clause, in upper case:
   `SELECT`, `DISTINCT ON`, `ON`, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`,
   `LIMIT`, `OFFSET`, `FETCH`, `VALUES`, `SET`, or `RETURNING`. One query reports
-  its first untyped placeholder in textual order, after the rules of its clauses
-  have run, so a clause's own rejection comes first.
+  the first occurrence, in textual order, of its first such parameter, after the
+  rules of its clauses have run, so a clause's own rejection comes first and an
+  uncast occurrence another occurrence types is not reported at all.
 
 ### Logical order versus textual order
 
@@ -1342,7 +1386,8 @@ public int updateAuthorBio(Long id, String bio) {
 ```
 
 An index and a name may repeat. A repeated index produces one method parameter,
-named and typed from its first occurrence, and its value is bound at every
+named and typed from the first occurrence a clause or a cast types, and its
+value is bound at every
 textual position where the index occurs; a repeated name behaves the same way
 and keeps its own name. Occurrences of one index or one name whose inferred Java
 types differ are rejected.
@@ -1676,7 +1721,8 @@ query name, and its header line.
 - A column reference of a predicate subquery that no level in scope exposes, or
   that two sources of its own level expose, each with the diagnostic
   [Predicates](#predicates) states.
-- An uncast placeholder in a location sqlcj does not analyze, including
+- A placeholder in a location sqlcj does not analyze, where neither a cast nor
+  another occurrence of the same parameter states its type, including
   `ORDER BY $1`, a projection such as `SELECT $1 AS x`, a grouping list, a
   `HAVING` predicate, a subquery outside the analyzed predicate forms, such as
   the query of an `= ANY`, a
@@ -1695,7 +1741,11 @@ query name, and its header line.
   placeholder stands alone in, such as `ORDER BY` for `ORDER BY $1` and
   `SELECT` for `SELECT $1 AS x`. A cast states the type of such a placeholder in
   every one of those locations, and it does not accept a placeholder that is not
-  the direct operand of its cast, such as `(:x)::int`.
+  the direct operand of its cast, such as `(:x)::int`. Another occurrence of the
+  same parameter that a clause or a cast types states it as well, in every one
+  of those locations except a projection, which states a result column of its
+  own: `SELECT :x AS y FROM users WHERE name = :x::text` stays rejected at the
+  projection.
 - A column reference written with an array subscript or slice wherever a direct
   column is required, because it reads one element or one range rather than the
   column: `SELECT labels[1] AS first` and `SELECT labels[1:2] AS pair` are
@@ -1706,8 +1756,12 @@ query name, and its header line.
   `ON u.labels[1] = $1`, a write's `WHERE labels[1] = $1`, a
   `DO UPDATE ... WHERE stages.labels[1] = $1`, `SET labels[1] = $1`, and
   `INSERT INTO stages (id, labels[1]) VALUES ($1, $2)` — as an unanalyzed
-  placeholder location. A cast states the type in each of those locations, and
-  the array column of a subscripted write target must still exist.
+  placeholder location, where neither a cast nor another occurrence of the same
+  parameter states its type. A cast states the type in each of those locations,
+  as does another occurrence of the same parameter that a clause or a cast
+  types, so `WHERE labels[1] = :l AND name = :l` executes
+  `labels[1] = ?::varchar`, and the array column of a subscripted write target
+  must still exist.
 - A cast type sqlcj does not map, such as `$1::money` or a
   multi-dimensional `$1::int[][]`, which is rejected naming the placeholder and
   the declared type, or the result column and the declared type when the cast
@@ -2708,6 +2762,32 @@ Parameters:
   `PostgresIntegrationTest.shouldExecuteGeneratedCastTypedOptionalFilterAgainstPostgres`
   executes a named cast-typed optional filter against PostgreSQL 16 with a null
   and a non-null argument.
+- `QueryAnalyzerTest.shouldTypeTheUncastOccurrenceOfAComputedSearchPattern`,
+  `QueryAnalyzerTest.shouldTypeAnUncastNullTestFromTheOccurrenceAfterIt`,
+  `QueryAnalyzerTest.shouldTypeAnUncastNullTestFromTheOccurrenceBeforeIt`,
+  `QueryAnalyzerTest.shouldTypeARepeatedIndexFromTheOccurrenceItsColumnTypes`,
+  `QueryAnalyzerTest.shouldTypeAnUncastEnumOccurrenceFromItsComparedColumn`,
+  `QueryAnalyzerTest.shouldTypeAnUncastListOccurrenceFromItsComparedColumn`,
+  `QueryAnalyzerTest.shouldTypeUncastOccurrencesOfACastTypedAndAClauseTypedParameter`,
+  `QueryAnalyzerTest.shouldTypeAnUncastOccurrenceOfANestedQueryFromAnOuterOccurrence`,
+  and
+  `QueryAnalyzerTest.shouldKeepTheCompiledSqlOfAQueryWhoseEveryOccurrenceIsTyped`
+  cover the parameter and the executable SQL of an occurrence typed from another
+  occurrence: the computed search pattern, the uncast null test before and
+  after the occurrence that types it, the repeated `$1` named after its typing
+  column, the enum and array type names, a cast-typed and a clause-typed
+  parameter in one query, a nested occurrence typed from an outer one, and the
+  unchanged SQL of a query whose every occurrence a clause or a cast types.
+  `QueryAnalyzerTest.shouldRejectTheFirstOccurrenceOfAParameterNoOccurrenceTypes`
+  and
+  `QueryAnalyzerTest.shouldRejectAProjectedPlaceholderTypedByAnotherOccurrence`
+  cover the kept rejections of a parameter no occurrence types and of a
+  projected placeholder,
+  `SqlParameterCompilerTest.shouldReportTheOffsetOfEachCompiledMarker` covers
+  the compiled `?` offsets the type is written at, and
+  `PostgresIntegrationTest.shouldExecuteGeneratedCriteriaFiltersTypedByAnotherOccurrenceAgainstPostgres`
+  executes a computed search pattern, an uncast null test, and an uncast list
+  criterion against PostgreSQL 16, each with a null argument and with a value.
 - `QueryAnalyzerTest.shouldRejectASubscriptedProjection`,
   `QueryAnalyzerTest.shouldAnalyzeACastSubscriptedProjection`,
   `QueryAnalyzerTest.shouldRejectASubscriptedReturningItem`,
