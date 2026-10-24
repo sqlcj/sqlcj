@@ -5937,6 +5937,323 @@ class QueryAnalyzerTest {
     }
 
     /**
+     * An occurrence a cast types types the other occurrences of its parameter,
+     * so a computed search pattern needs no cast of its own, and the executable
+     * SQL states the parameter's type at that occurrence.
+     */
+    @Test
+    void shouldTypeTheUncastOccurrenceOfAComputedSearchPattern() {
+        String sql = "SELECT id FROM users"
+            + " WHERE (:q::text IS NULL OR name ILIKE '%' || :q || '%')";
+
+        QueryModel model = analyzer.analyze(
+            new Query("SearchUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "q", ColumnType.TEXT)),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1), model.bindingParameterIndexes());
+
+        assertEquals(
+            "SELECT id FROM users"
+                + " WHERE (?::text IS NULL OR name ILIKE '%' || ?::text || '%')",
+            model.executableSql()
+        );
+    }
+
+    /**
+     * An uncast {@code IS NULL} test takes the type of the compared occurrence
+     * written after it, which is the optional filter written without a cast.
+     */
+    @Test
+    void shouldTypeAnUncastNullTestFromTheOccurrenceAfterIt() {
+        String sql = "SELECT id FROM users WHERE (:name IS NULL OR name = :name)";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1), model.bindingParameterIndexes());
+
+        assertEquals(
+            "SELECT id FROM users WHERE (?::varchar IS NULL OR name = ?)",
+            model.executableSql()
+        );
+    }
+
+    /**
+     * The typing occurrence may stand before the occurrence it types, so the
+     * same filter written the other way round is one parameter as well.
+     */
+    @Test
+    void shouldTypeAnUncastNullTestFromTheOccurrenceBeforeIt() {
+        String sql = "SELECT id FROM users WHERE (name = :name OR :name IS NULL)";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1), model.bindingParameterIndexes());
+
+        assertEquals(
+            "SELECT id FROM users WHERE (name = ? OR ?::varchar IS NULL)",
+            model.executableSql()
+        );
+    }
+
+    /**
+     * The rule is by logical parameter, so a repeated {@code $N} follows it as
+     * a repeated name does, and the parameter keeps the name of its typing
+     * column at both occurrences.
+     */
+    @Test
+    void shouldTypeARepeatedIndexFromTheOccurrenceItsColumnTypes() {
+        String sql = "SELECT id FROM users WHERE ($1 IS NULL OR email = $1)";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            untypedSchema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "email", ColumnType.TEXT)),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1), model.bindingParameterIndexes());
+
+        assertEquals(
+            "SELECT id FROM users WHERE (?::text IS NULL OR email = ?)",
+            model.executableSql()
+        );
+    }
+
+    /** An enum parameter states the declared name of its type. */
+    @Test
+    void shouldTypeAnUncastEnumOccurrenceFromItsComparedColumn() {
+        String sql = "SELECT id FROM stages WHERE (:setting IS NULL OR setting = :setting)";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListStages", QueryType.MANY, sql),
+            parser.parse(sql),
+            enumSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "setting", ColumnType.ENUM, "stage_setting")
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1), model.bindingParameterIndexes());
+
+        assertEquals(
+            "SELECT id FROM stages WHERE (?::stage_setting IS NULL OR setting = ?)",
+            model.executableSql()
+        );
+    }
+
+    /** An array parameter states its element type followed by {@code []}. */
+    @Test
+    void shouldTypeAnUncastListOccurrenceFromItsComparedColumn() {
+        String sql = "SELECT id FROM users WHERE (:ids IS NULL OR id = ANY(:ids))";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            anyListSchema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "ids", ColumnType.BIGINT, null, true)),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1), model.bindingParameterIndexes());
+
+        assertEquals(
+            "SELECT id FROM users WHERE (?::int8[] IS NULL OR id = ANY(?))",
+            model.executableSql()
+        );
+    }
+
+    /**
+     * One query may state the type of one parameter with a cast and of another
+     * through a clause, whichever occurrence of each the type comes from.
+     */
+    @Test
+    void shouldTypeUncastOccurrencesOfACastTypedAndAClauseTypedParameter() {
+        String sql = """
+            SELECT id
+            FROM users
+            WHERE (:q::text IS NULL OR name ILIKE '%' || :q || '%')
+              AND (:name IS NULL OR name = :name)
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("SearchUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "q", ColumnType.TEXT),
+                new QueryParameter(2, "name", ColumnType.VARCHAR)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1, 2, 2), model.bindingParameterIndexes());
+
+        assertEquals(
+            """
+                SELECT id
+                FROM users
+                WHERE (?::text IS NULL OR name ILIKE '%' || ?::text || '%')
+                  AND (?::varchar IS NULL OR name = ?)
+                """,
+            model.executableSql()
+        );
+    }
+
+    /**
+     * The typing occurrence and the occurrence it types may stand at different
+     * nesting depths, so an occurrence of a nested query is typed from the
+     * occurrence of the query around it.
+     */
+    @Test
+    void shouldTypeAnUncastOccurrenceOfANestedQueryFromAnOuterOccurrence() {
+        String sql = "SELECT id FROM users"
+            + " WHERE name = :name"
+            + " AND EXISTS (SELECT 1 FROM users u WHERE lower(u.name) = :name)";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1), model.bindingParameterIndexes());
+
+        assertEquals(
+            "SELECT id FROM users"
+                + " WHERE name = ?"
+                + " AND EXISTS (SELECT 1 FROM users u WHERE lower(u.name) = ?::varchar)",
+            model.executableSql()
+        );
+    }
+
+    /**
+     * A clause- or cast-typed occurrence states no type of its own, so a query
+     * whose every occurrence one of them types executes the compiled SQL
+     * unchanged.
+     */
+    @Test
+    void shouldKeepTheCompiledSqlOfAQueryWhoseEveryOccurrenceIsTyped() {
+        String sql = "SELECT id FROM users"
+            + " WHERE (:name::text IS NULL OR name = :name) AND id = :id";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "name", ColumnType.TEXT),
+                new QueryParameter(2, "id", ColumnType.BIGINT)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1, 2), model.bindingParameterIndexes());
+
+        assertEquals(
+            "SELECT id FROM users WHERE (?::text IS NULL OR name = ?) AND id = ?",
+            model.executableSql()
+        );
+    }
+
+    /**
+     * A logical parameter no occurrence types has no type to write, so the
+     * query is rejected at the first occurrence of that parameter, while a
+     * parameter another occurrence types is not rejected at all.
+     */
+    @Test
+    void shouldRejectTheFirstOccurrenceOfAParameterNoOccurrenceTypes() {
+        String sql = "SELECT id FROM users"
+            + " WHERE (:email IS NULL OR email = :email)"
+            + " AND lower(name) = :q"
+            + " AND lower(email) = :q";
+
+        Query query = new Query("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, untypedSchema)
+        );
+
+        assertEquals(
+            "Cannot infer the type of :q in lower(name) = :q;"
+                + " state it with a cast, such as :q::text",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A projection states a result column, which a placeholder states with a
+     * cast and an alias of its own, so a projected placeholder stays rejected
+     * even where another occurrence of its parameter is typed.
+     */
+    @Test
+    void shouldRejectAProjectedPlaceholderTypedByAnotherOccurrence() {
+        String sql = "SELECT :name AS searched FROM users WHERE name = :name";
+
+        Query query = new Query("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, schema)
+        );
+
+        assertEquals(
+            "Cannot infer the type of :name in SELECT;"
+                + " state it with a cast, such as :name::text",
+            exception.getMessage()
+        );
+    }
+
+    /**
      * A computed {@code LIKE} pattern is not analyzed as a pattern, but the
      * cast placeholder inside it is typed by its cast and named after itself.
      */

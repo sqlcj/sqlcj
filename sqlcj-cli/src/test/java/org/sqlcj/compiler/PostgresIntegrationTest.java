@@ -1578,6 +1578,95 @@ class PostgresIntegrationTest {
     }
 
     /**
+     * Covers the criteria filters whose uncast occurrences another occurrence
+     * of the same parameter types end to end: a computed search pattern, an
+     * uncast null test, and an uncast list criterion. The driver sends a null
+     * argument without a type, so each runs with a null argument only because
+     * the executable SQL states the parameter's type at the occurrence the
+     * query itself leaves uncast, and each returns the matching rows for a
+     * value.
+     */
+    @Test
+    void shouldExecuteGeneratedCriteriaFiltersTypedByAnotherOccurrenceAgainstPostgres()
+        throws Exception {
+        Path classesDirectory = generateAndCompile("""
+            -- name: SearchUsers :many
+            SELECT id, name
+            FROM users
+            WHERE (:q::text IS NULL OR name ILIKE '%' || :q || '%')
+            ORDER BY id;
+
+            -- name: ListUsersByName :many
+            SELECT id, name
+            FROM users
+            WHERE (:name IS NULL OR name = :name)
+            ORDER BY id;
+
+            -- name: ListUsersByIds :many
+            SELECT id, name
+            FROM users
+            WHERE (:ids IS NULL OR id = ANY(:ids))
+            ORDER BY id;
+            """);
+
+        execute("""
+            INSERT INTO users (id, code, name)
+            VALUES
+                (1, 1, 'Alice'),
+                (2, 2, 'Bob'),
+                (3, 3, 'Cara')
+            """);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Method searchUsers = repository.getClass().getMethod("searchUsers", String.class);
+
+            assertEquals(
+                List.of("Alice", "Bob", "Cara"),
+                names(searchUsers.invoke(repository, new Object[] { null }))
+            );
+
+            assertEquals(
+                List.of("Alice", "Cara"),
+                names(searchUsers.invoke(repository, "a"))
+            );
+
+            Method listUsersByName = repository.getClass().getMethod(
+                "listUsersByName",
+                String.class
+            );
+
+            assertEquals(
+                List.of("Alice", "Bob", "Cara"),
+                names(listUsersByName.invoke(repository, new Object[] { null }))
+            );
+
+            assertEquals(
+                List.of("Bob"),
+                names(listUsersByName.invoke(repository, "Bob"))
+            );
+
+            Method listUsersByIds = repository.getClass().getMethod(
+                "listUsersByIds",
+                List.class
+            );
+
+            List<Long> noIds = null;
+
+            assertEquals(
+                List.of("Alice", "Bob", "Cara"),
+                names(listUsersByIds.invoke(repository, noIds))
+            );
+
+            assertEquals(
+                List.of("Alice", "Cara"),
+                names(listUsersByIds.invoke(repository, List.of(3L, 1L)))
+            );
+        }
+    }
+
+    /**
      * Covers the scalar count end to end: a {@code :one} count read is
      * generated, compiled, and executed against PostgreSQL, so its result
      * record exposes one {@code Long} component that counts the matching rows

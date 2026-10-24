@@ -3220,7 +3220,9 @@ public final class QueryAnalyzer {
         Placeholders placeholders,
         String rowTable
     ) {
-        List<QueryParameter> occurrences = resolveOccurrences(parsedSql, placeholders);
+        ResolvedOccurrences resolved = resolveOccurrences(parsedSql, placeholders);
+
+        List<QueryParameter> occurrences = resolved.occurrences();
 
         List<Integer> bindingParameterIndexes = requireAccountedOccurrences(parsedSql, occurrences);
 
@@ -3228,7 +3230,7 @@ public final class QueryAnalyzer {
             query.name(),
             query.type(),
             tableName,
-            parsedSql.parameters().executableSql(),
+            toExecutableSql(parsedSql, resolved),
             bindingParameterIndexes,
             columns,
             toParameters(occurrences, parsedSql.parameters().names()),
@@ -3237,43 +3239,163 @@ public final class QueryAnalyzer {
     }
 
     /**
+     * The resolved parameter occurrences of one query.
+     *
+     * @param occurrences  the parameter occurrence of each placeholder
+     *                     occurrence the SQL parser reported, in textual order
+     * @param writtenTypes the textual positions of the occurrences typed from
+     *                     another occurrence, in ascending order, which are the
+     *                     {@code ?} markers the executable SQL states a type at
+     */
+    private record ResolvedOccurrences(
+        List<QueryParameter> occurrences,
+        List<Integer> writtenTypes
+    ) {
+    }
+
+    /**
      * Resolves the parameter occurrences of one query in the textual order of
      * the placeholder occurrences the SQL parser reported, which is the JDBC
      * binding order of the generated {@code ?} positions.
      *
      * <p>An occurrence a clause of the query typed is that clause's parameter.
-     * Every other occurrence is typed by the cast it is the direct operand of,
-     * wherever in the statement it stands, and is named after its own
-     * placeholder. A placeholder neither a clause nor a cast types has no type
-     * to generate, so the first such occurrence in textual order is rejected
-     * naming where the query writes it.
+     * An occurrence no clause typed is typed by the cast it is the direct
+     * operand of, wherever in the statement it stands, and is named after its
+     * own placeholder. Every remaining occurrence takes the parameter of the
+     * first occurrence of its own logical parameter, in textual order, that a
+     * clause or a cast typed, wherever both stand, and sqlcj writes that
+     * parameter's type at it. A logical parameter no occurrence types has no
+     * type to write, so the first occurrence of such a parameter, in textual
+     * order, is rejected naming where the query writes it.
      */
-    private List<QueryParameter> resolveOccurrences(ParsedSql parsedSql, Placeholders placeholders) {
-        List<QueryParameter> occurrences = new ArrayList<>();
+    private ResolvedOccurrences resolveOccurrences(ParsedSql parsedSql, Placeholders placeholders) {
+        List<PlaceholderOccurrence> reported = parsedSql.placeholders();
+        List<QueryParameter> occurrences = new ArrayList<>(Collections.nCopies(reported.size(), null));
+        Map<Integer, QueryParameter> firstTyped = new LinkedHashMap<>();
 
-        for (PlaceholderOccurrence occurrence : parsedSql.placeholders()) {
+        for (int position = 0; position < reported.size(); position++) {
+            PlaceholderOccurrence occurrence = reported.get(position);
             QueryParameter typed = placeholders.typed(occurrence.placeholder());
 
+            if (typed == null) {
+                CastPlaceholder cast = placeholders.ofCast(occurrence.cast());
+
+                typed = cast == null
+                    ? null
+                    : toCastParameter(cast, indexedParameterName(cast.placeholder()));
+            }
+
             if (typed != null) {
-                occurrences.add(typed);
-
-                continue;
+                occurrences.set(position, typed);
+                firstTyped.putIfAbsent(typed.index(), typed);
             }
-
-            CastPlaceholder cast = placeholders.ofCast(occurrence.cast());
-
-            if (cast == null) {
-                throw untypedPlaceholder(occurrence);
-            }
-
-            occurrences.add(
-                toCastParameter(cast, indexedParameterName(cast.placeholder()))
-            );
         }
 
         placeholders.requireReportedOccurrences();
 
-        return occurrences;
+        List<Integer> writtenTypes = new ArrayList<>();
+
+        for (int position = 0; position < reported.size(); position++) {
+            if (occurrences.get(position) != null) {
+                continue;
+            }
+
+            PlaceholderOccurrence occurrence = reported.get(position);
+            QueryParameter parameter = firstTyped.get(
+                placeholders.of(occurrence.placeholder()).index()
+            );
+
+            if (parameter == null) {
+                throw untypedPlaceholder(occurrence);
+            }
+
+            occurrences.set(position, parameter);
+            writtenTypes.add(position);
+        }
+
+        return new ResolvedOccurrences(occurrences, writtenTypes);
+    }
+
+    /**
+     * The JDBC-executable SQL of one analyzed query, which is the compiled SQL
+     * with {@code ::<type>} written directly after the {@code ?} of each
+     * occurrence typed from another occurrence of its parameter, so that
+     * PostgreSQL types the bound value where the query itself states no type.
+     * Every other character stays as the compiler wrote it, so a query whose
+     * every occurrence a clause or a cast types executes its compiled SQL
+     * unchanged.
+     */
+    private String toExecutableSql(ParsedSql parsedSql, ResolvedOccurrences resolved) {
+        String sql = parsedSql.parameters().executableSql();
+
+        if (resolved.writtenTypes().isEmpty()) {
+            return sql;
+        }
+
+        List<Integer> offsets = parsedSql.parameters().offsets();
+        StringBuilder executableSql = new StringBuilder();
+        int copied = 0;
+
+        for (int position : resolved.writtenTypes()) {
+            int marker = offsets.get(position) + 1;
+
+            executableSql
+                .append(sql, copied, marker)
+                .append("::")
+                .append(sqlTypeName(resolved.occurrences().get(position)));
+
+            copied = marker;
+        }
+
+        return executableSql
+            .append(sql, copied, sql.length())
+            .toString();
+    }
+
+    /**
+     * The PostgreSQL name of one parameter's type, which the executable SQL
+     * writes as a cast at an occurrence typed from another occurrence. It is
+     * the name PostgreSQL gives the type the runtime binds the parameter as, a
+     * blank-padded character type's own {@code bpchar} included, an enum type's
+     * declared name, and {@code []} after the element name of an array.
+     */
+    private String sqlTypeName(QueryParameter parameter) {
+        String name = parameter.blankPadded() && parameter.type() == ColumnType.VARCHAR
+            ? "bpchar"
+            : scalarSqlTypeName(parameter);
+
+        return parameter.array()
+            ? name + "[]"
+            : name;
+    }
+
+    private String scalarSqlTypeName(QueryParameter parameter) {
+        return switch (parameter.type()) {
+            case INTEGER -> "int4";
+            case BIGINT -> "int8";
+            case SMALLINT -> "int2";
+            case BOOLEAN -> "bool";
+            case VARCHAR -> "varchar";
+            case TEXT -> "text";
+            case DATE -> "date";
+            case TIME -> "time";
+            case TIMESTAMP -> "timestamp";
+            case TIMESTAMP_WITH_TIME_ZONE -> "timestamptz";
+            case DECIMAL -> "numeric";
+            case REAL -> "float4";
+            case DOUBLE_PRECISION -> "float8";
+            case UUID -> "uuid";
+            case BYTEA -> "bytea";
+            case JSON -> "json";
+            case JSONB -> "jsonb";
+            case CITEXT -> "citext";
+            case INET -> "inet";
+            case CIDR -> "cidr";
+            case MACADDR -> "macaddr";
+            case MACADDR8 -> "macaddr8";
+            case INTERVAL -> "interval";
+            case ENUM -> parameter.enumType();
+        };
     }
 
     /**

@@ -36,6 +36,36 @@ class SqlParameterCompilerTest {
 
         assertEquals("SELECT * FROM users WHERE id = ?", parameters.executableSql());
         assertEquals(List.of(1), parameters.indexes());
+        assertEquals(List.of(31), parameters.offsets());
+    }
+
+    /**
+     * Each replacement reports the offset its own {@code ?} takes in the
+     * compiled SQL, which a shorter replacement before it and placeholder text
+     * no token reported, such as the {@code $1} of a string literal, both move.
+     */
+    @Test
+    void shouldReportTheOffsetOfEachCompiledMarker() {
+        String sql = "SELECT id FROM users WHERE tag = '$1' AND code = $2 AND id = $1";
+
+        SqlParameters parameters = compile(
+            sql,
+            token(CCJSqlParserConstants.S_PARAMETER, "$2", 49),
+            token(CCJSqlParserConstants.S_PARAMETER, "$1", 61)
+        );
+
+        assertEquals(
+            "SELECT id FROM users WHERE tag = '$1' AND code = ? AND id = ?",
+            parameters.executableSql()
+        );
+
+        assertEquals(List.of(2, 1), parameters.indexes());
+        assertEquals(List.of(49, 60), parameters.offsets());
+
+        assertEquals(
+            '?',
+            parameters.executableSql().charAt(parameters.offsets().get(0))
+        );
     }
 
     @Test

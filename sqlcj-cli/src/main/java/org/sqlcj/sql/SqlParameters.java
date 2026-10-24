@@ -12,6 +12,10 @@ import java.util.List;
  *                      in {@link #executableSql()}, in textual order, which is
  *                      the index of a {@code $N} placeholder and the
  *                      first-occurrence number of a {@code :name} placeholder
+ * @param offsets       the offset in {@link #executableSql()} of the {@code ?}
+ *                      each element of {@link #indexes()} numbers, in the same
+ *                      textual order, so that semantic analysis can write a
+ *                      type at one {@code ?} without parsing the SQL again
  * @param names         the compiled {@code :name} placeholder names in logical
  *                      order, so the name of logical parameter {@code n} is the
  *                      element at {@code n - 1}, and an empty list when the
@@ -31,6 +35,7 @@ import java.util.List;
 public record SqlParameters(
     String executableSql,
     List<Integer> indexes,
+    List<Integer> offsets,
     List<String> names,
     List<String> uncompiledPlaceholders,
     boolean hasPositionalParameter,
@@ -39,6 +44,7 @@ public record SqlParameters(
 
     public SqlParameters {
         indexes = List.copyOf(indexes);
+        offsets = List.copyOf(offsets);
         names = List.copyOf(names);
         uncompiledPlaceholders = List.copyOf(uncompiledPlaceholders);
     }
