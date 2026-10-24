@@ -9,7 +9,11 @@ import java.util.List;
  *
  * @param executableSql            JDBC-executable SQL where every parsed
  *                                 {@code $N} and {@code :name} parameter token
- *                                 is replaced by {@code ?}
+ *                                 is replaced by {@code ?}, written
+ *                                 {@code ?::<type>} where the occurrence takes
+ *                                 its type from another occurrence of the same
+ *                                 logical parameter, and every other character
+ *                                 is preserved
  * @param bindingParameterIndexes  the logical parameter number of each
  *                                 {@code ?} position in
  *                                 {@link #executableSql()}, in textual order

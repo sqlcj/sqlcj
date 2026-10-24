@@ -26,7 +26,9 @@ import java.util.regex.Pattern;
  *
  * <p>Each distinct placeholder name is one logical parameter, numbered by its
  * first textual occurrence, and every occurrence of that name becomes a
- * {@code ?} of its own. A placeholder form this compiler does not recognize,
+ * {@code ?} of its own, reported with the offset that {@code ?} takes in the
+ * compiled SQL, so that a later stage can write at one marker without reading
+ * the source again. A placeholder form this compiler does not recognize,
  * such as a qualified, quoted, or {@code &name} placeholder, stays in the SQL
  * and is reported as written for semantic analysis to reject, as is an
  * anonymous {@code ?} placeholder, which has no parameter to bind.
@@ -116,6 +118,7 @@ final class SqlParameterCompiler {
 
         StringBuilder executableSql = new StringBuilder();
         List<Integer> indexes = new ArrayList<>();
+        List<Integer> offsets = new ArrayList<>();
         List<String> names = new ArrayList<>();
         boolean anonymous = false;
         boolean positional = false;
@@ -135,9 +138,10 @@ final class SqlParameterCompiler {
                     copied
                 );
 
-                executableSql
-                    .append(sql, copied, begin)
-                    .append('?');
+                executableSql.append(sql, copied, begin);
+
+                offsets.add(executableSql.length());
+                executableSql.append('?');
 
                 copied = begin + token.image.length();
 
@@ -156,9 +160,10 @@ final class SqlParameterCompiler {
                     copied
                 );
 
-                executableSql
-                    .append(sql, copied, begin)
-                    .append('?');
+                executableSql.append(sql, copied, begin);
+
+                offsets.add(executableSql.length());
+                executableSql.append('?');
 
                 copied = begin + image.length();
 
@@ -181,6 +186,7 @@ final class SqlParameterCompiler {
         return new SqlParameters(
             executableSql.toString(),
             indexes,
+            offsets,
             names,
             uncompiled,
             positional,
