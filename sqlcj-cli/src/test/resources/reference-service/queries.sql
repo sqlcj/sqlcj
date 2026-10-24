@@ -56,6 +56,13 @@ SET status  = :status,
 WHERE id = :id
   AND version = :version;
 
+-- name: MoveTasks :batchexec
+UPDATE tasks
+SET status  = :status,
+    version = version + 1
+WHERE id = :id
+  AND version = :version;
+
 -- name: CountTasksByStatus :many
 SELECT status,
        COUNT(*) AS total
@@ -70,6 +77,10 @@ VALUES (:taskId, :authorId, :body)
 RETURNING *;
 
 -- name: RecordAudit :exec
+INSERT INTO audit_log (occurred_at, actor_id, action, detail, request_id)
+VALUES (:occurredAt, :actorId, :action, :detail, :requestId);
+
+-- name: RecordAuditEntries :batchexec
 INSERT INTO audit_log (occurred_at, actor_id, action, detail, request_id)
 VALUES (:occurredAt, :actorId, :action, :detail, :requestId);
 
