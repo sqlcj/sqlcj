@@ -36,12 +36,16 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.function.BiFunction;
 import java.util.function.Function;
@@ -4189,6 +4193,88 @@ class SqlcjCompilerIntegrationTest {
             tempDir.resolve("generated-directory"),
             tempDir.resolve("classes")
         );
+    }
+
+    /**
+     * A Liquibase formatted SQL directory is read as the SQL it spells,
+     * because its {@code --liquibase formatted sql}, {@code --changeset}, and
+     * {@code --rollback} directives and its {@code liquibase rollback} block
+     * are comments. Liquibase's offline {@code update-sql} output for the
+     * equivalent XML changelog spells that same schema, and its
+     * {@code databasechangelog} bookkeeping table generates nothing, because
+     * no query reads it. So both forms generate one byte-identical tree, and
+     * that tree compiles.
+     */
+    @Test
+    void shouldGenerateOneTreeFromALiquibaseFormattedSqlDirectoryAndItsOfflineUpdateSql()
+        throws Exception {
+        Path queriesFile = liquibaseFixture("queries.sql");
+
+        Path fromFormatted = tempDir.resolve("generated-formatted");
+        Path fromOffline = tempDir.resolve("generated-offline");
+
+        generateUsersRepository(
+            List.of(liquibaseFixture("formatted").toString()),
+            queriesFile,
+            fromFormatted
+        );
+
+        generateUsersRepository(
+            List.of(liquibaseFixture("offline-update.sql").toString()),
+            queriesFile,
+            fromOffline
+        );
+
+        Map<String, byte[]> formattedFiles = generatedFiles(fromFormatted);
+        Map<String, byte[]> offlineFiles = generatedFiles(fromOffline);
+
+        assertEquals(
+            Set.of(
+                "sqlcj-manifest.txt",
+                "generated/AuthorsRow.java",
+                "generated/BookFormat.java",
+                "generated/BooksRow.java",
+                "generated/UsersRepository.java"
+            ),
+            formattedFiles.keySet()
+        );
+
+        assertEquals(formattedFiles.keySet(), offlineFiles.keySet());
+
+        for (Map.Entry<String, byte[]> file : formattedFiles.entrySet()) {
+            assertArrayEquals(
+                file.getValue(),
+                offlineFiles.get(file.getKey()),
+                file.getKey() + " differs"
+            );
+        }
+
+        assertCompiles(fromFormatted, tempDir.resolve("classes-liquibase"));
+    }
+
+    /** One Liquibase fixture, resolved from the test classpath. */
+    private Path liquibaseFixture(String name) throws Exception {
+        URL url = getClass().getResource("/liquibase/" + name);
+
+        assertNotNull(url, "missing Liquibase fixture: " + name);
+
+        return Paths.get(url.toURI());
+    }
+
+    /** Every file of one output directory, by its relative path. */
+    private Map<String, byte[]> generatedFiles(Path generatedDirectory) throws IOException {
+        Map<String, byte[]> files = new TreeMap<>();
+
+        try (Stream<Path> paths = Files.walk(generatedDirectory)) {
+            for (Path path : paths.filter(Files::isRegularFile).toList()) {
+                files.put(
+                    generatedDirectory.relativize(path).toString().replace('\\', '/'),
+                    Files.readAllBytes(path)
+                );
+            }
+        }
+
+        return files;
     }
 
     /**
