@@ -100,6 +100,10 @@ public class DefaultSchemaParser implements SchemaParser {
      * which the parser never reads at all, are classified by their words
      * before the table and type openings, because both change the domains the
      * schema models.
+     *
+     * <p>A statement that creates a table named by a variable alone, or adds
+     * constraints to one, is ignored before it is parsed at all; see
+     * {@link #namesAVariableTable(List)}.
      */
     private void apply(
         SchemaSourceSplitter.SourceStatement statement,
@@ -107,6 +111,10 @@ public class DefaultSchemaParser implements SchemaParser {
         List<EnumType> enums,
         List<DomainType> domains
     ) {
+        if (namesAVariableTable(statement.tokens())) {
+            return;
+        }
+
         Statements parsed = null;
         JSQLParserException failure = null;
 
@@ -340,6 +348,70 @@ public class DefaultSchemaParser implements SchemaParser {
             || statesWords(action, 1, "EXCLUDE")
             || statesWords(action, 1, "PRIMARY", "KEY")
             || statesWords(action, 1, "FOREIGN", "KEY");
+    }
+
+    /**
+     * Reports whether a statement names its table by a variable alone, which
+     * is decided from the statement's tokens alone, before the statement is
+     * parsed: a {@code CREATE TABLE [IF NOT EXISTS] ${name} (}, or an
+     * {@code ALTER TABLE [IF EXISTS] [ONLY] ${name}} whose every top-level
+     * action adds a constraint. A variable is the token {@code $}, then an
+     * opening brace, then one or more tokens, then the first closing brace, as
+     * the lexer reports the name MyBatis Migrations substitutes. The words are
+     * compared case-insensitively, as PostgreSQL reads them.
+     *
+     * <p>Both statements are ignored, because such a table is named nowhere
+     * else in a schema source and neither statement can change a modeled
+     * column. They are the two statements of the changelog script
+     * {@code migrate init} writes, which without this rule does not load at
+     * all: the parser rejects the {@code CREATE TABLE} at its opening brace and
+     * reads the {@code ALTER TABLE} as an alteration of a table named
+     * {@code $}, which fails resolving that table, so the rule must be decided
+     * before the statement is parsed.
+     */
+    private boolean namesAVariableTable(List<String> tokens) {
+        boolean creates = statesWords(tokens, 0, "CREATE", "TABLE");
+        int index = 2;
+
+        if (creates) {
+            if (statesWords(tokens, index, "IF", "NOT", "EXISTS")) {
+                index += 3;
+            }
+        } else if (statesWords(tokens, 0, "ALTER", "TABLE")) {
+            if (statesWords(tokens, index, "IF", "EXISTS")) {
+                index += 2;
+            }
+
+            if (statesWords(tokens, index, "ONLY")) {
+                index++;
+            }
+        } else {
+            return false;
+        }
+
+        if (!statesWords(tokens, index, "$", "{")) {
+            return false;
+        }
+
+        int name = index + 2;
+        int close = name;
+
+        while (close < tokens.size() && !"}".equals(tokens.get(close))) {
+            close++;
+        }
+
+        if (close == name || close == tokens.size()) {
+            return false;
+        }
+
+        index = close + 1;
+
+        if (creates) {
+            return statesWords(tokens, index, "(");
+        }
+
+        return topLevelActions(tokens.subList(index, tokens.size())).stream()
+            .allMatch(action -> statesWords(action, 0, "ADD") && addsIgnoredConstraint(action));
     }
 
     /**
