@@ -103,6 +103,28 @@ ORDER BY CASE WHEN :sort::text = 'title' THEN title END,
          id
 LIMIT :pageSize::int OFFSET :pageOffset::int;
 
+-- name: SearchTasks :many
+SELECT *
+FROM tasks
+WHERE project_id = :projectId
+  AND (:search::text IS NULL OR title ILIKE '%' || :search || '%')
+  AND (:statuses IS NULL OR status = ANY (:statuses))
+  AND (:assigneeId IS NULL OR assignee_id = :assigneeId)
+  AND (:maxPriority IS NULL OR priority <= :maxPriority)
+ORDER BY CASE WHEN :sort::text = 'title' THEN title END,
+         CASE WHEN :sort = 'priority' THEN priority END,
+         id
+LIMIT :pageSize OFFSET :pageOffset;
+
+-- name: CountSearchedTasks :one
+SELECT COUNT(*) AS total
+FROM tasks
+WHERE project_id = :projectId
+  AND (:search::text IS NULL OR title ILIKE '%' || :search || '%')
+  AND (:statuses IS NULL OR status = ANY (:statuses))
+  AND (:assigneeId IS NULL OR assignee_id = :assigneeId)
+  AND (:maxPriority IS NULL OR priority <= :maxPriority);
+
 -- name: ListVisibleProjects :many
 SELECT p.id,
        p.code,

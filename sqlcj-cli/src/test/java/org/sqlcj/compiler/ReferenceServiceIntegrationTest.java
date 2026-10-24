@@ -135,6 +135,9 @@ class ReferenceServiceIntegrationTest {
         "Join Test Empty"
     );
 
+    /** A page of the criteria search large enough to hold every match of its project. */
+    private static final Integer WHOLE_PAGE = 10;
+
     /** The files the three schema inputs generate, relative to {@code java.out}. */
     private static final Set<String> GENERATED_FILES = Set.of(
         "sqlcj-manifest.txt",
@@ -1779,6 +1782,263 @@ class ReferenceServiceIntegrationTest {
             .getClass()
             .getMethod(methodName, List.class)
             .invoke(repository, rows);
+    }
+
+    /**
+     * The generated repository executes the reference service's criteria search
+     * against the migrated database: {@code SearchTasks} with no criterion,
+     * with its title search, its status list, its assignee, and its priority
+     * bound each alone, and with several of them combined, in both of its sort
+     * orders and over one page, and {@code CountSearchedTasks}, which counts
+     * the matches of every criteria set, including while the search is paged.
+     *
+     * <p>The database is shared with the other tests of this class, so this one
+     * works inside its own organization, user, project, and tasks.
+     */
+    @Test
+    void shouldExecuteTheGeneratedCriteriaSearch() throws Exception {
+        Path generatedDirectory = tempDir.resolve("generated-search");
+
+        generate(List.of(migrations().toString()), generatedDirectory);
+
+        Path classesDirectory = compile(generatedDirectory, tempDir.resolve("classes-search"));
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Long organizationId = (Long) component(
+                invoke(repository, "createOrganization", "Search Test", "{}"),
+                "id"
+            );
+
+            Long assigneeId = (Long) component(
+                invoke(
+                    repository,
+                    "createUser",
+                    organizationId,
+                    "search@example.com",
+                    "Grace Hopper"
+                ),
+                "id"
+            );
+
+            Long projectId = (Long) component(
+                invoke(repository, "createProject", organizationId, "SEARCH", "Searches"),
+                "id"
+            );
+
+            Object open = enumConstant(classLoader, "TaskStatus", "OPEN");
+            Object doing = enumConstant(classLoader, "TaskStatus", "DOING");
+            Object blocked = enumConstant(classLoader, "TaskStatus", "BLOCKED");
+
+            Long alphaId = (Long) component(
+                createShapeTask(repository, projectId, "Alpha Report", (short) 1, open),
+                "id"
+            );
+
+            Long betaId = (Long) component(
+                createShapeTask(repository, projectId, "Beta REPORT", (short) 3, doing),
+                "id"
+            );
+
+            Long gammaId = (Long) component(
+                createShapeTask(repository, projectId, "Gamma Backlog", (short) 2, blocked),
+                "id"
+            );
+
+            Long deltaId = (Long) component(
+                createShapeTask(repository, projectId, "Delta Deploy", (short) 4, open),
+                "id"
+            );
+
+            assignNewTask(repository, assigneeId, alphaId);
+            assignNewTask(repository, assigneeId, deltaId);
+
+            assertEquals(
+                List.of(alphaId, betaId, gammaId, deltaId),
+                componentsOf(
+                    searchTasks(repository, projectId, null, null, null, null, null),
+                    "id"
+                ),
+                "no criterion reads every task of the project in id order"
+            );
+
+            assertEquals(
+                List.of("Alpha Report", "Beta REPORT"),
+                componentsOf(
+                    searchTasks(repository, projectId, "report", null, null, null, null),
+                    "title"
+                ),
+                "the title search matches its pattern in any case"
+            );
+
+            assertEquals(
+                List.of("Alpha Report", "Gamma Backlog", "Delta Deploy"),
+                componentsOf(
+                    searchTasks(
+                        repository,
+                        projectId,
+                        null,
+                        List.of(open, blocked),
+                        null,
+                        null,
+                        null
+                    ),
+                    "title"
+                ),
+                "the status list keeps the tasks of either of its statuses"
+            );
+
+            assertEquals(
+                List.of("Alpha Report", "Delta Deploy"),
+                componentsOf(
+                    searchTasks(repository, projectId, null, null, assigneeId, null, null),
+                    "title"
+                ),
+                "the assignee criterion keeps the tasks assigned to it"
+            );
+
+            assertEquals(
+                List.of("Alpha Report", "Gamma Backlog"),
+                componentsOf(
+                    searchTasks(repository, projectId, null, null, null, (short) 2, null),
+                    "title"
+                ),
+                "the priority bound keeps the tasks at or under it"
+            );
+
+            assertEquals(
+                List.of("Alpha Report"),
+                componentsOf(
+                    searchTasks(repository, projectId, "report", null, assigneeId, null, null),
+                    "title"
+                ),
+                "the title search and the assignee criterion narrow each other"
+            );
+
+            assertEquals(
+                List.of("Beta REPORT"),
+                componentsOf(
+                    searchTasks(
+                        repository,
+                        projectId,
+                        "report",
+                        List.of(doing, blocked),
+                        null,
+                        (short) 3,
+                        null
+                    ),
+                    "title"
+                ),
+                "the title search, the status list, and the priority bound narrow each other"
+            );
+
+            assertEquals(
+                List.of("Alpha Report", "Beta REPORT", "Delta Deploy", "Gamma Backlog"),
+                componentsOf(
+                    searchTasks(repository, projectId, null, null, null, null, "title"),
+                    "title"
+                ),
+                "the dynamic sort orders the search by title"
+            );
+
+            assertEquals(
+                List.of("Alpha Report", "Gamma Backlog", "Beta REPORT", "Delta Deploy"),
+                componentsOf(
+                    searchTasks(repository, projectId, null, null, null, null, "priority"),
+                    "title"
+                ),
+                "the same search orders by priority"
+            );
+
+            assertEquals(
+                List.of(betaId, gammaId),
+                componentsOf(
+                    (List<?>) invoke(
+                        repository,
+                        "searchTasks",
+                        projectId,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        2,
+                        1
+                    ),
+                    "id"
+                ),
+                "the page of the search skips its offset"
+            );
+
+            assertEquals(
+                4L,
+                component(
+                    invoke(repository, "countSearchedTasks", projectId, null, null, null, null),
+                    "total"
+                ),
+                "the count counts every match while the search reads one page"
+            );
+        }
+    }
+
+    /** Assigns one freshly created task of the criteria search's project. */
+    private void assignNewTask(Object repository, Long assigneeId, Long taskId) throws Exception {
+        assertEquals(
+            2,
+            component(
+                ((Optional<?>) invoke(repository, "assignTask", assigneeId, taskId, 1))
+                    .orElseThrow(),
+                "newVersion"
+            )
+        );
+    }
+
+    /**
+     * The tasks one criteria set of the generated search matches, unpaged and
+     * in the search's own order, asserting that the count query of the same
+     * criteria reports as many tasks as the search reads.
+     */
+    private List<?> searchTasks(
+        Object repository,
+        Long projectId,
+        String search,
+        List<?> statuses,
+        Long assigneeId,
+        Short maxPriority,
+        String sort
+    ) throws Exception {
+        List<?> matches = (List<?>) invoke(
+            repository,
+            "searchTasks",
+            projectId,
+            search,
+            statuses,
+            assigneeId,
+            maxPriority,
+            sort,
+            WHOLE_PAGE,
+            0
+        );
+
+        assertEquals(
+            (long) matches.size(),
+            component(
+                invoke(
+                    repository,
+                    "countSearchedTasks",
+                    projectId,
+                    search,
+                    statuses,
+                    assigneeId,
+                    maxPriority
+                ),
+                "total"
+            ),
+            "the count query reports as many tasks as the search reads"
+        );
+
+        return matches;
     }
 
     /**
