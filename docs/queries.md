@@ -1404,6 +1404,120 @@ WHERE id = :id;
 The generated method takes `(bio, id)`, because `:bio` occurs first, and binds
 `(bio, id)`.
 
+## Criteria Queries
+
+A **criteria query** filters its rows by criteria the caller may leave out: one
+query serves every combination of them, because a `null` argument switches its
+own criterion off. The query stays one static SQL text, so the statement the
+database receives is the statement the query file writes, differing from it only
+at its placeholders; sqlcj assembles no SQL at run time.
+
+Each criterion is one predicate guarded by a null test of its own parameter,
+which a `null` argument makes true:
+
+- an equality criterion is
+  `(:assigneeId IS NULL OR assignee_id = :assigneeId)`,
+- a list criterion is `(:statuses IS NULL OR status = ANY (:statuses))`, whose
+  guard tests the list itself, so a `null` list switches the criterion off
+  rather than matching no row, as a bare `= ANY` list does,
+- a range criterion is `(:maxPriority IS NULL OR priority <= :maxPriority)`; a
+  range with both ends is one guarded bound per end, so the caller may supply
+  either end, both, or neither,
+- a search criterion is
+  `(:search::text IS NULL OR title ILIKE '%' || :search || '%')`, whose cast is
+  the one cast such a query needs, because no clause types a placeholder inside
+  a computed pattern.
+
+The criteria are combined with `AND`, and a required filter, such as the owning
+project, is written unguarded beside them. A sort key, a page, and a matching
+count complete the shape:
+
+- The sort key is an `ORDER BY` placeholder cast once and read by a `CASE` per
+  accepted value, with a trailing column that gives a stable order, so a `null`
+  key leaves the rows in that order; see [Ordering](#ordering).
+- The page is a `LIMIT` and an `OFFSET` placeholder; see
+  [Pagination](#pagination).
+- The count repeats the same `WHERE` text in a query of its own, unsorted and
+  unpaged, so both queries take the criteria in one order and the caller passes
+  the same arguments to both.
+
+The reference service writes that shape over its tasks:
+
+```sql
+-- name: SearchTasks :many
+SELECT *
+FROM tasks
+WHERE project_id = :projectId
+  AND (:search::text IS NULL OR title ILIKE '%' || :search || '%')
+  AND (:statuses IS NULL OR status = ANY (:statuses))
+  AND (:assigneeId IS NULL OR assignee_id = :assigneeId)
+  AND (:maxPriority IS NULL OR priority <= :maxPriority)
+ORDER BY CASE WHEN :sort::text = 'title' THEN title END,
+         CASE WHEN :sort = 'priority' THEN priority END,
+         id
+LIMIT :pageSize OFFSET :pageOffset;
+
+-- name: CountSearchedTasks :one
+SELECT COUNT(*) AS total
+FROM tasks
+WHERE project_id = :projectId
+  AND (:search::text IS NULL OR title ILIKE '%' || :search || '%')
+  AND (:statuses IS NULL OR status = ANY (:statuses))
+  AND (:assigneeId IS NULL OR assignee_id = :assigneeId)
+  AND (:maxPriority IS NULL OR priority <= :maxPriority);
+```
+
+`tasks` declares `project_id bigint NOT NULL`, `title text NOT NULL`,
+`status task_status NOT NULL`, `priority smallint NOT NULL`, and a nullable
+`assignee_id bigint`, so the list, the equality, and the range criterion are
+typed by the columns they compare and the sort key by its own cast. One typed
+occurrence types the others, as [Parameters](#parameters) states, which is why
+no criterion repeats its cast and `:sort` is cast at its first `CASE` alone.
+The two queries therefore generate
+`searchTasks(Long projectId, String search, List<TaskStatus> statuses, Long
+assigneeId, Short maxPriority, String sort, Integer pageSize, Integer
+pageOffset)`, which returns `List<TasksRow>`, and
+`countSearchedTasks(Long projectId, String search, List<TaskStatus> statuses,
+Long assigneeId, Short maxPriority)`, which returns one
+`CountSearchedTasksResult(Long total)`.
+
+At the occurrence that neither a clause nor a cast types, sqlcj writes the
+parameter's own PostgreSQL type, so the search executes as `?::text`, the status
+list as `?::task_status[]`, the assignee as `?::int8`, and the priority bound as
+`?::int2`, while every occurrence a clause or a cast already types, the page's
+`LIMIT ? OFFSET ?` included, stays a bare `?`.
+
+### Query planning
+
+A criteria query is one statement whatever criteria it carries, so the database
+may plan it once and reuse that plan for another combination. What follows
+describes PostgreSQL 16 and pgjdbc 42.7.13 behavior rather than anything sqlcj
+guarantees: sqlcj sets no driver or session option.
+
+- pgjdbc prepares a statement on the server at its fifth execution on one
+  physical connection. That count is the `prepareThreshold` connection
+  property, whose default is `5`, and it counts executions of the same SQL
+  across `PreparedStatement` objects. A pooled connection therefore reaches the
+  threshold, while a connection opened for one operation does not.
+- PostgreSQL plans the first five executions of a server-prepared statement with
+  their values, as custom plans, and then uses a generic plan when it estimates
+  that plan no costlier.
+- A generic plan is planned without the values, so the generic plan of
+  `(?::int8 IS NULL OR assignee_id = ?)` cannot drop a switched-off criterion
+  and may therefore miss an index the custom plan of the same execution uses.
+  `EXPLAIN (GENERIC_PLAN)` shows the generic plan of a statement.
+- Which plan PostgreSQL chooses depends on the data: over 500,000 rows it kept
+  custom plans for every execution, because the generic plan costs more, while
+  over 50 rows it switched to the generic plan after five custom plans, and that
+  plan still scanned sequentially once the table had grown to 500,000 rows.
+- Two settings keep every execution planned anew, with its own values:
+  - `plan_cache_mode = force_custom_plan`, set for the application's
+    connections with pgjdbc's
+    `options=-c plan_cache_mode=force_custom_plan` connection property or with
+    `SET`, or set for a role or a database;
+  - `prepareThreshold=0`, which keeps every execution unnamed, so the server
+    never caches a plan for it.
+
 ## Generated Java
 
 Each configuration entry generates one final repository class in the configured
@@ -2804,6 +2918,28 @@ Parameters:
   `PostgresIntegrationTest.shouldReadAndFilterASubscriptedArrayElement` executes
   a cast subscript projection and a cast subscript filter against PostgreSQL 16
   as one `String` component and one `String` method parameter.
+
+Criteria queries:
+
+- `QueryAnalyzerTest.shouldTypeTheUncastOccurrenceOfAComputedSearchPattern`,
+  `QueryAnalyzerTest.shouldTypeAnUncastNullTestFromTheOccurrenceAfterIt`,
+  `QueryAnalyzerTest.shouldTypeAnUncastEnumOccurrenceFromItsComparedColumn`, and
+  `QueryAnalyzerTest.shouldTypeAnUncastListOccurrenceFromItsComparedColumn`,
+  which the parameters group above lists, cover the parameter and the executable
+  SQL of the guarded forms: `(?::text IS NULL OR name ILIKE '%' || ?::text ||
+  '%')`, `(?::varchar IS NULL OR name = ?)`,
+  `(?::stage_setting IS NULL OR setting = ?)`, and
+  `(?::int8[] IS NULL OR id = ANY(?))`.
+- `PostgresIntegrationTest.shouldExecuteGeneratedCriteriaFiltersTypedByAnotherOccurrenceAgainstPostgres`
+  executes a search criterion, an equality criterion, and a list criterion
+  against PostgreSQL 16, each with a `null` argument and with a value.
+- `ReferenceServiceIntegrationTest.shouldExecuteTheGeneratedCriteriaSearch`
+  executes the `SearchTasks` and `CountSearchedTasks` of this section against
+  PostgreSQL 16 through the generated repository, as the reference service group
+  below states.
+- No sqlcj test asserts a query plan: [Query planning](#query-planning)
+  describes PostgreSQL 16 and pgjdbc 42.7.13 behavior rather than generated or
+  runtime behavior of sqlcj.
 
 Generated Java:
 
