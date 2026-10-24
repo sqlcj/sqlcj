@@ -2508,18 +2508,25 @@ public final class QueryAnalyzer {
 
     /**
      * Requires the annotation that matches the write shape: a write without
-     * {@code RETURNING} reports an affected-row count, and a returning write
-     * produces rows like a read.
+     * {@code RETURNING} reports an affected-row count, once or once per batched
+     * row, and a returning write produces rows like a read.
      */
     private void requireWriteQueryType(Query query, ReturningClause returningClause) {
         if (returningClause == null) {
-            if (query.type() != QueryType.EXEC) {
+            if (query.type() != QueryType.EXEC && query.type() != QueryType.BATCH_EXEC) {
                 throw new UnsupportedOperationException(
-                    "Write queries without RETURNING must be declared as :exec"
+                    "Write queries without RETURNING must be declared as :exec or :batchexec"
                 );
             }
 
             return;
+        }
+
+        if (query.type() == QueryType.BATCH_EXEC) {
+            throw new UnsupportedOperationException(
+                "Write queries declared as :batchexec cannot use RETURNING, because a batch returns"
+                    + " no rows; remove RETURNING or declare the query as :one, :optional, or :many"
+            );
         }
 
         if (!producesResult(query)) {
