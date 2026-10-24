@@ -2895,6 +2895,15 @@ Reference service:
   the version its first row already advanced and so reports 0 between two rows
   reporting 1, leaving both tasks moved at version 2, against PostgreSQL 16
   through the generated repository.
+- `ReferenceServiceIntegrationTest.shouldExecuteTheGeneratedCriteriaSearch`
+  executes the reference service's `SearchTasks` with no criterion, which reads
+  every task of its project in id order, with its title search, which matches
+  its pattern in any case, its status list, its assignee, and its priority
+  bound each bound alone, and with several of them combined, in both of its
+  sort orders and over one page, which skips its offset, and its
+  `CountSearchedTasks`, which counts the matches of every one of those criteria
+  sets, including while the search reads one page, against PostgreSQL 16
+  through the generated repository.
 - `ReferenceServiceIntegrationTest.shouldRejectEachUnsupportedCatalogueQuery`
   covers the whole located diagnostic line, and the absence of generated
   output, of every entry of the reference service's unsupported query
