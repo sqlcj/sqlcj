@@ -1591,6 +1591,143 @@ class DefaultSchemaParserTest {
     }
 
     /**
+     * The undo section of a MyBatis Migrations script, which MyBatis reads no
+     * part of, states nothing, so the {@code DROP TABLE} that undoes the
+     * migration leaves the created table in the schema.
+     */
+    @Test
+    void shouldEndASchemaSourceAtTheMyBatisUndoMarker() {
+        Schema schema = parser.parse("""
+            CREATE TABLE shelves (
+                shelf_id BIGINT NOT NULL
+            );
+
+            -- //@UNDO
+
+            DROP TABLE shelves;
+            """);
+
+        assertEquals(List.of("shelves"), tableNames(schema));
+
+        assertEquals(
+            List.of(new Column("shelf_id", ColumnType.BIGINT, false)),
+            table(schema, "shelves").columns()
+        );
+    }
+
+    /**
+     * Each line MyBatis Migrations reads as its undo marker ends the schema
+     * source, by MyBatis's own rule: a comment opened by {@code --} or
+     * {@code //}, then {@code //}, then {@code @UNDO}, with spaces and tabs
+     * between the parts and any text after them.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "-- //@UNDO",
+            "--//@UNDO",
+            "-- // @UNDO",
+            "-- //  @UNDO",
+            "\t-- //@UNDO undo the migration",
+            "// //@UNDO",
+            "-- //@UNDOING"
+        }
+    )
+    void shouldEndASchemaSourceAtEachLineMyBatisReadsAsItsUndoMarker(String marker) {
+        Schema schema = parser.parse(
+            """
+                CREATE TABLE shelves (shelf_id BIGINT NOT NULL);
+                %s
+                DROP TABLE shelves;
+                """
+                .formatted(marker)
+        );
+
+        assertEquals(List.of("shelves"), tableNames(schema));
+    }
+
+    /**
+     * A line MyBatis Migrations does not read as its undo marker is an ordinary
+     * SQL comment, so the statements after it are applied.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "-- //@undo",
+            "-- @UNDO",
+            "--- //@UNDO",
+            "-- / /@UNDO",
+            "/* -- //@UNDO */"
+        }
+    )
+    void shouldApplyTheStatementsAfterALineThatIsNotTheUndoMarker(String line) {
+        Schema schema = parser.parse(
+            """
+                CREATE TABLE shelves (shelf_id BIGINT NOT NULL);
+                %s
+                DROP TABLE shelves;
+                """
+                .formatted(line)
+        );
+
+        assertEquals(List.of(), tableNames(schema));
+    }
+
+    /**
+     * The undo marker is found on a line ended by {@code \r\n} as well, because
+     * the line breaks are the ones the splitter counts.
+     */
+    @Test
+    void shouldEndACarriageReturnSchemaSourceAtTheUndoMarker() {
+        Schema schema = parser.parse(
+            "CREATE TABLE shelves (shelf_id BIGINT NOT NULL);\r\n"
+                + "-- //@UNDO\r\n"
+                + "DROP TABLE shelves;\r\n"
+        );
+
+        assertEquals(List.of("shelves"), tableNames(schema));
+    }
+
+    /**
+     * A statement sqlcj cannot read is not reported when it stands in the undo
+     * section, because no part of that section is read.
+     */
+    @Test
+    void shouldNotRejectAnUnreadableStatementAfterTheUndoMarker() {
+        Schema schema = parser.parse("""
+            CREATE TABLE shelves (shelf_id BIGINT NOT NULL);
+            -- //@UNDO
+            ALTER FOREIGN TABLE shelves ADD COLUMN label TEXT;
+            """);
+
+        assertEquals(List.of("shelves"), tableNames(schema));
+    }
+
+    /**
+     * A statement sqlcj cannot read before the undo marker is still rejected at
+     * its own line, because ending the source keeps every earlier position.
+     */
+    @Test
+    void shouldRejectAnUnreadableStatementBeforeTheUndoMarkerAtItsOwnLine() {
+        String sql = """
+            CREATE TABLE shelves (shelf_id BIGINT NOT NULL);
+            ALTER FOREIGN TABLE shelves ADD COLUMN label TEXT;
+            -- //@UNDO
+            DROP TABLE shelves;
+            """;
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> parser.parse(sql)
+        );
+
+        assertEquals(
+            "Unsupported schema statement: ALTER FOREIGN TABLE at line 2",
+            exception.getMessage()
+        );
+    }
+
+    /**
      * A tagged dollar-quoted body that is never closed fails the schema source
      * at the delimiter that opened it, because everything after it would belong
      * to that body.

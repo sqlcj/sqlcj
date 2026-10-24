@@ -24,6 +24,10 @@ import java.util.regex.Pattern;
  * delimiter such as {@code $body$} is lexed as an ordinary word instead, so a
  * tagged body is kept whole here by pairing its delimiters, as PostgreSQL pairs
  * them.
+ *
+ * <p>Two line-based rules decide which text of the source is SQL at all, and
+ * both run before lexing: a psql meta-command line is blanked, and the first
+ * line MyBatis Migrations reads as its undo marker ends the source.
  */
 final class SchemaSourceSplitter {
 
@@ -32,6 +36,14 @@ final class SchemaSourceSplitter {
      * manager may glue to the text that follows it.
      */
     private static final Pattern DOLLAR_QUOTE_TAG = Pattern.compile("\\$[A-Za-z_][A-Za-z0-9_]*\\$");
+
+    /**
+     * The beginning of a line MyBatis Migrations reads as the undo marker of a
+     * migration script: a comment opened by {@code --} or {@code //}, then
+     * {@code //}, then {@code @UNDO}, with spaces and tabs allowed between the
+     * parts and any text allowed after them.
+     */
+    private static final Pattern UNDO_MARKER = Pattern.compile("[ \t]*(?:--|//)[ \t]*//[ \t]*@UNDO");
 
     private SchemaSourceSplitter() {
     }
@@ -49,14 +61,17 @@ final class SchemaSourceSplitter {
      * before it states no statement, and text after the last separator is one
      * statement of its own, which the parser then rejects as PostgreSQL does.
      *
+     * <p>The source ends at the first line MyBatis Migrations reads as its undo
+     * marker, so an undo section MyBatis skips states no statement here either.
+     *
      * <p>A psql meta-command line, such as the {@code \restrict} lines recent
      * {@code pg_dump} releases write, is blanked before lexing, because its
      * first character is a lexical error. Blanking keeps every later line and
-     * column, so a reported position is always a position in the source as the
-     * user wrote it.
+     * column, and ending the source keeps every earlier one, so a reported
+     * position is always a position in the source as the user wrote it.
      */
     static List<SourceStatement> split(String source) {
-        String lexable = blankMetaCommandLines(source);
+        String lexable = blankMetaCommandLines(endAtUndoMarker(source));
         int[] lineStarts = lineStarts(lexable);
 
         List<SourceStatement> statements = new ArrayList<>();
@@ -207,6 +222,41 @@ final class SchemaSourceSplitter {
         }
 
         return closing + tag.length();
+    }
+
+    /**
+     * The source up to the first line MyBatis Migrations reads as its undo
+     * marker, or the whole source when it has none. MyBatis reads a migration
+     * script only as far as that line, so everything from it on, the undo
+     * section of the script, states nothing here.
+     *
+     * <p>The rule is MyBatis's own: it is decided line by line, before lexing,
+     * counting {@code \n}, {@code \r\n}, and {@code \r} as one line break, as
+     * the rest of the splitter counts them.
+     */
+    private static String endAtUndoMarker(String source) {
+        Matcher matcher = UNDO_MARKER.matcher(source);
+        int lineStart = 0;
+
+        for (int i = 0; i <= source.length(); i++) {
+            if (i == source.length() || source.charAt(i) == '\n' || source.charAt(i) == '\r') {
+                if (matcher.region(lineStart, i).lookingAt()) {
+                    return source.substring(0, lineStart);
+                }
+
+                if (
+                    i + 1 < source.length()
+                        && source.charAt(i) == '\r'
+                        && source.charAt(i + 1) == '\n'
+                ) {
+                    i++;
+                }
+
+                lineStart = i + 1;
+            }
+        }
+
+        return source;
     }
 
     /**
