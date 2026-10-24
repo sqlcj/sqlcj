@@ -135,7 +135,12 @@ A directory is ordered like a Flyway migration directory:
 
 The order never depends on how the filesystem lists the directory. sqlcj only
 reads the files, so a Flyway placeholder, a configured file-name prefix, and a
-repeatable migration have no meaning of their own.
+repeatable migration have no meaning of their own. One line does: a line MyBatis
+Migrations reads as its undo marker, such as `-- //@UNDO`, ends what sqlcj reads
+of a schema file, by MyBatis's own rule that the line's first non-blank
+characters are `--` or `//`, followed by `//` and then the case-sensitive
+`@UNDO`, with spaces or tabs allowed between those parts and any text allowed
+after them, so the undo section MyBatis skips is never applied.
 
 The statements of the files are applied in that order to one schema model, so a
 later migration alters the tables an earlier file created and a schema failure

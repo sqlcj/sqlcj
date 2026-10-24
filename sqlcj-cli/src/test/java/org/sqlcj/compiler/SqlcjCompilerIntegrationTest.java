@@ -4092,6 +4092,106 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
+     * A MyBatis Migrations {@code scripts} directory describes the schema its
+     * migrations leave, because the undo section of each script, which MyBatis
+     * never applies, ends what sqlcj reads of it. So the directory and the
+     * snapshot of those tables generate the same repository source.
+     */
+    @Test
+    void shouldGenerateTheSameRepositoryFromAMyBatisScriptsDirectoryAndASnapshot()
+        throws IOException {
+        Path scripts = Files.createDirectories(tempDir.resolve("scripts"));
+
+        Files.writeString(
+            scripts.resolve("bootstrap.sql"),
+            """
+                -- // Bootstrap
+                -- Run before any migration.
+                -- //@UNDO
+                -- // Bootstrap undo
+                """
+        );
+
+        Files.writeString(
+            scripts.resolve("20261024120000_create_shelves.sql"),
+            """
+                -- // create shelves
+                CREATE TABLE shelves
+                (
+                    shelf_id BIGINT NOT NULL,
+                    code     VARCHAR(32) NOT NULL
+                );
+                -- //@UNDO
+                -- // create shelves
+                DROP TABLE shelves;
+                """
+        );
+
+        Files.writeString(
+            scripts.resolve("20261024120500_add_shelf_label.sql"),
+            """
+                -- // add shelf label
+                ALTER TABLE shelves ADD COLUMN label VARCHAR(255);
+                -- //@UNDO
+                -- // add shelf label
+                ALTER TABLE shelves DROP COLUMN label;
+                """
+        );
+
+        Path snapshotFile = tempDir.resolve("schema.sql");
+
+        Files.writeString(
+            snapshotFile,
+            """
+                CREATE TABLE shelves
+                (
+                    shelf_id BIGINT NOT NULL,
+                    code     VARCHAR(32) NOT NULL,
+                    label    VARCHAR(255)
+                );
+                """
+        );
+
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: ListShelves :many
+                SELECT *
+                FROM shelves;
+
+                -- name: FindShelfByCode :optional
+                SELECT shelf_id, label
+                FROM shelves
+                WHERE code = $1;
+                """
+        );
+
+        Path fromDirectory = generateUsersRepository(
+            List.of(scripts.toString()),
+            queriesFile,
+            tempDir.resolve("generated-directory")
+        );
+
+        Path fromSnapshot = generateUsersRepository(
+            List.of(snapshotFile.toString()),
+            queriesFile,
+            tempDir.resolve("generated-snapshot")
+        );
+
+        assertArrayEquals(
+            Files.readAllBytes(fromSnapshot),
+            Files.readAllBytes(fromDirectory)
+        );
+
+        assertCompiles(
+            tempDir.resolve("generated-directory"),
+            tempDir.resolve("classes")
+        );
+    }
+
+    /**
      * A migration that alters a table no earlier migration created names the
      * file that refers to it.
      */
