@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The schema of formatted/, as a Liquibase XML changelog. offline-update.sql
+    is the SQL Liquibase 5.0.4 writes for it, committed as written. To write it
+    again, run this in a fresh directory that holds only this file and that the
+    image's user can write to:
+
+    docker run -v "$PWD":/liquibase/changelog -w /liquibase/changelog \
+        -e LIQUIBASE_COMMAND_CHANGELOG_FILE=changelog.xml \
+        -e 'LIQUIBASE_COMMAND_URL=offline:postgresql?outputLiquibaseSql=all' \
+        -e LIQUIBASE_OUTPUT_FILE=offline-update.sql \
+        liquibase/liquibase:5.0.4 update-sql
+-->
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <changeSet id="1" author="sqlcj">
+        <sql>CREATE TYPE book_format AS ENUM ('hardcover', 'paperback', 'ebook')</sql>
+        <rollback>DROP TYPE book_format</rollback>
+    </changeSet>
+
+    <changeSet id="2" author="sqlcj">
+        <createTable tableName="authors">
+            <column name="id" type="BIGINT" autoIncrement="true">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="name" type="VARCHAR(200)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="born" type="DATE"/>
+        </createTable>
+    </changeSet>
+
+    <changeSet id="3" author="sqlcj">
+        <createTable tableName="books">
+            <column name="id" type="BIGINT" autoIncrement="true">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="author_id" type="BIGINT">
+                <constraints nullable="false" foreignKeyName="fk_books_author" references="authors(id)"/>
+            </column>
+            <column name="title" type="TEXT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="format" type="book_format" defaultValue="paperback">
+                <constraints nullable="false"/>
+            </column>
+            <column name="price" type="NUMERIC(10, 2)"/>
+            <column name="published_at" type="TIMESTAMP WITH TIME ZONE"/>
+        </createTable>
+        <createIndex tableName="books" indexName="ix_books_author">
+            <column name="author_id"/>
+        </createIndex>
+    </changeSet>
+
+    <changeSet id="4" author="sqlcj">
+        <addColumn tableName="books">
+            <column name="isbn" type="VARCHAR(17)"/>
+        </addColumn>
+        <addUniqueConstraint tableName="books" columnNames="isbn" constraintName="uq_books_isbn"/>
+        <renameColumn tableName="authors" oldColumnName="name" newColumnName="full_name"/>
+        <dropColumn tableName="authors" columnName="born"/>
+    </changeSet>
+
+    <changeSet id="5" author="sqlcj">
+        <createProcedure>
+CREATE FUNCTION normalize_isbn(raw TEXT) RETURNS TEXT AS $body$
+BEGIN
+    RETURN replace(raw, '-', '');
+END;
+$body$ LANGUAGE plpgsql IMMUTABLE;
+        </createProcedure>
+        <rollback>DROP FUNCTION normalize_isbn(TEXT)</rollback>
+    </changeSet>
+</databaseChangeLog>
