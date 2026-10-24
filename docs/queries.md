@@ -2807,6 +2807,14 @@ Reference service:
   `inet` address, and its `SetRetentionPeriod` and `GetRetentionPeriod`, which
   write and read an interval of months, days, and a time part and then clear
   it to `null`, against PostgreSQL 16 through the generated repository.
+- `ReferenceServiceIntegrationTest.shouldExecuteTheGeneratedBatchWrites`
+  executes the reference service's `RecordAuditEntries`, whose two rows are
+  inserted into the partitioned `audit_log` and read back through
+  `ListAudit2026` with their `JSONB` detail, their `uuid` request id, and the
+  `null` actor of the second row, and its `MoveTasks`, whose middle row repeats
+  the version its first row already advanced and so reports 0 between two rows
+  reporting 1, leaving both tasks moved at version 2, against PostgreSQL 16
+  through the generated repository.
 - `ReferenceServiceIntegrationTest.shouldRejectEachUnsupportedCatalogueQuery`
   covers the whole located diagnostic line, and the absence of generated
   output, of every entry of the reference service's unsupported query

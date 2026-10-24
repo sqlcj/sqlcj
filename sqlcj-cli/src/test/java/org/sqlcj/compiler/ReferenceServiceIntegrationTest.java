@@ -424,7 +424,10 @@ class ReferenceServiceIntegrationTest {
                 )
             );
 
-            List<?> audit = (List<?>) invoke(repository, "listAudit2026");
+            List<?> audit = auditEntriesOf(
+                (List<?>) invoke(repository, "listAudit2026"),
+                List.of(requestId)
+            );
 
             assertEquals(1, audit.size());
 
@@ -1559,6 +1562,223 @@ class ReferenceServiceIntegrationTest {
     private Object retentionPeriod(Object repository, Long organizationId) throws Exception {
         return ((Optional<?>) invoke(repository, "getRetentionPeriod", organizationId))
             .orElseThrow();
+    }
+
+    /**
+     * The generated repository executes the reference service's batch writes
+     * against the migrated database: {@code RecordAuditEntries}, whose rows are
+     * inserted into the partitioned audit log and read back with their
+     * {@code JSONB} detail, their request id, and the {@code null} actor of the
+     * second row, and {@code MoveTasks}, whose second row repeats the version
+     * its first row already advanced and reports 0 between two rows reporting 1.
+     *
+     * <p>The database is shared with the other tests of this class, so this one
+     * works inside its own organization, user, project, and tasks, and keeps
+     * only the audit entries its own request ids name.
+     */
+    @Test
+    void shouldExecuteTheGeneratedBatchWrites() throws Exception {
+        Path generatedDirectory = tempDir.resolve("generated-batches");
+
+        generate(List.of(migrations().toString()), generatedDirectory);
+
+        Path classesDirectory = compile(generatedDirectory, tempDir.resolve("classes-batches"));
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Long organizationId = (Long) component(
+                invoke(repository, "createOrganization", "Batch Test", "{}"),
+                "id"
+            );
+
+            Long actorId = (Long) component(
+                invoke(
+                    repository,
+                    "createUser",
+                    organizationId,
+                    "batch@example.com",
+                    "Katherine Johnson"
+                ),
+                "id"
+            );
+
+            Long projectId = (Long) component(
+                invoke(repository, "createProject", organizationId, "BATCH", "Batches"),
+                "id"
+            );
+
+            Object open = enumConstant(classLoader, "TaskStatus", "OPEN");
+            Object doing = enumConstant(classLoader, "TaskStatus", "DOING");
+            Object blocked = enumConstant(classLoader, "TaskStatus", "BLOCKED");
+
+            Long firstTaskId = (Long) component(
+                createShapeTask(repository, projectId, "Batch Alpha", (short) 1, open),
+                "id"
+            );
+
+            Long secondTaskId = (Long) component(
+                createShapeTask(repository, projectId, "Batch Beta", (short) 2, open),
+                "id"
+            );
+
+            UUID firstRequestId = UUID.randomUUID();
+            UUID secondRequestId = UUID.randomUUID();
+
+            OffsetDateTime occurredAt = OffsetDateTime.of(
+                2026,
+                7,
+                1,
+                8,
+                0,
+                0,
+                0,
+                ZoneOffset.UTC
+            );
+
+            Class<?> auditParams = paramsType(repository, "RecordAuditEntriesParams");
+
+            assertArrayEquals(
+                new int[] { 1, 1 },
+                batch(
+                    repository,
+                    "recordAuditEntries",
+                    List.of(
+                        params(
+                            auditParams,
+                            occurredAt,
+                            actorId,
+                            "task.moved",
+                            "{\"to\": \"doing\"}",
+                            firstRequestId
+                        ),
+                        params(
+                            auditParams,
+                            occurredAt.plusMinutes(1),
+                            null,
+                            "task.blocked",
+                            "{\"to\": \"blocked\"}",
+                            secondRequestId
+                        )
+                    )
+                ),
+                "the batch insert reports one written row per entry"
+            );
+
+            List<?> audit = auditEntriesOf(
+                (List<?>) invoke(repository, "listAudit2026"),
+                List.of(firstRequestId, secondRequestId)
+            );
+
+            assertEquals(2, audit.size());
+
+            assertEquals(
+                List.of("task.moved", "task.blocked"),
+                componentsOf(audit, "action"),
+                "the batch wrote its entries in the order of its rows"
+            );
+
+            assertEquals(
+                Arrays.asList(actorId, null),
+                componentsOf(audit, "actorId"),
+                "the batch binds the null actor of its second row"
+            );
+
+            assertEquals(
+                List.of("{\"to\": \"doing\"}", "{\"to\": \"blocked\"}"),
+                componentsOf(audit, "detail"),
+                "the partitioned insert reads back each JSONB detail"
+            );
+
+            assertEquals(
+                List.of(firstRequestId, secondRequestId),
+                componentsOf(audit, "requestId")
+            );
+
+            Class<?> moveParams = paramsType(repository, "MoveTasksParams");
+
+            assertArrayEquals(
+                new int[] { 1, 0, 1 },
+                batch(
+                    repository,
+                    "moveTasks",
+                    List.of(
+                        params(moveParams, doing, firstTaskId, 1),
+                        params(moveParams, blocked, firstTaskId, 1),
+                        params(moveParams, doing, secondTaskId, 1)
+                    )
+                ),
+                "the row repeating the version its first row advanced reports 0"
+            );
+
+            List<?> doingTasks = (List<?>) invoke(
+                repository,
+                "listProjectTasks",
+                projectId,
+                List.of(doing),
+                10
+            );
+
+            assertEquals(
+                List.of(firstTaskId, secondTaskId),
+                componentsOf(doingTasks, "id"),
+                "the batch update moved both tasks"
+            );
+
+            assertEquals(
+                List.of(2, 2),
+                componentsOf(doingTasks, "version"),
+                "each moved task advanced its version once"
+            );
+
+            assertEquals(
+                List.of(),
+                invoke(repository, "listProjectTasks", projectId, List.of(blocked), 10),
+                "the stale row of the batch moved no task"
+            );
+        }
+    }
+
+    /** The entries of one audit read whose request id is one of its own. */
+    private List<?> auditEntriesOf(List<?> rows, List<UUID> requestIds) throws Exception {
+        List<Object> entries = new ArrayList<>();
+
+        for (Object row : rows) {
+            if (requestIds.contains(component(row, "requestId"))) {
+                entries.add(row);
+            }
+        }
+
+        return entries;
+    }
+
+    /** The nested parameter record of one generated batch method. */
+    private Class<?> paramsType(Object repository, String typeName) throws Exception {
+        return Class.forName(
+            repository.getClass().getName() + "$" + typeName,
+            true,
+            repository.getClass().getClassLoader()
+        );
+    }
+
+    /**
+     * One row of a generated batch, built through the canonical constructor of
+     * its parameter record.
+     */
+    private Object params(Class<?> paramsType, Object... values) throws Exception {
+        Class<?>[] componentTypes = Arrays.stream(paramsType.getRecordComponents())
+            .<Class<?>>map(RecordComponent::getType)
+            .toArray(Class<?>[]::new);
+
+        return paramsType.getConstructor(componentTypes).newInstance(values);
+    }
+
+    /** Runs one generated batch method over the rows of one list. */
+    private int[] batch(Object repository, String methodName, List<?> rows) throws Exception {
+        return (int[]) repository
+            .getClass()
+            .getMethod(methodName, List.class)
+            .invoke(repository, rows);
     }
 
     /**
