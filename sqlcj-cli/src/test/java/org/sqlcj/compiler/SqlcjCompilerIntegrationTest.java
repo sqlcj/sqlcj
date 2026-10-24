@@ -4098,8 +4098,11 @@ class SqlcjCompilerIntegrationTest {
     /**
      * A MyBatis Migrations {@code scripts} directory describes the schema its
      * migrations leave, because the undo section of each script, which MyBatis
-     * never applies, ends what sqlcj reads of it. So the directory and the
-     * snapshot of those tables generate the same repository source.
+     * never applies, ends what sqlcj reads of it, and because the changelog
+     * script {@code migrate init} writes states nothing: its table is named by
+     * a variable alone, so MyBatis's own bookkeeping stays invisible. So the
+     * directory and the snapshot of those tables generate the same repository
+     * source.
      */
     @Test
     void shouldGenerateTheSameRepositoryFromAMyBatisScriptsDirectoryAndASnapshot()
@@ -4113,6 +4116,36 @@ class SqlcjCompilerIntegrationTest {
                 -- Run before any migration.
                 -- //@UNDO
                 -- // Bootstrap undo
+                """
+        );
+
+        Files.writeString(
+            scripts.resolve("20261024115500_create_changelog.sql"),
+            """
+                -- // Create Changelog
+
+                -- Default DDL for changelog table that will keep
+                -- a record of the migrations that have been run.
+
+                -- You can modify this to suit your database before
+                -- running your first migration.
+
+                -- Be sure that ID and DESCRIPTION fields exist in
+                -- BigInteger and String compatible fields respectively.
+
+                CREATE TABLE ${changelog} (
+                ID NUMERIC(20,0) NOT NULL,
+                APPLIED_AT VARCHAR(25) NOT NULL,
+                DESCRIPTION VARCHAR(255) NOT NULL
+                );
+
+                ALTER TABLE ${changelog}
+                ADD CONSTRAINT PK_${changelog}
+                PRIMARY KEY (id);
+
+                -- //@UNDO
+
+                DROP TABLE ${changelog};
                 """
         );
 

@@ -1728,6 +1728,82 @@ class DefaultSchemaParserTest {
     }
 
     /**
+     * The changelog script MyBatis Migrations' {@code migrate init} writes
+     * states nothing about the schema, so it leaves the tables it is applied to
+     * untouched: its table is named by a variable alone, so the
+     * {@code CREATE TABLE} that creates it and the {@code ALTER TABLE} that
+     * adds its primary key are both ignored, and the {@code DROP TABLE} that
+     * undoes them stands in the undo section, which is never read.
+     */
+    @Test
+    void shouldApplyNothingOfTheMyBatisChangelogScript() {
+        Schema schema = parser.parse(BASE_SCHEMA);
+
+        assertEquals(
+            schema,
+            parser.parse(schema, """
+                -- // Create Changelog
+
+                -- Default DDL for changelog table that will keep
+                -- a record of the migrations that have been run.
+
+                -- You can modify this to suit your database before
+                -- running your first migration.
+
+                -- Be sure that ID and DESCRIPTION fields exist in
+                -- BigInteger and String compatible fields respectively.
+
+                CREATE TABLE ${changelog} (
+                ID NUMERIC(20,0) NOT NULL,
+                APPLIED_AT VARCHAR(25) NOT NULL,
+                DESCRIPTION VARCHAR(255) NOT NULL
+                );
+
+                ALTER TABLE ${changelog}
+                ADD CONSTRAINT PK_${changelog}
+                PRIMARY KEY (id);
+
+                -- //@UNDO
+
+                DROP TABLE ${changelog};
+                """)
+        );
+    }
+
+    /**
+     * Every other statement that names a variable keeps the behavior it has
+     * today, because the rule covers the changelog script's two statements
+     * alone: an added column, an added column written beside an added
+     * constraint, a variable schema, a variable in part of the name, and a
+     * {@code DROP TABLE} are each still rejected, naming the table or the
+     * token the parser could not read.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "ALTER TABLE ${changelog} ADD COLUMN note TEXT; "
+                + "| java.lang.IllegalArgumentException",
+            "ALTER TABLE ${changelog} ADD CONSTRAINT pk PRIMARY KEY (id), ADD COLUMN note TEXT; "
+                + "| java.lang.IllegalArgumentException",
+            "CREATE TABLE ${schema}.audit (id INT); "
+                + "| org.sqlcj.schema.parser.SchemaParseException",
+            "CREATE TABLE audit_${suffix} (id INT); "
+                + "| org.sqlcj.schema.parser.SchemaParseException",
+            "DROP TABLE ${changelog}; "
+                + "| org.sqlcj.schema.parser.SchemaParseException"
+        }
+    )
+    void shouldRejectEveryOtherStatementThatNamesAVariable(
+        String statement,
+        Class<? extends Throwable> expectedFailure
+    ) {
+        Schema schema = parser.parse(BASE_SCHEMA);
+
+        assertThrows(expectedFailure, () -> parser.parse(schema, statement));
+    }
+
+    /**
      * A tagged dollar-quoted body that is never closed fails the schema source
      * at the delimiter that opened it, because everything after it would belong
      * to that body.
