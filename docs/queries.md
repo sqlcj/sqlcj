@@ -326,8 +326,9 @@ configuration entry.
 - An unqualified column must be found in exactly one source; an ambiguous or
   unknown column is rejected.
 - A result expression that is not a direct column, a wildcard, one of the
-  aggregates below, or the cast projection below — such as another function
-  call, an arithmetic expression, or a literal — is rejected as
+  aggregates below, the cast projection below, or the `EXISTS` projection
+  below — such as another function call, an arithmetic expression, or a
+  literal — is rejected as
   `Cannot infer the type of <expression> in SELECT; state it with a cast and an
   alias, such as SUM(amount)::numeric AS total`, naming the expression as the
   query writes it, on one line.
@@ -452,6 +453,54 @@ WHERE author_id = $1;
   named one keeps its name. It binds before a `WHERE` placeholder written after
   it, and a named one is also the first logical parameter. An uncast
   placeholder in a projection is still rejected.
+
+A read may also project an existence check with an aliased `EXISTS`, which
+needs no cast:
+
+```sql
+-- name: ListUserOrderFlags :many
+SELECT u.id,
+       EXISTS (
+           SELECT 1
+           FROM orders o
+           WHERE o.user_id = u.id AND o.total = :total
+       ) AS ordered
+FROM users u
+WHERE u.name = :name;
+```
+
+- The result column is a non-null `BOOLEAN`, because PostgreSQL defines
+  `EXISTS` as `true` or `false` and never `NULL`, so no cast states its type
+  and no other projection item's nullability changes.
+- The alias is required and may be written with or without `AS`, so
+  `EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id) ordered` is
+  equivalent. An `EXISTS` projection without an alias is rejected with
+  `An EXISTS projection requires a result alias, such as EXISTS (SELECT 1 FROM
+  ...) AS present.` As an aggregate's and a cast's alias is, it is required
+  only where the projection names the result columns, so a branch of a set
+  operation other than the leftmost and a position a column list on a `WITH`
+  name renames may write an `EXISTS` without one.
+- The subquery is analyzed exactly as the subquery of an `EXISTS` predicate is,
+  as the level inside the level the projection stands in: its own `SELECT` list
+  states no result column of the query, its references resolve through its own
+  level and then each enclosing one, so it may correlate with the outer
+  sources, and a placeholder of its analyzed clauses is one parameter of the
+  query. Every rule [Predicates](#predicates) states for that subquery holds
+  here, the `FROM` it may omit included.
+- A placeholder inside the subquery binds in the textual order the query writes
+  it in, as every placeholder does, so `:total` above is the first parameter
+  and the outer `:name` the second.
+- An `EXISTS` projection stands in its own position, so it may be the only item
+  of a `SELECT` without `FROM`, as in
+  `SELECT EXISTS (SELECT 1 FROM users WHERE name = :name) AS present`, which
+  names no table and no shared row, and it may stand beside direct columns,
+  wildcards, aggregates, casts, and another `EXISTS`.
+- Only an `EXISTS` whose operand is the subquery itself is this projection.
+  `NOT EXISTS (SELECT 1 FROM users) AS missing`, which the parser reports as a
+  `NOT` of the `EXISTS`, and
+  `EXISTS (SELECT 1 FROM users)::boolean AS present`, which it reports as an
+  `EXISTS` of a cast, are each still rejected as a computed projection, naming
+  the item as the query writes it.
 
 ### Predicates
 
@@ -1821,20 +1870,27 @@ query name, and its header line.
   column, or which is written with `MINUS`, each with the diagnostic
   [Set operations](#set-operations) states.
 - A result expression that is not a direct column, a wildcard, an aliased
-  `COUNT`, `MIN`, `MAX`, `SUM`, or `AVG` of one argument, or an aliased cast,
-  including another function call and a literal. An aggregate without an
-  alias, a cast projection without an alias, a cast projection whose type
-  sqlcj does not map, and a `MIN`, `MAX`, `SUM`, or `AVG` of a column whose
-  type sqlcj does not map each fail with their own diagnostic, while
+  `COUNT`, `MIN`, `MAX`, `SUM`, or `AVG` of one argument, an aliased cast, or
+  an aliased `EXISTS` of a subquery, including another function call and a
+  literal. An aggregate without an alias, a cast projection without an alias,
+  an `EXISTS` projection without an alias, a cast projection whose type sqlcj
+  does not map, and a `MIN`, `MAX`, `SUM`, or `AVG` of a column whose type
+  sqlcj does not map each fail with their own diagnostic, while
   `COUNT(DISTINCT *)`, `COUNT(ALL *)`, `pg_catalog.count(*)`,
   `pg_catalog.max(id)`, `MAX(id, name)`, `MIN(labels[1])`, `MAX(active)`,
   `MIN(external_id)`, `SUM(bio)`, `SUM(labels)`, `lower(name) AS n`,
-  `name || 'x' AS n`, and the `FILTER` and `OVER` forms are rejected as
+  `name || 'x' AS n`, `NOT EXISTS (SELECT 1 FROM users) AS missing`,
+  `EXISTS (SELECT 1 FROM users)::boolean AS present`, and the `FILTER` and
+  `OVER` forms are rejected as
   `Cannot infer the type of COUNT(*) OVER () in SELECT; state it with a cast
   and an alias, such as SUM(amount)::numeric AS total`. A branch of a set
   operation other than the leftmost names no result column, and a position a
-  column list on a `WITH` name renames is named by that list, so an aggregate
-  and a cast in either place may omit the alias each requires elsewhere.
+  column list on a `WITH` name renames is named by that list, so an aggregate,
+  a cast, and an `EXISTS` in either place may omit the alias each requires
+  elsewhere.
+- An `EXISTS` projection without a result alias, rejected as
+  `An EXISTS projection requires a result alias, such as EXISTS (SELECT 1 FROM
+  ...) AS present.`
 - A `FROM` or `JOIN` source outside the subset: a `LATERAL` function call, a
   doubly
   parenthesized source, a subquery source without an alias, a column list on a
@@ -2081,6 +2137,15 @@ Reads:
   `JavaCodeGeneratorTest.shouldGenerateJavaDocWithoutATableForASourcelessQuery`
   covers the generated documentation of a query that reads no source, which
   states its name and type alone and compiles.
+- `QueryAnalyzerTest.shouldAnalyzeAnExistsProjectionWithoutFrom`,
+  `QueryAnalyzerTest.shouldAnalyzeACorrelatedExistsProjectionBesideAColumn`,
+  `QueryAnalyzerTest.shouldRejectAnExistsProjectionWithoutAnAlias`, and
+  `QueryAnalyzerTest.shouldAcceptAnUnaliasedExistsProjectionOutsideTheLeftmostBranch`
+  cover the `EXISTS` projection: the aliased non-null `BOOLEAN` column of a
+  `SELECT` without `FROM` whose subquery types its own placeholder, the
+  correlated `EXISTS` beside a direct column whose inner placeholder binds
+  before the outer one, the missing-alias rejection, and the unaliased
+  `EXISTS` a non-leftmost set-operation branch may write.
 - `QueryAnalyzerTest.shouldEmbedTheRowOfEachQualifiedWildcardOfAJoinedRead`,
   `QueryAnalyzerTest.shouldEmbedOneTableRowUnderEachOfItsAliases`,
   `QueryAnalyzerTest.shouldEmbedTheRowOfAWildcardBesideAScalarCount`,
