@@ -141,11 +141,14 @@ public final class QueryAnalyzer {
 
     /**
      * The rejection of a projected expression that is neither a column, a
-     * wildcard, a typed aggregate, nor a cast, which is written as the query
-     * spells it. An aggregate outside the typed forms, such as one of an
-     * argument or a column type PostgreSQL defines no such aggregate for, is
-     * one of them. A cast states the type of such a projection, so the
-     * rejection names that fix.
+     * wildcard, a typed aggregate, a cast, nor an {@code EXISTS} of a
+     * subquery, which is written as the query spells it. An aggregate outside
+     * the typed forms, such as one of an argument or a column type PostgreSQL
+     * defines no such aggregate for, is one of them, and so is an
+     * {@code EXISTS} the parser reports around anything but the subquery
+     * itself, such as {@code NOT EXISTS (...)} or {@code EXISTS (...)::boolean}.
+     * A cast states the type of such a projection, so the rejection names that
+     * fix.
      */
     private static final String COMPUTED_PROJECTION_REJECTION = """
         Cannot infer the type of %s in SELECT; state it with a cast and an alias, \
@@ -159,6 +162,15 @@ public final class QueryAnalyzer {
      */
     private static final String AGGREGATE_ALIAS_REJECTION = """
         %s requires a result alias, such as %s AS total.""";
+
+    /**
+     * The rejection of an {@code EXISTS} projection without a result alias,
+     * which names one result component. The item itself names no column, and
+     * the computed-projection rejection would name a cast instead of the alias
+     * this item needs, so the named fix is an {@code EXISTS} followed by one.
+     */
+    private static final String EXISTS_ALIAS_REJECTION = """
+        An EXISTS projection requires a result alias, such as EXISTS (SELECT 1 FROM ...) AS present.""";
 
     /**
      * The rejection of a bare {@code *} in a {@code SELECT} without
@@ -5593,12 +5605,13 @@ public final class QueryAnalyzer {
      * columns flat instead, as PostgreSQL lists them, so a merged column
      * stands once and in its own position in both.
      *
-     * <p>An aggregate and a cast name their column with an alias, which is
-     * required only of a projection that names the result columns, so a branch
-     * of a set operation other than the leftmost may write either without one.
-     * A column list on the derived source this projection is the body of names
-     * its own {@code listedColumns} leading columns, so neither needs an alias
-     * in one of those positions either.
+     * <p>An aggregate, a cast, and an {@code EXISTS} of a subquery name their
+     * column with an alias, which is required only of a projection that names
+     * the result columns, so a branch of a set operation other than the
+     * leftmost may write any of them without one. A column list on the derived
+     * source this projection is the body of names its own
+     * {@code listedColumns} leading columns, so none of them needs an alias in
+     * one of those positions either.
      */
     private ResolvedProjection resolveProjection(
         PlainSelect plainSelect,
@@ -5766,14 +5779,24 @@ public final class QueryAnalyzer {
 
     /**
      * Resolves one projection item that is not a wildcard into its single
-     * column: a direct column, an aliased aggregate this subset types, or an
-     * aliased cast. Every other item is a computed projection, which a cast
-     * states the type of.
+     * column: a direct column, an aliased aggregate this subset types, an
+     * aliased cast, or an aliased {@code EXISTS} of a subquery. Every other
+     * item is a computed projection, which a cast states the type of.
      *
-     * <p>An aggregate and a cast require their alias only where
-     * {@code namesResultColumns} states that this item names its own column,
-     * which a projection that names no result column and a position a column
-     * list renames both state it does not.
+     * <p>An {@code EXISTS} of a subquery is a non-null {@code BOOLEAN} column,
+     * because PostgreSQL defines the predicate as {@code true} or
+     * {@code false} and never {@code NULL}, and its subquery is analyzed as
+     * the predicate's own subquery is, as the level inside this one, so a
+     * correlated reference and a placeholder inside it resolve there. An
+     * {@code EXISTS} the parser reports around anything but the subquery
+     * itself, such as {@code NOT EXISTS (...)} or
+     * {@code EXISTS (...)::boolean}, is not this item and stays a computed
+     * projection.
+     *
+     * <p>An aggregate, a cast, and an {@code EXISTS} require their alias only
+     * where {@code namesResultColumns} states that this item names its own
+     * column, which a projection that names no result column and a position a
+     * column list renames both state it does not.
      */
     private org.sqlcj.schema.Column resolveColumnItem(
         SelectItem<?> selectItem,
@@ -5819,6 +5842,27 @@ public final class QueryAnalyzer {
                 selectItem.getAlias(),
                 analysis.schema(),
                 namesResultColumns
+            );
+        }
+
+        if (
+            expression instanceof ExistsExpression exists
+                && exists.getRightExpression() instanceof ParenthesedSelect subquery
+        ) {
+            Alias alias = selectItem.getAlias();
+
+            if (alias == null && namesResultColumns) {
+                throw new UnsupportedOperationException(EXISTS_ALIAS_REJECTION);
+            }
+
+            analyzePredicateSubquery(subquery, scope, analysis);
+
+            return new org.sqlcj.schema.Column(
+                alias == null
+                    ? written(exists)
+                    : alias.getUnquotedName(),
+                ColumnType.BOOLEAN,
+                false
             );
         }
 

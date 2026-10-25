@@ -2965,6 +2965,132 @@ class QueryAnalyzerTest {
         );
     }
 
+    /**
+     * An aliased {@code EXISTS} projection is one non-null {@code BOOLEAN}
+     * result column, and its subquery is analyzed as the predicate's own
+     * subquery is, so the placeholder inside it is typed by that subquery's
+     * level while the projection reads no outer source.
+     */
+    @Test
+    void shouldAnalyzeAnExistsProjectionWithoutFrom() {
+        String sql = "SELECT EXISTS (SELECT 1 FROM users WHERE name = :name) AS present";
+
+        QueryModel model = analyzer.analyze(
+            new Query("UserExists", QueryType.ONE, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertNull(model.table());
+        assertNull(model.rowTable());
+
+        assertEquals(
+            List.of(new QueryColumn("present", ColumnType.BOOLEAN, false)),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * An {@code EXISTS} projection stands in its own position beside a direct
+     * column, and its subquery resolves a correlated reference through the
+     * level the projection stands in, so a placeholder inside it binds in the
+     * textual order the query writes it in, before an outer {@code WHERE}
+     * placeholder written after it.
+     */
+    @Test
+    void shouldAnalyzeACorrelatedExistsProjectionBesideAColumn() {
+        String sql = """
+            SELECT u.id,
+                   EXISTS (
+                       SELECT 1
+                       FROM orders o
+                       WHERE o.user_id = u.id AND o.total = :total
+                   ) AS ordered
+            FROM users u
+            WHERE u.name = :name
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUserOrderFlags", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("ordered", ColumnType.BOOLEAN, false)
+            ),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "total", ColumnType.DECIMAL),
+                new QueryParameter(2, "name", ColumnType.VARCHAR)
+            ),
+            model.parameters()
+        );
+    }
+
+    /**
+     * An {@code EXISTS} projection names no column of its own, so a missing
+     * alias is rejected wherever the projection names the result columns,
+     * naming the alias the item needs rather than the cast the
+     * computed-projection rejection names.
+     */
+    @Test
+    void shouldRejectAnExistsProjectionWithoutAnAlias() {
+        String sql = "SELECT EXISTS (SELECT 1 FROM users) FROM users";
+
+        Query query = new Query("UserExists", QueryType.ONE, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, joinSchema)
+        );
+
+        assertEquals(
+            "An EXISTS projection requires a result alias,"
+                + " such as EXISTS (SELECT 1 FROM ...) AS present.",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A branch of a set operation other than the leftmost names no result
+     * column, so an {@code EXISTS} projection there may omit its alias, as an
+     * unaliased cast and aggregate may, and the leftmost branch names the
+     * paired column.
+     */
+    @Test
+    void shouldAcceptAnUnaliasedExistsProjectionOutsideTheLeftmostBranch() {
+        String sql = """
+            SELECT EXISTS (SELECT 1 FROM users) AS present
+            FROM users
+            UNION ALL
+            SELECT EXISTS (SELECT 1 FROM orders)
+            FROM users
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUserFlags", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("present", ColumnType.BOOLEAN, false)),
+            model.columns()
+        );
+    }
+
     @Test
     void shouldAnalyzeSingleInnerJoin() {
         String sql = """
