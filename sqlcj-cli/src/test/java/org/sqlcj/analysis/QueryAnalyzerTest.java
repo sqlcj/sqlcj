@@ -7958,16 +7958,13 @@ class QueryAnalyzerTest {
         delimiter = '|',
         value = {
             "SELECT tags FROM users|MANY",
-            "SELECT * FROM users|MANY",
-            "SELECT b.* FROM users b|MANY",
             "SELECT id FROM users WHERE tags = $1|MANY",
             "SELECT id FROM users WHERE tags IN ($1)|MANY",
             "SELECT id FROM users WHERE tags LIKE $1|MANY",
             "SELECT id FROM users WHERE tags = ANY($1)|MANY",
             "INSERT INTO users (tags) VALUES ($1)|EXEC",
             "UPDATE users SET tags = $1|EXEC",
-            "DELETE FROM users WHERE id = $1 RETURNING tags|MANY",
-            "DELETE FROM users WHERE id = $1 RETURNING *|MANY"
+            "DELETE FROM users WHERE id = $1 RETURNING tags|MANY"
         }
     )
     void shouldRejectQueryThatUsesAnUnsupportedTypeColumn(String sql, QueryType type) {
@@ -7981,6 +7978,42 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Column 'tags' has unsupported type JSONB[]",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A wildcard that expands a column the schema recorded without a mapped
+     * type states, beside the column and the recorded type, that a wildcard
+     * selected it and that the query may list the columns it needs instead,
+     * because the query itself never wrote the column. Every wildcard that
+     * types its columns reports it: a bare {@code *}, one over a {@code USING}
+     * join, whose sources expand through the merged path, a qualified
+     * {@code c.*}, and both {@code RETURNING} forms.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT * FROM users|MANY",
+            "SELECT * FROM users a JOIN users b USING (id)|MANY",
+            "SELECT b.* FROM users b|MANY",
+            "DELETE FROM users WHERE id = $1 RETURNING *|MANY",
+            "UPDATE users SET name = $1 WHERE id = $2 RETURNING users.*|MANY"
+        }
+    )
+    void shouldRejectWildcardThatExpandsAnUnsupportedTypeColumn(String sql, QueryType type) {
+        Query query = new Query("ExpandUsers", type, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, unsupportedTypeSchema)
+        );
+
+        assertEquals(
+            "Column 'tags' has unsupported type JSONB[]; a wildcard selects it,"
+                + " so list the columns the query needs instead.",
             exception.getMessage()
         );
     }
@@ -10668,6 +10701,48 @@ class QueryAnalyzerTest {
                 () -> analyzer.analyze(query, parsedSql, viewSchema)
             )
                 .getMessage()
+        );
+    }
+
+    /**
+     * A source that calls a function states the function, that sqlcj does not
+     * model a function source, and the two shapes that replace it, in every
+     * position a source is resolved: a read's {@code FROM}, a join, a
+     * {@code LATERAL} call, a {@code ROWS FROM} list, which names its first
+     * function, an {@code INSERT ... SELECT}, and an {@code UPDATE ... FROM}.
+     * The name is the query's own, qualifier included.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "MANY|SELECT u.id FROM unnest(:ids::bigint[]) AS u(id)|unnest",
+            "MANY|SELECT u.id FROM users JOIN unnest(:ids::bigint[]) AS u(id)"
+                + " ON u.id = users.id|unnest",
+            "MANY|SELECT u.id FROM users, LATERAL unnest(:ids::bigint[]) AS u(id)|unnest",
+            "MANY|SELECT g.n FROM pg_catalog.generate_series(1, 3) AS g(n)"
+                + "|pg_catalog.generate_series",
+            "MANY|SELECT u.id FROM ROWS FROM (unnest(:ids::bigint[]), unnest(:names::text[]))"
+                + " AS u(id, name)|unnest",
+            "EXEC|INSERT INTO users (id) SELECT u.id FROM unnest(:ids::bigint[]) AS u(id)|unnest",
+            "EXEC|UPDATE users SET name = :name FROM unnest(:ids::bigint[]) AS u(id)"
+                + " WHERE users.id = u.id|unnest"
+        }
+    )
+    void shouldRejectAFunctionSource(QueryType type, String sql, String function) {
+        Query query = new Query("ReadRows", type, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, joinSchema)
+        );
+
+        assertEquals(
+            "%s(...) is a function source, which sqlcj does not model;".formatted(function)
+                + " insert many rows with a :batchexec INSERT ... VALUES query,"
+                + " or match a list with id = ANY(:ids).",
+            exception.getMessage()
         );
     }
 

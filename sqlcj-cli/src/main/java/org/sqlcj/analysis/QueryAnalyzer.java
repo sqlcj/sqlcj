@@ -59,6 +59,7 @@ import net.sf.jsqlparser.statement.select.Select;
 import net.sf.jsqlparser.statement.select.SelectItem;
 import net.sf.jsqlparser.statement.select.SetOperation;
 import net.sf.jsqlparser.statement.select.SetOperationList;
+import net.sf.jsqlparser.statement.select.TableFunction;
 import net.sf.jsqlparser.statement.select.UnionOp;
 import net.sf.jsqlparser.statement.select.Values;
 import net.sf.jsqlparser.statement.select.WithItem;
@@ -187,6 +188,17 @@ public final class QueryAnalyzer {
         such as SELECT now()::timestamptz AS now.""";
 
     /**
+     * The rejection of a column the schema recorded without a mapped type that
+     * a wildcard expands to, which names the column and the recorded type as a
+     * direct column's rejection does. The query never wrote the column, so the
+     * rejection also states that the wildcard selected it and names the fix
+     * that leaves it out.
+     */
+    private static final String WILDCARD_COLUMN_TYPE_REJECTION = """
+        Column '%s' has unsupported type %s; a wildcard selects it, so list the columns the \
+        query needs instead.""";
+
+    /**
      * The rejection of a returned item that is neither a column of the write
      * target nor a bare {@code *}, which is written as the query spells it. A
      * cast does not make such an item supported, so the rejection names the
@@ -311,6 +323,18 @@ public final class QueryAnalyzer {
      */
     private static final String VIEW_SOURCE_REJECTION = """
         %s is a %s, which sqlcj does not model; write its query in a WITH clause instead.""";
+
+    /**
+     * The rejection of a source that calls a function, which names the function
+     * as the query writes it and, for a {@code ROWS FROM} list, its first
+     * function. sqlcj models no function source at all, so the named fixes are
+     * the two shapes a set of rows is written in instead: a batch of
+     * {@code VALUES} rows for a write, and {@code = ANY} for a read that
+     * matches a list.
+     */
+    private static final String FUNCTION_SOURCE_REJECTION = """
+        %s(...) is a function source, which sqlcj does not model; insert many rows with a \
+        :batchexec INSERT ... VALUES query, or match a list with id = ANY(:ids).""";
 
     /** The rejection of a source of a write's {@code FROM} or {@code USING}. */
     private static final String WRITE_SOURCE_REJECTION = "Only table sources are supported.";
@@ -3652,6 +3676,11 @@ public final class QueryAnalyzer {
      * as the one enclosing it, which the clause resolving this source states;
      * every other subquery source sees no source of the query around it, so it
      * is analyzed with no enclosing level at all.
+     *
+     * <p>Every source position reaches this method, so a source that calls a
+     * function is rejected here with a message of its own, naming the function;
+     * every other source outside the subset keeps the rejection its clause
+     * states.
      */
     private Source resolveSource(
         FromItem fromItem,
@@ -3670,6 +3699,14 @@ public final class QueryAnalyzer {
                 fromItem instanceof LateralSubSelect
                     ? lateral
                     : null
+            );
+        }
+
+        if (fromItem instanceof TableFunction tableFunction) {
+            throw new UnsupportedOperationException(
+                FUNCTION_SOURCE_REJECTION.formatted(
+                    tableFunction.getFunctions().get(0).getName()
+                )
             );
         }
 
@@ -5813,7 +5850,7 @@ public final class QueryAnalyzer {
             if (expression instanceof AllColumns) {
                 for (WildcardSource wildcardSource : bareWildcardSources(sources)) {
                     if (wildcardSource.flat()) {
-                        List<org.sqlcj.schema.Column> flatColumns = resolveColumns(
+                        List<org.sqlcj.schema.Column> flatColumns = resolveWildcardColumns(
                             wildcardSource.columns(),
                             wildcardSource.source().nullable()
                         );
@@ -6516,7 +6553,30 @@ public final class QueryAnalyzer {
         Source source,
         boolean nullableSource
     ) {
-        return resolveColumns(source.table().columns(), nullableSource);
+        return resolveWildcardColumns(source.table().columns(), nullableSource);
+    }
+
+    /**
+     * The given columns of one source a wildcard expands to, resolved as
+     * {@link #resolveColumns} resolves them, after rejecting the first column
+     * the schema recorded without a mapped type. The query names no column of
+     * its own there, so the rejection names the one the wildcard selected and
+     * the fix of listing the columns instead.
+     */
+    private List<org.sqlcj.schema.Column> resolveWildcardColumns(
+        List<org.sqlcj.schema.Column> columns,
+        boolean nullableSource
+    ) {
+        for (org.sqlcj.schema.Column column : columns) {
+            if (column.type() == null) {
+                throw new UnsupportedOperationException(
+                    WILDCARD_COLUMN_TYPE_REJECTION
+                        .formatted(column.name(), column.unsupportedType())
+                );
+            }
+        }
+
+        return resolveColumns(columns, nullableSource);
     }
 
     /**

@@ -107,7 +107,24 @@ configuration entry.
 - The `FROM` item must be a table of that schema, a `WITH` clause in scope, or a
   subquery, optionally with an alias and optionally `LATERAL`. A doubly
   parenthesized source, such as `FROM ((SELECT ...)) s`, is rejected as
-  `Only table sources are supported.`
+  `Only table sources are supported.`, and
+  `Only table join sources are supported.` where a join states it.
+- A source that calls a function, such as `FROM unnest(:ids::bigint[]) AS u(id)`
+  or `FROM pg_catalog.generate_series(1, 3) AS g(n)`, is no modeled source at
+  all and is rejected as
+  `<f>(...) is a function source, which sqlcj does not model; insert many rows
+  with a :batchexec INSERT ... VALUES query, or match a list with
+  id = ANY(:ids).`, naming the function as the query writes it, qualifier
+  included. The rule holds in every source position: a read's `FROM`, a `JOIN`,
+  a `LATERAL` call, a `ROWS FROM (...)` list, which names its first function, an
+  `UPDATE ... FROM`, a `DELETE ... USING`, and the `FROM` of an
+  `INSERT ... SELECT`, inside a `WITH` body and a subquery source as well as at
+  the top level. To insert many rows, write a `:batchexec` `INSERT` of `VALUES`,
+  as [Batch writes](#batch-writes) states; to match a list, write
+  `id = ANY(:ids)`, as [Predicates](#predicates) states. An `unnest(...)` call
+  written in the projection of an `INSERT ... SELECT`, as
+  [Writes](#writes) documents for `CreateTeamMemberships`, is no source and
+  stays accepted.
 - A `FROM` or `JOIN` source whose unqualified name matches a `WITH` clause in
   scope reads that clause and not the table of the same name, as PostgreSQL
   resolves it, matched case-insensitively and taking the innermost declaration
@@ -152,8 +169,8 @@ configuration entry.
   wildcard in the body's projection expands the body's own sources alone, as
   every projection's does. A `WITH` list inside the body keeps the scope every
   `WITH` list has. `LATERAL f(...)`, a function call, is no modeled source at
-  all and keeps `Only table sources are supported.` in a `FROM` clause and
-  `Only table join sources are supported.` in a join.
+  all and is rejected as the function source it is, in a `FROM` clause and in a
+  join alike.
 - A column list on a `WITH` name, such as `WITH recent (n) AS (...)`, renames
   the body's result columns by position, on a read and on a write alike: each
   name renames the column of its own position, which keeps the type, enum type,
@@ -330,6 +347,14 @@ configuration entry.
   source whose body writes such a `*` exposes each merged name once, which is
   how it keeps the distinct-name rule. An insert's `SELECT *` counts the same
   columns, so its column list names the merged columns once.
+- A wildcard that expands a column the schema recorded without a mapped type is
+  rejected as
+  `Column '<c>' has unsupported type <T>; a wildcard selects it, so list the
+  columns the query needs instead.`, naming the first such column in the order
+  the wildcard expands. A bare `*`, a bare `*` over a `USING` or `NATURAL` join,
+  and a `qualifier.*` all report it; a column written directly keeps the shorter
+  `Column '<c>' has unsupported type <T>`, as
+  [PostgreSQL Support](postgresql.md#unsupported-types-and-ddl) states.
 - Selected-column order is the order of the generated result record and of the
   positional row mapper. An embedded row stands in the position its wildcard is
   written at and holds the columns that wildcard selected, so the read order
@@ -1341,6 +1366,11 @@ A wildcard returns the complete row of the target alone, so:
   `RETURNING * is not supported with UPDATE ... FROM or DELETE ... USING; write
   RETURNING <target>.* for the target's row.`
 
+`RETURNING *` and `RETURNING <target>.*` expand the target's columns, so a
+column the schema recorded without a mapped type is rejected there as
+`Column '<c>' has unsupported type <T>; a wildcard selects it, so list the
+columns the query needs instead.`, exactly as a `SELECT` wildcard reports it.
+
 A returning insert accepts every accepted row source — several `VALUES` rows, a
 parenthesized row source, and a `SELECT` — and a returning `UPDATE` and
 `DELETE` accept the added sources
@@ -1988,8 +2018,14 @@ query name, and its header line.
 - An `EXISTS` projection without a result alias, rejected as
   `An EXISTS projection requires a result alias, such as EXISTS (SELECT 1 FROM
   ...) AS present.`
-- A `FROM` or `JOIN` source outside the subset: a `LATERAL` function call, a
-  doubly
+- A source that calls a function, in every position a source is resolved — a
+  read's `FROM`, a `JOIN`, a `LATERAL` call, a `ROWS FROM (...)` list, an
+  `UPDATE ... FROM`, a `DELETE ... USING`, and the `FROM` of an
+  `INSERT ... SELECT` — rejected as
+  `<f>(...) is a function source, which sqlcj does not model; insert many rows
+  with a :batchexec INSERT ... VALUES query, or match a list with
+  id = ANY(:ids).`, as [Sources](#sources) states.
+- A `FROM` or `JOIN` source otherwise outside the subset: a doubly
   parenthesized source, a subquery source without an alias, a column list on a
   subquery alias, a column list on a `WITH` name that names more columns than
   its body returns, and a derived source two of whose columns expose one name,
