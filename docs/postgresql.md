@@ -289,8 +289,9 @@ order the files are read in.
 A `pg_dump --schema-only` file is such a snapshot and loads unchanged: it is
 configured as one schema file, and nothing in it has to be edited, removed, or
 reordered first. This is the schema input of a service that does not keep its
-schema as SQL migrations, for example one with a Liquibase changelog or a
-JPA-generated schema.
+schema as SQL migrations, for example one with Java-based migrations or a
+JPA-generated schema; see
+[Migration Tool Schemas](#migration-tool-schemas).
 
 A dump states much more than the tables it creates, and sqlcj ignores all of it
 rather than rejecting it:
@@ -323,6 +324,99 @@ that history. A schema change the history makes indirectly, such as DDL inside
 a `DO` block or a function body, or a column dropped by
 `DROP TYPE ... CASCADE`, stands in the database and in its dump but not in the
 history sqlcj reads; see [Ignored Statements](#ignored-statements).
+
+## Migration Tool Schemas
+
+sqlcj reads the SQL a migration tool applies and never runs that tool, connects
+to a database, or parses a tool's own change format.
+
+### Flyway
+
+Configure the migration directory. sqlcj reads a directory in Flyway's own
+version order, which [`sql[].schema`](configuration.md#sqlschema) states.
+
+### Liquibase Formatted SQL
+
+A formatted SQL changelog is read as the SQL it spells, because Liquibase's
+directives are written as SQL comments:
+
+- `--liquibase formatted sql`, `--changeset`, `--comment`, `--rollback`, and a
+  `/* liquibase rollback */` block are comments, so no rollback is ever applied.
+- Every other directive is a comment too, so every changeset of a listed file is
+  applied.
+- A root changelog's `--include` and `--includeAll` directives are comments as
+  well, so they include nothing: list the included files themselves, or a
+  directory of them.
+- A listed directory is read non-recursively, in the order
+  [`sql[].schema`](configuration.md#sqlschema) states. That is `includeAll`'s own
+  order within one directory only when no file name has Flyway's `V<version>__`
+  or `U<version>__` form, and `includeAll` also descends into subdirectories, so
+  a changelog in a subdirectory has to be listed itself.
+- A statement ends only at `;`. A statement written without its `;`, and one
+  ended by an `endDelimiter` such as `/`, merges into the statement that follows
+  it.
+- A dollar-quoted body stays one statement, so a `$body$ ... $body$` function
+  body holding `;` is read as the single statement it is.
+
+### Liquibase XML, YAML, or JSON
+
+sqlcj does not read a changelog written as XML, YAML, or JSON. Let Liquibase
+write the SQL of that changelog instead, with its offline `update-sql` command,
+and configure the written file as the schema:
+
+```bash
+docker run --rm \
+  -v "$PWD/src/main/resources/db/changelog":/liquibase/changelog:ro \
+  -w /liquibase/changelog \
+  -e LIQUIBASE_COMMAND_CHANGELOG_FILE=changelog.xml \
+  -e 'LIQUIBASE_COMMAND_URL=offline:postgresql?outputLiquibaseSql=all&changeLogFile=/tmp/databasechangelog.csv' \
+  liquibase/liquibase:5.0.4 update-sql > sql/liquibase-schema.sql
+```
+
+- The mounted directory holds the root changelog and the files it includes.
+- The `offline:` URL needs no database.
+- The SQL goes to standard output and Liquibase's banner to standard error, so
+  the redirection writes the SQL alone.
+- Liquibase records the changesets it has written in a changelog CSV, and a
+  later run that reads the same CSV writes only the changesets newer than the
+  ones it records. Keeping that CSV inside the discarded container makes every
+  run write them all.
+- `outputLiquibaseSql=all` adds the `databasechangelog` table and its `INSERT`
+  statements, which generate nothing unless a query names that table.
+- Configure the output as one schema file, and run the command again whenever
+  the changelog changes.
+
+### MyBatis Migrations
+
+Configure the `scripts` directory, whose undo sections are never applied; see
+[`sql[].schema`](configuration.md#sqlschema) for the undo-marker rule itself.
+
+- The scripts are read in file-name order, which is MyBatis's own id order for
+  its default 14-digit timestamp ids, and for any set of ids of one width.
+- `bootstrap.sql` and `onabort.sql`, which MyBatis leaves out of the migration
+  history, are read as ordinary `.sql` files of the directory, after the
+  numbered scripts. The `bootstrap.sql` that `migrate init` writes holds only
+  comments.
+- The changelog script that `migrate init` writes loads unchanged and models
+  nothing. Its `${changelog}` table is invisible, as a table of another schema
+  is: a query that names it is rejected as an unknown table, and nothing else
+  the schema models changes; see [Ignored Statements](#ignored-statements).
+- A `${...}` variable is never substituted. Any other table statement that
+  names one is rejected, naming the table or the token sqlcj's parser could not
+  read, and a statement of any other kind, such as an `INSERT` or a
+  `CREATE INDEX`, stays ignored like any unmodeled statement.
+
+### Other Tools
+
+For Java-based migrations, a tool of any other kind, or a hand-managed database,
+snapshot a database the tool has migrated and configure that file:
+
+```bash
+pg_dump --schema-only -U <user> -d <database> > schema.sql
+```
+
+See [Schema Snapshot Input](#schema-snapshot-input) for what such a file states
+and what sqlcj reads of it.
 
 ## Supported Column Types
 
@@ -851,7 +945,10 @@ Everything else a migration history holds is ignored, including
 - a `CREATE TYPE` of a composite, range, or shell type, and `DROP TYPE`,
 - a `CREATE TABLE`, `ALTER TABLE`, `CREATE TYPE`, or `ALTER TYPE` whose own
   table or type is qualified with a schema other than `public`, readable or not,
-  and
+- a `CREATE TABLE [IF NOT EXISTS] ${name} (` and an
+  `ALTER TABLE [IF EXISTS] [ONLY] ${name}` whose every top-level action adds a
+  constraint, which are the two statements of the MyBatis Migrations changelog
+  script; see [MyBatis Migrations](#mybatis-migrations), and
 - a statement sqlcj's parser cannot read, or reports only as opaque text, and
   that does not open as table or type DDL, such as `ALTER FUNCTION`,
   `ALTER SCHEMA`, `CREATE AGGREGATE`, or `CREATE CAST`.
@@ -1157,6 +1254,35 @@ Schema snapshot input:
   `ReferenceServiceIntegrationTest.shouldRejectAQueryOnASecondSchemaTable`
   cover the located `SET DATA TYPE` diagnostic and the unknown-table diagnostic
   of a query that names a table of the reporting schema, each writing no file.
+
+Migration tool schemas:
+
+- `SqlcjCompilerIntegrationTest.shouldGenerateOneTreeFromALiquibaseFormattedSqlDirectoryAndItsOfflineUpdateSql`
+  generates one byte-identical, compiling tree from a five-changeset Liquibase
+  formatted SQL directory, whose `--rollback` lines and `liquibase rollback`
+  block would change the schema if they were applied, and from the offline
+  `update-sql` output of the equivalent XML changelog, whose
+  `databasechangelog` table and `INSERT` statements generate nothing.
+- `SqlcjCompilerIntegrationTest.shouldGenerateTheSameRepositoryFromAMyBatisScriptsDirectoryAndASnapshot`
+  generates a byte-identical, compiling repository from a MyBatis Migrations
+  scripts directory holding the changelog script, two timestamp-named scripts
+  with undo sections, and a comment-only `bootstrap.sql`, and from a snapshot of
+  the schema those scripts state.
+- `DefaultSchemaParserTest.shouldEndASchemaSourceAtTheMyBatisUndoMarker`,
+  `DefaultSchemaParserTest.shouldEndASchemaSourceAtEachLineMyBatisReadsAsItsUndoMarker`,
+  `DefaultSchemaParserTest.shouldApplyTheStatementsAfterALineThatIsNotTheUndoMarker`,
+  `DefaultSchemaParserTest.shouldEndACarriageReturnSchemaSourceAtTheUndoMarker`,
+  `DefaultSchemaParserTest.shouldNotRejectAnUnreadableStatementAfterTheUndoMarker`,
+  and
+  `DefaultSchemaParserTest.shouldRejectAnUnreadableStatementBeforeTheUndoMarkerAtItsOwnLine`
+  cover the undo section a `DROP TABLE` stands in, each marker and non-marker
+  line MyBatis's rule decides, a `\r\n` script, the unreadable statement after
+  the marker that is not reported, and the one before it that still is.
+- `DefaultSchemaParserTest.shouldApplyNothingOfTheMyBatisChangelogScript` leaves
+  the schema model unchanged for the whole changelog script, and
+  `DefaultSchemaParserTest.shouldRejectEveryOtherStatementThatNamesAVariable`
+  covers the rejected `ADD COLUMN`, the mixed action list, `${schema}.audit`,
+  `audit_${suffix}`, and `DROP TABLE ${changelog}`.
 
 Type table:
 
