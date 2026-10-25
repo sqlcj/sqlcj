@@ -167,6 +167,20 @@ ends the run the same way:
 sqlcj: Cannot read schema source: /home/dev/project/sql/orders/migrations: Permission denied
 ```
 
+Each migration tool is configured as the SQL it applies:
+
+| Migration tool | What `sqlcj.yaml` names |
+| --- | --- |
+| Flyway SQL migrations | The migration directory. |
+| Liquibase formatted SQL | The changelog files, in the order the root changelog includes them, or a directory of them, which sqlcj reads in the order stated above, matching `includeAll`'s order within one directory only when no file name has the `V<version>__` or `U<version>__` form. |
+| Liquibase XML, YAML, or JSON | The one file the offline `update-sql` command writes. |
+| MyBatis Migrations | The `scripts` directory. |
+| Java-based migrations, another tool, or a hand-managed database | A `pg_dump --schema-only` snapshot. |
+
+What sqlcj reads of each of those inputs, and the two commands that write a
+schema file, stand in
+[Migration Tool Schemas](postgresql.md#migration-tool-schemas).
+
 ### `java.package`
 
 `java.package` must be a dot-separated sequence of valid, non-keyword Java
