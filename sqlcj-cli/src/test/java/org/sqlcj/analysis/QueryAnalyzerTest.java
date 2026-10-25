@@ -1576,6 +1576,85 @@ class QueryAnalyzerTest {
         );
     }
 
+    /**
+     * A placeholder written as an operand of {@code +}, {@code -}, {@code *},
+     * or {@code /} beside a numeric column takes that column's type, in either
+     * operand of the comparison and on either side of the operator.
+     */
+    @Test
+    void shouldTypeAnArithmeticPlaceholderFromTheNumericColumnBesideIt() {
+        String sql = """
+            SELECT id
+            FROM users
+            WHERE balance - :amount >= 0
+              AND visits >= score + :qty""";
+
+        QueryModel model = analyzer.analyze(
+            new Query("SearchUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            aggregateSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "amount", ColumnType.DECIMAL),
+                new QueryParameter(2, "qty", ColumnType.SMALLINT)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 2), model.bindingParameterIndexes());
+    }
+
+    /** A write's predicate types an arithmetic placeholder as a read's does. */
+    @Test
+    void shouldTypeAnArithmeticPlaceholderInAWritePredicate() {
+        String sql = "DELETE FROM users WHERE visits - :used <= 0";
+
+        QueryModel model = analyzer.analyze(
+            new Query("PruneUsers", QueryType.EXEC, sql),
+            parser.parse(sql),
+            aggregateSchema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "used", ColumnType.INTEGER)),
+            model.parameters()
+        );
+
+        assertEquals("DELETE FROM users WHERE visits - ? <= 0", model.executableSql());
+    }
+
+    /**
+     * The rule reads through nested arithmetic and through parentheses around
+     * one expression, so each placeholder takes the type of the column its own
+     * operator writes it beside.
+     */
+    @Test
+    void shouldTypeAnArithmeticPlaceholderThroughNestedArithmetic() {
+        String sql = """
+            SELECT id
+            FROM users
+            WHERE visits + :a + 1 > 0
+              AND (score + :b) * 2 < 100""";
+
+        QueryModel model = analyzer.analyze(
+            new Query("SearchUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            aggregateSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "a", ColumnType.INTEGER),
+                new QueryParameter(2, "b", ColumnType.SMALLINT)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 2), model.bindingParameterIndexes());
+    }
+
     @Test
     void shouldResolvePaginationParametersAfterPredicateParameters() {
         String sql = "SELECT id FROM users WHERE name = $1 ORDER BY id LIMIT $2 OFFSET $3";
@@ -9386,6 +9465,142 @@ class QueryAnalyzerTest {
         );
     }
 
+    /**
+     * An assigned placeholder written as an operand of {@code +}, {@code -},
+     * {@code *}, or {@code /} beside a column of one of the numeric types takes
+     * that column's type, on either side of the operator.
+     */
+    @Test
+    void shouldTypeAnAssignedPlaceholderFromTheNumericColumnBesideIt() {
+        String sql = """
+            UPDATE users
+            SET score = score + :a,
+                visits = :b + visits,
+                id = id - :c,
+                balance = :d * balance,
+                ratio = ratio / :e,
+                weight = :f + weight
+            WHERE name = :name""";
+
+        QueryModel model = analyzer.analyze(
+            new Query("TouchUsers", QueryType.EXEC, sql),
+            parser.parse(sql),
+            aggregateSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "a", ColumnType.SMALLINT),
+                new QueryParameter(2, "b", ColumnType.INTEGER),
+                new QueryParameter(3, "c", ColumnType.BIGINT),
+                new QueryParameter(4, "d", ColumnType.DECIMAL),
+                new QueryParameter(5, "e", ColumnType.REAL),
+                new QueryParameter(6, "f", ColumnType.DOUBLE_PRECISION),
+                new QueryParameter(7, "name", ColumnType.VARCHAR)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 2, 3, 4, 5, 6, 7), model.bindingParameterIndexes());
+    }
+
+    /**
+     * An indexed assigned placeholder is named after the column that types it,
+     * and the occurrence reaches the database as a bare {@code ?}.
+     */
+    @Test
+    void shouldNameAnIndexedAssignedPlaceholderAfterItsNumericColumn() {
+        String sql = "UPDATE users SET version = version + $1 WHERE id = $2";
+
+        QueryModel model = analyzer.analyze(
+            new Query("TouchUser", QueryType.EXEC, sql),
+            parser.parse(sql),
+            writeSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "version", ColumnType.INTEGER),
+                new QueryParameter(2, "id", ColumnType.BIGINT)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 2), model.bindingParameterIndexes());
+
+        assertEquals(
+            "UPDATE users SET version = version + ? WHERE id = ?",
+            model.executableSql()
+        );
+    }
+
+    /** A cast placeholder in arithmetic keeps stating its own type. */
+    @Test
+    void shouldKeepTheCastTypeOfAnAssignedPlaceholderInArithmetic() {
+        String sql = "UPDATE users SET version = version + :n::int WHERE id = :id";
+
+        QueryModel model = analyzer.analyze(
+            new Query("TouchUser", QueryType.EXEC, sql),
+            parser.parse(sql),
+            writeSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "n", ColumnType.INTEGER),
+                new QueryParameter(2, "id", ColumnType.BIGINT)
+            ),
+            model.parameters()
+        );
+    }
+
+    /**
+     * Arithmetic types a placeholder only from a numeric column, so a date,
+     * time, or interval column beside it leaves it untyped.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        {
+            "UPDATE durations SET age = age + :d, age + :d",
+            "UPDATE durations SET created_at = created_at + :d, created_at + :d"
+        }
+    )
+    void shouldRejectAnArithmeticPlaceholderBesideATemporalColumn(String sql, String value) {
+        Query query = new Query("TouchDurations", QueryType.EXEC, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, intervalSchema)
+        );
+
+        assertEquals(
+            "Cannot infer the type of :d in " + value
+                + "; state it with a cast, such as :d::text",
+            exception.getMessage()
+        );
+    }
+
+    /** A column the parser recorded without a mapped type types nothing. */
+    @Test
+    void shouldRejectAnArithmeticPlaceholderBesideAnUnmappedColumn() {
+        String sql = "UPDATE contacts SET amount = amount + :d";
+
+        Query query = new Query("TouchContacts", QueryType.EXEC, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, domainSchema)
+        );
+
+        assertEquals(
+            "Cannot infer the type of :d in amount + :d;"
+                + " state it with a cast, such as :d::text",
+            exception.getMessage()
+        );
+    }
+
     /** An assignment that sets a row of columns at once stays rejected. */
     @Test
     void shouldRejectExcludedWriteValueForm() {
@@ -9920,11 +10135,12 @@ class QueryAnalyzerTest {
     }
 
     /**
-     * A placeholder inside a {@code DO UPDATE} value is analyzed only through
-     * its own cast, so an uncast one is rejected as untyped.
+     * A {@code DO UPDATE} value reads both the stored row and {@code EXCLUDED},
+     * so an unqualified column written beside a placeholder is rejected as
+     * ambiguous.
      */
     @Test
-    void shouldRejectAnUncastPlaceholderInsideAConflictUpdateValue() {
+    void shouldRejectAnAmbiguousColumnInsideAConflictUpdateValue() {
         String sql = """
             INSERT INTO users (id, name)
             VALUES ($1, $2)
@@ -9933,16 +10149,48 @@ class QueryAnalyzerTest {
         Query query = new Query("UpsertUser", QueryType.EXEC, sql);
         ParsedSql parsedSql = parser.parse(sql);
 
-        UnsupportedOperationException exception = assertThrows(
-            UnsupportedOperationException.class,
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
             () -> analyzer.analyze(query, parsedSql, writeSchema)
         );
 
         assertEquals(
-            "Cannot infer the type of $3 in version + $3;"
-                + " state it with a cast, such as $3::text",
+            "Ambiguous column reference 'version' in sources: users, EXCLUDED",
             exception.getMessage()
         );
+    }
+
+    /**
+     * A {@code DO UPDATE} assignment reads both the stored row and the proposed
+     * one, so a placeholder written beside a qualified numeric column of either
+     * one takes that column's type, after the {@code VALUES} parameters.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "INSERT INTO users (id, name) VALUES ($1, $2)"
+                + " ON CONFLICT (id) DO UPDATE SET version = users.version + $3",
+            "INSERT INTO users (id, name) VALUES ($1, $2)"
+                + " ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version + $3"
+        }
+    )
+    void shouldTypeAnArithmeticPlaceholderInAConflictUpdateValue(String sql) {
+        QueryModel model = analyzer.analyze(
+            new Query("UpsertUser", QueryType.EXEC, sql),
+            parser.parse(sql),
+            writeSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "id", ColumnType.BIGINT),
+                new QueryParameter(2, "name", ColumnType.VARCHAR),
+                new QueryParameter(3, "version", ColumnType.INTEGER)
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 2, 3), model.bindingParameterIndexes());
     }
 
     /**
