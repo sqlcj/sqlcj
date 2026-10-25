@@ -36,9 +36,10 @@ import java.util.Optional;
  * read by id list each return one complete {@code authors} row, so all nine
  * share the single top-level {@link AuthorsRow} record of the generated
  * package, and the two queries that return a complete {@code books} row share
- * the top-level {@link BooksRow} record. A query with its own result shape
- * generates its own nested record: {@link AuthorRepository.CountAuthorsResult}
- * carries the non-null {@code Long} count,
+ * the top-level {@link BooksRow} record. A query whose result is one non-null
+ * column returns that column's value instead of a record, so
+ * {@code CountAuthors} returns the non-null {@code Long} count itself. A query
+ * with another result shape generates its own nested record:
  * {@link AuthorRepository.ListAuthorBooksResult} carries an author name beside
  * the title of the left-joined {@code books} row, which is {@code null} for an
  * author without a book, and
@@ -169,12 +170,11 @@ public final class App {
 
         System.out.println("searched: " + searched.get(0).id() + " " + searched.get(0).name());
 
-        AuthorRepository.CountAuthorsResult count = authors.countAuthors();
+        Long count = authors.countAuthors();
 
-        check(count != null, "CountAuthors returned no row");
-        checkEquals(2L, count.total(), "CountAuthors total");
+        checkEquals(2L, count, "CountAuthors total");
 
-        System.out.println("count: " + count.total());
+        System.out.println("count: " + count);
 
         List<AuthorsRow> page = authors.listAuthorPage(1, 1);
 

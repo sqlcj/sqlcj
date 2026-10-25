@@ -275,10 +275,11 @@ and `listAuthorBooks`. `CreateAuthor`, `GetAuthor`, `FindAuthor`, `ListAuthors`,
 all six share the top-level record `AuthorsRow`, generated once for the package
 `com.example.app.db` from the schema's column order. Another entry of the same
 package that returns the full `authors` row would return that same record. A
-query with its own result shape, such as a partial projection or a `RETURNING`
+query whose result is one column that cannot be NULL returns that column's
+value, so `countAuthors()` returns the non-null `Long` count itself. A query
+with another result shape, such as a partial projection or a `RETURNING`
 column list, generates a nested `AuthorRepository.<QueryName>Result` record
-instead: `CountAuthors` generates `CountAuthorsResult` with the single non-null
-`Long` component `total`, and `ListAuthorBooks` generates
+instead: `ListAuthorBooks` generates
 `ListAuthorBooksResult` with the components `name` and `title`, where `title` is
 `null` for an author that the left-joined `books` table does not match.
 
@@ -370,7 +371,7 @@ public final class App {
             System.out.println("searched: " + author.id() + " " + author.name());
         }
 
-        System.out.println("count: " + authors.countAuthors().total());
+        System.out.println("count: " + authors.countAuthors());
 
         for (AuthorsRow author : authors.listAuthorPage(1, 1)) {
             System.out.println("page: " + author.id() + " " + author.name());
@@ -499,9 +500,9 @@ That output is the whole MVP contract in one run:
 - `SearchAuthors` filters with `name ILIKE $1`, so the pattern is a `String`
   parameter carrying its own `%` wildcards, and PostgreSQL matches it without
   regard to case.
-- `CountAuthors` projects an aliased `COUNT(*)` as its only result item, so
-  `countAuthors()` returns a `CountAuthorsResult` whose `total` is a non-null
-  `Long`.
+- `CountAuthors` projects an aliased `COUNT(*)` as its only result item, which
+  is one column that cannot be NULL, so `countAuthors()` returns that non-null
+  `Long` itself and generates no result record.
 - `ListAuthorPage` pages with `LIMIT $1 OFFSET $2`, which generates
   `listAuthorPage(Integer limit, Integer offset)`, so asking for one row after
   the first returns the second author alone.

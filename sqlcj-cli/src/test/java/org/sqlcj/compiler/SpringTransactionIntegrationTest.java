@@ -472,15 +472,15 @@ class SpringTransactionIntegrationTest {
 
     private static List<String> authorNames(Object repository) {
         try {
-            List<?> rows = (List<?>) repository
+            List<?> values = (List<?>) repository
                 .getClass()
                 .getMethod("listAuthorNames")
                 .invoke(repository);
 
             List<String> names = new ArrayList<>();
 
-            for (Object row : rows) {
-                names.add((String) row.getClass().getMethod("name").invoke(row));
+            for (Object value : values) {
+                names.add((String) value);
             }
 
             return names;

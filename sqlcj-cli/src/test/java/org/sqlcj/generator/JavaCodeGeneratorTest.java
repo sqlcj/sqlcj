@@ -339,7 +339,8 @@ class JavaCodeGeneratorTest {
             SQL,
             List.of(),
             List.of(
-                new QueryColumn("id", ColumnType.BIGINT, false)
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
             ),
             List.of(),
             null
@@ -572,7 +573,8 @@ class JavaCodeGeneratorTest {
             SQL,
             List.of(),
             List.of(
-                new QueryColumn("id", ColumnType.BIGINT, false)
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
             ),
             List.of(),
             null
@@ -585,6 +587,347 @@ class JavaCodeGeneratorTest {
                 "public record ListUsersResult("
             )
         );
+    }
+
+    /**
+     * A {@code :one} query whose result is one column that cannot be NULL
+     * returns that column's Java type and generates no result record, so its
+     * row mapper reads the value itself.
+     */
+    @Test
+    void shouldReturnTheValueOfOneNonNullColumn() throws IOException {
+        QueryModel query = new QueryModel(
+            "CountUsers",
+            QueryType.ONE,
+            "users",
+            "SELECT COUNT(*) AS total FROM users",
+            List.of(),
+            List.of(new QueryColumn("total", ColumnType.BIGINT, false)),
+            List.of(),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(source.contains("public Long countUsers()"), source);
+
+        assertTrue(
+            source.contains(
+                "private static final RowMapper<Long> countUsersRowMapper = "
+                    + "resultSet -> resultSet.getObject(1, Long.class);"
+            ),
+            source
+        );
+
+        assertFalse(source.contains("public record"), source);
+
+        assertCompiles(file);
+    }
+
+    /** The same shape for an {@code :optional} read, inside the Optional. */
+    @Test
+    void shouldReturnAnOptionalValueOfOneNonNullColumn() throws IOException {
+        QueryModel query = new QueryModel(
+            "FindUserExternalId",
+            QueryType.OPTIONAL,
+            "users",
+            "SELECT external_id FROM users WHERE id = ?",
+            List.of(1),
+            List.of(new QueryColumn("external_id", ColumnType.UUID, false)),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains("public Optional<UUID> findUserExternalId(Long id)"),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                "private static final RowMapper<UUID> findUserExternalIdRowMapper = "
+                    + "resultSet -> resultSet.getObject(1, UUID.class);"
+            ),
+            source
+        );
+
+        assertFalse(source.contains("public record"), source);
+
+        assertCompiles(file);
+    }
+
+    /** The same shape for a {@code :many} read, inside the List. */
+    @Test
+    void shouldReturnAListOfValuesOfOneNonNullColumn() throws IOException {
+        QueryModel query = new QueryModel(
+            "ListUserNames",
+            QueryType.MANY,
+            "users",
+            "SELECT name FROM users",
+            List.of(),
+            List.of(new QueryColumn("name", ColumnType.VARCHAR, false)),
+            List.of(),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(source.contains("public List<String> listUserNames()"), source);
+
+        assertTrue(
+            source.contains(
+                "private static final RowMapper<String> listUserNamesRowMapper = "
+                    + "resultSet -> resultSet.getObject(1, String.class);"
+            ),
+            source
+        );
+
+        assertFalse(source.contains("public record"), source);
+
+        assertCompiles(file);
+    }
+
+    /** A returning write reads its one non-null returned column as a value. */
+    @Test
+    void shouldReturnTheValueOfOneNonNullReturnedColumn() throws IOException {
+        QueryModel query = new QueryModel(
+            "InsertUser",
+            QueryType.ONE,
+            "users",
+            "INSERT INTO users (name) VALUES (?) RETURNING id",
+            List.of(1),
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(source.contains("public Long insertUser(String name)"), source);
+
+        assertTrue(
+            source.contains(
+                "private static final RowMapper<Long> insertUserRowMapper = "
+                    + "resultSet -> resultSet.getObject(1, Long.class);"
+            ),
+            source
+        );
+
+        assertFalse(source.contains("public record"), source);
+
+        assertCompiles(file);
+    }
+
+    /** A non-null enum column returns the generated enum of its enum type. */
+    @Test
+    void shouldReturnTheValueOfOneNonNullEnumColumn() throws IOException {
+        QueryModel query = new QueryModel(
+            "GetStageSetting",
+            QueryType.ONE,
+            "stages",
+            "SELECT setting FROM stages WHERE handle = ?",
+            List.of(1),
+            List.of(new QueryColumn("setting", ColumnType.ENUM, false, "stage_setting")),
+            List.of(new QueryParameter(1, "handle", ColumnType.VARCHAR)),
+            null
+        );
+
+        GeneratedFile repository = generate(
+            enumGroup(
+                GROUP,
+                query,
+                new EnumType("stage_setting", List.of("indoor", "outdoor"))
+            )
+        );
+
+        String source = repository.content();
+
+        assertTrue(
+            source.contains("public StageSetting getStageSetting(String handle)"),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                "private static final RowMapper<StageSetting> getStageSettingRowMapper = "
+                    + "resultSet -> StageSetting.fromLabel(resultSet.getString(1));"
+            ),
+            source
+        );
+
+        assertFalse(source.contains("public record"), source);
+
+        assertCompiles(repository, codeGenerator.generateEnums().get(0));
+    }
+
+    /** A non-null array column returns the list of its element type. */
+    @Test
+    void shouldReturnTheValueOfOneNonNullArrayColumn() throws IOException {
+        QueryModel query = new QueryModel(
+            "GetUserTags",
+            QueryType.ONE,
+            "users",
+            "SELECT tags FROM users WHERE id = ?",
+            List.of(1),
+            List.of(new QueryColumn("tags", ColumnType.VARCHAR, false, null, true)),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(source.contains("public List<String> getUserTags(Long id)"), source);
+
+        assertTrue(
+            source.contains(
+                "private static final RowMapper<List<String>> getUserTagsRowMapper = "
+                    + "resultSet -> org.sqlcj.runtime.SqlArray.getList(resultSet, 1, String.class);"
+            ),
+            source
+        );
+
+        assertFalse(source.contains("public record"), source);
+
+        assertCompiles(file);
+    }
+
+    /** One nullable column keeps its result record, which may hold null. */
+    @Test
+    void shouldKeepTheResultRecordOfOneNullableColumn() throws IOException {
+        QueryModel query = new QueryModel(
+            "GetUserName",
+            QueryType.ONE,
+            "users",
+            "SELECT name FROM users WHERE id = ?",
+            List.of(1),
+            List.of(new QueryColumn("name", ColumnType.VARCHAR, true)),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(source.contains("public GetUserNameResult getUserName(Long id)"), source);
+
+        assertEquals(
+            List.of("String name"),
+            recordComponents(source, "GetUserNameResult")
+        );
+
+        assertTrue(
+            source.contains(
+                "private static final RowMapper<GetUserNameResult> getUserNameRowMapper ="
+            ),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /** One non-null embedded row keeps the result record that holds it. */
+    @Test
+    void shouldKeepTheResultRecordOfOneEmbeddedRowComponent() throws IOException {
+        QueryModel query = new QueryModel(
+            "ListUserRows",
+            QueryType.MANY,
+            "users",
+            "SELECT u.* FROM users u",
+            List.of(),
+            List.of(usersRowColumn("u")),
+            List.of(),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(source.contains("public List<ListUserRowsResult> listUserRows()"), source);
+
+        assertEquals(
+            List.of("UsersRow u"),
+            recordComponents(source, "ListUserRowsResult")
+        );
+
+        assertCompilesWithRows(file);
+    }
+
+    /** A whole-table result of a one-column table keeps its shared row. */
+    @Test
+    void shouldKeepTheSharedRowOfAOneColumnTable() throws IOException {
+        QueryModel query = new QueryModel(
+            "GetCode",
+            QueryType.ONE,
+            "codes",
+            "SELECT * FROM codes WHERE code = ?",
+            List.of(1),
+            List.of(new QueryColumn("code", ColumnType.VARCHAR, false)),
+            List.of(new QueryParameter(1, "code", ColumnType.VARCHAR)),
+            "codes"
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(source.contains("public CodesRow getCode(String code)"), source);
+
+        assertTrue(
+            source.contains("private static final RowMapper<CodesRow> codesRowMapper ="),
+            source
+        );
+
+        assertFalse(source.contains("public record GetCodeResult("), source);
+
+        assertCompilesWithRows(file);
+    }
+
+    /** Two non-null columns keep their result record. */
+    @Test
+    void shouldKeepTheResultRecordOfTwoNonNullColumns() throws IOException {
+        QueryModel query = new QueryModel(
+            "CountUsersByCode",
+            QueryType.MANY,
+            "users",
+            "SELECT code, COUNT(*) AS total FROM users GROUP BY code",
+            List.of(),
+            List.of(
+                new QueryColumn("code", ColumnType.VARCHAR, false),
+                new QueryColumn("total", ColumnType.BIGINT, false)
+            ),
+            List.of(),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains("public List<CountUsersByCodeResult> countUsersByCode()"),
+            source
+        );
+
+        assertEquals(
+            List.of("String code", "Long total"),
+            recordComponents(source, "CountUsersByCodeResult")
+        );
+
+        assertCompiles(file);
     }
 
     @Test
@@ -1398,7 +1741,8 @@ class JavaCodeGeneratorTest {
                     "id",
                     ColumnType.BIGINT,
                     false
-                )
+                ),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
             ),
             List.of(),
             null
@@ -1420,7 +1764,8 @@ class JavaCodeGeneratorTest {
             SQL,
             List.of(1, 2),
             List.of(
-                new QueryColumn("id", ColumnType.BIGINT, false)
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
             ),
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
@@ -2411,9 +2756,12 @@ class JavaCodeGeneratorTest {
             "GetUser",
             QueryType.ONE,
             "users",
-            "SELECT id FROM users WHERE id = ?",
+            "SELECT id, name FROM users WHERE id = ?",
             List.of(1),
-            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
+            ),
             List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
             null
         );

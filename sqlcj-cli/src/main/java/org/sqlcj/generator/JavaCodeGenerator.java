@@ -206,7 +206,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
         for (int index = 0; index < group.queries().size(); index++) {
             QueryModel query = group.queries().get(index);
 
-            if (hasResultType(query) && !returnsSharedRow(query)) {
+            if (hasResultType(query) && !returnsSharedRow(query) && !returnsValue(query)) {
                 recordGeneratedType(names.queries().get(index).resultTypeName());
             }
 
@@ -674,6 +674,29 @@ public final class JavaCodeGenerator implements CodeGenerator {
         return query.rowTable() != null;
     }
 
+    /**
+     * A query whose result is exactly one plain column that cannot be NULL
+     * returns that column's value, so it generates no result record of its own.
+     * A plain column is one that holds no embedded row, an enum and an array
+     * column included.
+     */
+    private boolean returnsValue(QueryModel query) {
+        if (!hasResult(query) || returnsSharedRow(query) || query.columns().size() != 1) {
+            return false;
+        }
+
+        QueryColumn column = query.columns().get(0);
+
+        return !column.row() && !column.nullable();
+    }
+
+    /** The Java type of the value one value-returning query reads. */
+    private String valueType(QueryModel query) {
+        QueryColumn column = query.columns().get(0);
+
+        return javaType(column.type(), column.enumType(), column.array());
+    }
+
     private String resolveImport(ColumnType type) {
         return switch (type) {
             case DATE -> "java.time.LocalDate";
@@ -743,7 +766,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             QueryModel query = group.queries().get(index);
             JavaNames.QueryNames queryNames = names.queries().get(index);
 
-            if (hasResultType(query) && !returnsSharedRow(query)) {
+            if (hasResultType(query) && !returnsSharedRow(query) && !returnsValue(query)) {
                 members.add(
                     generateRecord(
                         queryNames.resultTypeName(),
@@ -757,7 +780,9 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 members.add(generateParamsRecord(query, queryNames));
             }
 
-            if (hasResult(query) && !returnsSharedRow(query)) {
+            if (returnsValue(query)) {
+                members.add(generateValueRowMapper(query, queryNames.rowMapperName()));
+            } else if (hasResult(query) && !returnsSharedRow(query)) {
                 members.add(
                     generateRowMapper(
                         queryNames.resultTypeName(),
@@ -1303,16 +1328,35 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     private String generateReturnType(QueryModel query, JavaNames.QueryNames names) {
+        String resultType = returnsValue(query)
+            ? valueType(query)
+            : names.resultTypeName();
+
         return switch (query.type()) {
-            case ONE -> names.resultTypeName();
-            case OPTIONAL -> "Optional<" + names.resultTypeName() + ">";
-            case MANY -> "List<" + names.resultTypeName() + ">";
+            case ONE -> resultType;
+            case OPTIONAL -> "Optional<" + resultType + ">";
+            case MANY -> "List<" + resultType + ">";
             case EXEC -> "int";
             case BATCH_EXEC -> "int[]";
             case EXEC_RESULT -> "void";
             case BATCH_MANY -> "void";
             case BATCH_ONE -> "void";
         };
+    }
+
+    /**
+     * Generates the row mapper of one value-returning query, which reads the
+     * single column of its result as the value the method returns.
+     */
+    private String generateValueRowMapper(QueryModel query, String mapperName) {
+        return """
+            private static final RowMapper<%s> %s = resultSet -> %s;
+            """
+            .formatted(
+                valueType(query),
+                mapperName,
+                generateResultMapping(query.columns().get(0), 1).strip()
+            );
     }
 
     private String generateRowMapper(String typeName, String mapperName, List<QueryColumn> columns) {

@@ -42,9 +42,9 @@ sqlcj accepts five annotations. Any other annotation is rejected.
 
 | Annotation | Accepted statements | Generated return type | Result when no row matches | Result when several rows match |
 | --- | --- | --- | --- | --- |
-| `:one` | `SELECT`, or a write with `RETURNING` | the generated result record | `QueryCardinalityException` | `QueryCardinalityException` |
-| `:optional` | `SELECT`, or a write with `RETURNING` | `Optional<`result record`>` | `Optional.empty()` | `QueryCardinalityException` |
-| `:many` | `SELECT`, or a write with `RETURNING` | `List<`result record`>` | an empty list | every row |
+| `:one` | `SELECT`, or a write with `RETURNING` | the result type: the generated result record, a row record, or the value of a single non-null column | `QueryCardinalityException` | `QueryCardinalityException` |
+| `:optional` | `SELECT`, or a write with `RETURNING` | `Optional<`result type`>` | `Optional.empty()` | `QueryCardinalityException` |
+| `:many` | `SELECT`, or a write with `RETURNING` | `List<`result type`>` | an empty list | every row |
 | `:exec` | `INSERT`, `UPDATE`, `DELETE` without `RETURNING` | `int` affected-row count | `0` | the affected-row count |
 | `:batchexec` | `INSERT`, `UPDATE`, `DELETE` without `RETURNING`, executed once per batched row | `int[]`, one affected-row count per batched row | `0` in that row's own position | the affected-row count of each row |
 
@@ -97,8 +97,9 @@ configuration entry.
   every read's do, and a column reference resolves only through an enclosing
   level, so a `LATERAL` body and a predicate subquery read the outer query's
   columns there and every other such `SELECT` names no column at all. The query
-  reads no table, so it returns its own result record and the generated query
-  documentation states no table. A bare `*` has no source to expand and is
+  reads no table, so it returns no shared row record and the generated query
+  documentation states no table; the cast result column of each read above is
+  nullable, so each returns its own result record. A bare `*` has no source to expand and is
   rejected, as
   [Unsupported Queries](#unsupported-queries) states, while a `qualifier.*`
   written in such a read's projection keeps the
@@ -369,16 +370,17 @@ GROUP BY r.author_id;
   except before `*`: `COUNT(DISTINCT *)` and `COUNT(ALL *)` are rejected,
   because PostgreSQL's grammar admits `*` alone.
 - The alias is required and may be written with or without `AS`, so both
-  `COUNT(*) AS total` and `COUNT(*) total` generate the result record
-  `CountAuthorsResult` with the single component `total`. A missing alias is
+  `COUNT(*) AS total` and `COUNT(*) total` name the result column `total`,
+  which the `:one` read above, whose result is that non-null column alone,
+  returns as a `Long`. A missing alias is
   rejected with `<aggregate> requires a result alias, such as <aggregate> AS
   total.`, naming the aggregate as the query writes it, which for `COUNT(*)` is
   `COUNT(*) requires a result alias, such as COUNT(*) AS total.`
 - A `COUNT` is a non-null `Long` whatever it counts, because `count` returns
   `bigint` and counts `0` rows rather than none, so `COUNT(*)`,
   `COUNT(column)`, `COUNT(DISTINCT column)`, `COUNT(<source>.*)`, and
-  `COUNT(lower(name))` each generate a non-null `Long` component, a count of a
-  null-extended column included. A counted column, and the qualifier of
+  `COUNT(lower(name))` each generate a non-null `Long` result column, a count
+  of a null-extended column included. A counted column, and the qualifier of
   `COUNT(<source>.*)`, must be found in the query's sources as any other
   reference is, but the column's type is never read, so a column of a type
   sqlcj does not map may be counted. Every other argument reaches the database
@@ -493,7 +495,8 @@ WHERE u.name = :name;
 - An `EXISTS` projection stands in its own position, so it may be the only item
   of a `SELECT` without `FROM`, as in
   `SELECT EXISTS (SELECT 1 FROM users WHERE name = :name) AS present`, which
-  names no table and no shared row, and it may stand beside direct columns,
+  names no table and no shared row and, as a non-null column alone, returns
+  `Boolean` itself, and it may stand beside direct columns,
   wildcards, aggregates, casts, and another `EXISTS`.
 - Only an `EXISTS` whose operand is the subquery itself is this projection.
   `NOT EXISTS (SELECT 1 FROM users) AS missing`, which the parser reports as a
@@ -819,7 +822,8 @@ LIMIT $1;
   `MINUS is not supported; write EXCEPT.`
 - A set operation whose every branch returns one table's complete row returns
   that table's shared `<TableName>Row` record. Any other returns this query's
-  own result record of flat columns, and a wildcard written beside another item
+  own flat columns, as its own result record or, for one column that cannot be
+  NULL, as that column's value, and a wildcard written beside another item
   contributes the columns it expands to rather than an embedded row, because a
   set operation's column belongs to no one source.
 - An `ORDER BY` after the last branch orders the whole result, so a column
@@ -1228,13 +1232,15 @@ which names its result component exactly as a `SELECT` item's alias does, while
 its type comes from the schema column and its nullability from that column and
 its source, so a column of a null-extended source is nullable.
 
-A returning write produces the same generated record, positional row mapper, and
+A returning write produces the same result shape, positional row mapper, and
 cardinality behavior as a read, so a database-generated `SERIAL` or `BIGSERIAL`
 value is read back with its declared type. A clause that is exactly a wildcard
 of the target returns the target table's shared `<TableName>Row` record, on a
 joined and on a single-table write alike, while a `RETURNING` column list,
 including one whose items are a wildcard of the target and another column, keeps
-the query's own `<QueryName>Result` record.
+the query's own `<QueryName>Result` record, except that a list of exactly one
+column that cannot be NULL returns that column's value, so a `:one`
+`RETURNING id` of a `BIGSERIAL` key returns `Long`.
 
 An unknown column and `RETURNING` on `:exec` are rejected, and a computed
 `RETURNING` item, with or without an alias, is rejected as
@@ -1551,8 +1557,8 @@ The two queries therefore generate
 assigneeId, Short maxPriority, String sort, Integer pageSize, Integer
 pageOffset)`, which returns `List<TasksRow>`, and
 `countSearchedTasks(Long projectId, String search, List<TaskStatus> statuses,
-Long assigneeId, Short maxPriority)`, which returns one
-`CountSearchedTasksResult(Long total)`.
+Long assigneeId, Short maxPriority)`, whose result is the non-null `total`
+column alone, so it returns `Long`.
 
 At the occurrence that neither a clause nor a cast types, sqlcj writes the
 parameter's own PostgreSQL type, so the search executes as `?::text`, the status
@@ -1620,6 +1626,22 @@ included.
   Each repository keeps its own private `RowMapper` field for a row one of its
   queries returns whole, generated after the constructor in the order its
   queries first use it.
+- A `:one`, `:optional`, or `:many` query whose result is exactly one column
+  that holds no embedded row and cannot be NULL returns that column's own Java
+  type, as `T`, `Optional<T>`, and `List<T>`, and generates no
+  `<QueryName>Result` record. Its private `RowMapper<T>` field reads that one
+  column by its position, as in
+  `private static final RowMapper<Long> countAuthorsRowMapper = resultSet -> resultSet.getObject(1, Long.class);`,
+  so `SELECT COUNT(*) AS total FROM authors` returns `Long` and a `:many` read
+  of one `NOT NULL` column returns `List<String>`. A non-null column of an enum
+  type returns the generated Java enum, and a non-null array column returns its
+  `List<T>`, each read exactly as the same column of a record is.
+  Every other result keeps its shape: a single column that can be NULL — a
+  nullable column, a column of a null-extended source, an aliased `MIN`,
+  `MAX`, `SUM`, or `AVG`, or an aliased cast, a cast of a scalar subquery
+  included — keeps the `<QueryName>Result` record, as does a sole component
+  holding an embedded row and a result of two or more columns, while a query
+  that returns one complete table row keeps its `<TableName>Row` record.
 - Every other `:one`, `:optional`, or `:many` query generates a nested `public record` named
   `<QueryName>Result` in upper camel case, whose components follow the
   selected-column order and are named after each column's projection alias or
@@ -3060,6 +3082,27 @@ Generated Java:
 - `SqlcjCompilerIntegrationTest.shouldGenerateCompilableJavaFiles` and
   `SqlcjCompilerIntegrationTest.shouldGenerateCompilableJavaForReturningWrites`
   compile the generated output of the supported query shapes.
+- `JavaCodeGeneratorTest.shouldReturnTheValueOfOneNonNullColumn`,
+  `JavaCodeGeneratorTest.shouldReturnAnOptionalValueOfOneNonNullColumn`,
+  `JavaCodeGeneratorTest.shouldReturnAListOfValuesOfOneNonNullColumn`,
+  `JavaCodeGeneratorTest.shouldReturnTheValueOfOneNonNullReturnedColumn`,
+  `JavaCodeGeneratorTest.shouldReturnTheValueOfOneNonNullEnumColumn`, and
+  `JavaCodeGeneratorTest.shouldReturnTheValueOfOneNonNullArrayColumn` cover the
+  value result of a single non-null column: its return type, its one-column row
+  mapper, the absence of a result record, and compilation, for a read, an
+  `:optional` read, a `:many` read, a `RETURNING` write, an enum column, and an
+  array column.
+- `JavaCodeGeneratorTest.shouldKeepTheResultRecordOfOneNullableColumn`,
+  `JavaCodeGeneratorTest.shouldKeepTheResultRecordOfOneEmbeddedRowComponent`,
+  `JavaCodeGeneratorTest.shouldKeepTheSharedRowOfAOneColumnTable`, and
+  `JavaCodeGeneratorTest.shouldKeepTheResultRecordOfTwoNonNullColumns` cover the
+  results that keep their shape.
+- `PostgresIntegrationTest.shouldExecuteGeneratedScalarCountAgainstPostgres`,
+  `PostgresIntegrationTest.shouldExecuteGeneratedInsertReturningAgainstPostgres`,
+  and
+  `ReferenceServiceIntegrationTest.shouldExecuteTheGeneratedCriteriaSearch`
+  execute a value result against PostgreSQL 16: a `COUNT` read, a
+  `RETURNING` serial key, and the criteria search's matching count.
 - `JavaCodeGeneratorTest.shouldShareOneRowRecordAcrossFullRowQueriesOfOneTable`,
   `JavaCodeGeneratorTest.shouldGenerateOneRowRecordPerRowTable`,
   `JavaCodeGeneratorTest.shouldDisambiguateRowMapperFromQueryRowMapper`, and
