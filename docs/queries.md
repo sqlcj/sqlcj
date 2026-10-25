@@ -79,6 +79,30 @@ configuration entry.
 
 ### Sources
 
+- A `SELECT` may omit `FROM`, wherever sqlcj analyzes a plain `SELECT`: at the
+  top level, in a branch of a set operation, as a `WITH` body, as a subquery or
+  a `LATERAL` source, and in a predicate subquery. It is then analyzed over no
+  source at all, as PostgreSQL reads one row of the written values, so a
+  sequence value and an advisory lock are read as:
+
+  ```sql
+  -- name: NextOrderNumber :one
+  SELECT nextval('order_number_seq')::bigint AS next;
+
+  -- name: TryLockOrder :one
+  SELECT pg_try_advisory_xact_lock(:key::bigint)::boolean AS locked;
+  ```
+
+  Its projection, `WHERE`, `GROUP BY`, `HAVING`, and pagination follow the rules
+  every read's do, and a column reference resolves only through an enclosing
+  level, so a `LATERAL` body and a predicate subquery read the outer query's
+  columns there and every other such `SELECT` names no column at all. The query
+  reads no table, so it returns its own result record and the generated query
+  documentation states no table. A bare `*` has no source to expand and is
+  rejected, as
+  [Unsupported Queries](#unsupported-queries) states, while a `qualifier.*`
+  written in such a read's projection keeps the
+  `Unknown source qualifier in query: <q>` its qualifier states.
 - The `FROM` item must be a table of that schema, a `WITH` clause in scope, or a
   subquery, optionally with an alias and optionally `LATERAL`. A doubly
   parenthesized source, such as `FROM ((SELECT ...)) s`, is rejected as
@@ -830,8 +854,8 @@ ORDER BY id;
   The **recursive term**, the last branch, reads those columns through the
   clause, so a placeholder compared with one of them is typed from it.
 - A plain `SELECT` of the first term, written in parentheses or not, may omit
-  `FROM`, which is how a series' seed row is written. A `SELECT` without `FROM`
-  anywhere else keeps the source rejection [Sources](#sources) states.
+  `FROM`, which is how a series' seed row is written, and is analyzed over no
+  source as [Sources](#sources) states every `FROM`-less `SELECT` is.
 - Each column of the recursive term must resolve, by the set operation type
   rules, to the type the first term states, as PostgreSQL requires. A column
   that resolves to another type is rejected as
@@ -1817,6 +1841,11 @@ query name, and its header line.
   subquery alias, a column list on a `WITH` name that names more columns than
   its body returns, and a derived source two of whose columns expose one name,
   each with the diagnostic [Sources](#sources) states.
+- A bare `*` in a `SELECT` without `FROM`, which has no source to expand,
+  wherever such a `SELECT` is analyzed, the predicate subqueries included,
+  rejected as
+  `SELECT * without FROM selects no columns; list each value with a cast and an
+  alias, such as SELECT now()::timestamptz AS now.`
 - A `WITH` clause outside the subset, on a read and on a write alike: a
   data-modifying body and a `SEARCH` or `CYCLE` clause, each with the
   diagnostic [Sources](#sources) states, and, in a recursive list, a read of
@@ -2037,6 +2066,21 @@ Reads:
   `QueryAnalyzerTest.shouldResolveQueryParametersInsideNestedAndOrExpressions`,
   and `QueryAnalyzerTest.shouldResolveQueryParametersInsideInExpression` cover
   the accepted read shapes.
+- `QueryAnalyzerTest.shouldAnalyzeASelectWithoutFrom`,
+  `QueryAnalyzerTest.shouldTypeAPlaceholderOfASelectWithoutFrom`,
+  `QueryAnalyzerTest.shouldAnalyzeASelectWithoutFromAsAWithBody`,
+  `QueryAnalyzerTest.shouldAnalyzeASelectWithoutFromAsASubquerySource`,
+  `QueryAnalyzerTest.shouldAnalyzeASelectWithoutFromAsASetOperationBranch`,
+  `QueryAnalyzerTest.shouldAnalyzeASelectWithoutFromInsideExists`, and
+  `QueryAnalyzerTest.shouldRejectABareWildcardWithoutFrom` cover the `SELECT`
+  without `FROM`: the sequence value and the advisory lock whose cast
+  placeholder is its parameter, each naming no table and no shared row, such a
+  `SELECT` as a `WITH` body, as a subquery source, as a top-level
+  set-operation branch, and inside `EXISTS`, and the bare `*` rejection at the
+  top level and inside `EXISTS`;
+  `JavaCodeGeneratorTest.shouldGenerateJavaDocWithoutATableForASourcelessQuery`
+  covers the generated documentation of a query that reads no source, which
+  states its name and type alone and compiles.
 - `QueryAnalyzerTest.shouldEmbedTheRowOfEachQualifiedWildcardOfAJoinedRead`,
   `QueryAnalyzerTest.shouldEmbedOneTableRowUnderEachOfItsAliases`,
   `QueryAnalyzerTest.shouldEmbedTheRowOfAWildcardBesideAScalarCount`,
@@ -2447,9 +2491,8 @@ Reads:
   list inside a subquery source, and every rejection: the clause read in its
   first term, in a plain body, in a subquery of the last branch, and in an
   `INTERSECT`-ended body, a clause read before its declaration, `SEARCH`,
-  `CYCLE`, `MINUS`, a recursive term of another column count, the first-term
-  type diagnostic, and the `FROM`-less body outside a first term that keeps the
-  source rejection;
+  `CYCLE`, `MINUS`, a recursive term of another column count, and the
+  first-term type diagnostic;
   `PostgresIntegrationTest.shouldExecuteGeneratedRecursiveCtesAgainstPostgres`
   executes a hierarchy walk over a self-referencing table and a `FROM`-less
   seed series against PostgreSQL 16 and confirms that PostgreSQL itself rejects
