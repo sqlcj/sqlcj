@@ -47,7 +47,7 @@ class JavaCodeGeneratorNamingTest {
         GeneratedFile file = generate(
             query(
                 "Class",
-                List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+                List.of(new QueryColumn("id", ColumnType.BIGINT, true)),
                 List.of()
             )
         );
@@ -68,7 +68,7 @@ class JavaCodeGeneratorNamingTest {
         GeneratedFile file = generate(
             query(
                 "Get*/User",
-                List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+                List.of(new QueryColumn("id", ColumnType.BIGINT, true)),
                 List.of()
             )
         );
@@ -90,7 +90,7 @@ class JavaCodeGeneratorNamingTest {
         GeneratedFile file = generate(
             query(
                 "List",
-                List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+                List.of(new QueryColumn("id", ColumnType.BIGINT, true)),
                 List.of()
             )
         );
@@ -182,7 +182,7 @@ class JavaCodeGeneratorNamingTest {
         GeneratedFile file = generate(
             query(
                 "FindUsers",
-                List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+                List.of(new QueryColumn("id", ColumnType.BIGINT, true)),
                 List.of(
                     new QueryParameter(1, "executor", ColumnType.BIGINT),
                     new QueryParameter(2, "user id", ColumnType.VARCHAR),

@@ -1276,7 +1276,7 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             source.contains(
-                "public List<FindUserProfileResult> findUserProfile(Long id, String nickname)"
+                "public List<Long> findUserProfile(Long id, String nickname)"
             ),
             source
         );
@@ -1615,13 +1615,13 @@ class SqlcjCompilerIntegrationTest {
         assertEquals(List.of("String label"), recordComponents(source, "ListNamesResult"));
 
         assertTrue(
-            source.contains("public List<ListUnorderedUsersResult> listUnorderedUsers()"),
+            source.contains("public List<Long> listUnorderedUsers()"),
             source
         );
 
-        assertEquals(
-            List.of("Long value"),
-            recordComponents(source, "ListUnorderedUsersResult")
+        assertFalse(
+            source.contains("public record ListUnorderedUsersResult("),
+            source
         );
 
         assertTrue(
@@ -1791,7 +1791,7 @@ class SqlcjCompilerIntegrationTest {
             """
                 CREATE TABLE users
                 (
-                    id BIGINT NOT NULL
+                    id BIGINT
                 );
                 """
         );
@@ -1811,7 +1811,7 @@ class SqlcjCompilerIntegrationTest {
             """
                 CREATE TABLE orders
                 (
-                    id BIGINT NOT NULL
+                    id BIGINT
                 );
                 """
         );
@@ -3637,7 +3637,7 @@ class SqlcjCompilerIntegrationTest {
                 UPDATE users
                 SET name = $2
                 WHERE id = $1
-                RETURNING id new_id;
+                RETURNING id new_id, name;
 
                 -- name: DeleteUsers :many
                 DELETE FROM users u
@@ -3678,11 +3678,11 @@ class SqlcjCompilerIntegrationTest {
         assertTrue(repository.contains("public UpdateUserResult updateUser(Long id, String name)"));
 
         assertEquals(
-            List.of("Long newId"),
+            List.of("Long newId", "String name"),
             recordComponents(repository, "UpdateUserResult")
         );
 
-        assertTrue(repository.contains("RETURNING id new_id"));
+        assertTrue(repository.contains("RETURNING id new_id, name"));
 
         assertTrue(repository.contains("public List<DeleteUsersResult> deleteUsers(Boolean active)"));
 

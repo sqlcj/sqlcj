@@ -1141,9 +1141,12 @@ class ReferenceServiceIntegrationTest {
         }
     }
 
-    /** The rows of a title read whose title is the set operation test's own. */
-    private long sharedTitles(List<?> rows) throws Exception {
-        return componentsOf(rows, "title").stream()
+    /**
+     * The titles of a title read, which returns its single non-null column as a
+     * value, that are the set operation test's own title.
+     */
+    private long sharedTitles(List<?> titles) {
+        return titles.stream()
             .filter("Shared Title"::equals)
             .count();
     }
@@ -1973,10 +1976,7 @@ class ReferenceServiceIntegrationTest {
 
             assertEquals(
                 4L,
-                component(
-                    invoke(repository, "countSearchedTasks", projectId, null, null, null, null),
-                    "total"
-                ),
+                invoke(repository, "countSearchedTasks", projectId, null, null, null, null),
                 "the count counts every match while the search reads one page"
             );
         }
@@ -2023,17 +2023,14 @@ class ReferenceServiceIntegrationTest {
 
         assertEquals(
             (long) matches.size(),
-            component(
-                invoke(
-                    repository,
-                    "countSearchedTasks",
-                    projectId,
-                    search,
-                    statuses,
-                    assigneeId,
-                    maxPriority
-                ),
-                "total"
+            invoke(
+                repository,
+                "countSearchedTasks",
+                projectId,
+                search,
+                statuses,
+                assigneeId,
+                maxPriority
             ),
             "the count query reports as many tasks as the search reads"
         );

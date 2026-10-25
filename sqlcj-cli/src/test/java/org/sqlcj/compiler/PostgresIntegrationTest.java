@@ -1668,9 +1668,9 @@ class PostgresIntegrationTest {
 
     /**
      * Covers the scalar count end to end: a {@code :one} count read is
-     * generated, compiled, and executed against PostgreSQL, so its result
-     * record exposes one {@code Long} component that counts the matching rows
-     * and is {@code 0} when none match.
+     * generated, compiled, and executed against PostgreSQL, so it returns the
+     * {@code Long} that counts the matching rows, which is {@code 0} when none
+     * match.
      */
     @Test
     void shouldExecuteGeneratedScalarCountAgainstPostgres() throws Exception {
@@ -1697,18 +1697,11 @@ class PostgresIntegrationTest {
                 String.class
             );
 
-            Object matching = count.invoke(repository, "A%");
+            assertEquals(Long.class, count.getReturnType());
 
-            assertEquals(List.of("total"), recordComponentNames(matching));
+            assertEquals(2L, count.invoke(repository, "A%"));
 
-            assertEquals(
-                Long.class,
-                matching.getClass().getRecordComponents()[0].getType()
-            );
-
-            assertEquals(2L, component(matching, "total"));
-
-            assertEquals(0L, component(count.invoke(repository, "Z%"), "total"));
+            assertEquals(0L, count.invoke(repository, "Z%"));
         }
     }
 
@@ -5353,9 +5346,9 @@ class PostgresIntegrationTest {
     }
 
     /**
-     * Covers a returning insert: the database-generated serial values and the
-     * target-table order of {@code RETURNING *} are read through the generated
-     * typed result record.
+     * Covers a returning insert: a database-generated serial value returned on
+     * its own is read as its Java type, and the target-table order of
+     * {@code RETURNING *} is read through the generated typed result record.
      */
     @Test
     void shouldExecuteGeneratedInsertReturningAgainstPostgres() throws Exception {
@@ -5381,12 +5374,9 @@ class PostgresIntegrationTest {
                 String.class
             );
 
-            Object serialIdResult = serialIdMethod.invoke(repository, 1L, 42, "Alice");
+            assertEquals(Integer.class, serialIdMethod.getReturnType());
 
-            assertNotNull(serialIdResult);
-
-            assertEquals(List.of("serialId"), recordComponentNames(serialIdResult));
-            assertEquals(1, component(serialIdResult, "serialId"));
+            assertEquals(1, serialIdMethod.invoke(repository, 1L, 42, "Alice"));
 
             Method rowMethod = repository.getClass().getMethod(
                 "insertUserReturningRow",
@@ -6519,7 +6509,7 @@ class PostgresIntegrationTest {
                 List.of(createStageMethod.getParameterTypes())
             );
 
-            Object createdStage = createStageMethod.invoke(
+            Object createdStageId = createStageMethod.invoke(
                 repository,
                 "west-wing",
                 "West Wing",
@@ -6529,9 +6519,7 @@ class PostgresIntegrationTest {
                 List.of("seated", "historic")
             );
 
-            assertNotNull(createdStage);
-
-            Object createdStageId = component(createdStage, "id");
+            assertEquals(Integer.class, createStageMethod.getReturnType());
 
             assertNotNull(createdStageId);
 
