@@ -1217,7 +1217,14 @@ A recorded column fails only the analysis of a query that
 - binds it, meaning a placeholder takes its type in a comparison, an `IN` list,
   a range bound, a `LIKE`/`ILIKE` pattern, an `INSERT` column, or an `UPDATE`
   assignment, or
-- expands it, through `SELECT *`, `SELECT qualifier.*`, or `RETURNING *`.
+- expands it, through `SELECT *`, `SELECT qualifier.*`, `RETURNING *`, or
+  `RETURNING <target>.*`.
+
+A query that reads or binds the column names it and its recorded type,
+`Column 'tags' has unsupported type JSONB[]`. A wildcard that expands it adds
+what the query may write instead, because the query never wrote the column
+itself: `Column 'tags' has unsupported type JSONB[]; a wildcard selects it, so
+list the columns the query needs instead.`
 
 Every other query over the same table compiles, including one that references
 the column without using its type, such as `WHERE tags IS NULL`.
@@ -1373,7 +1380,9 @@ Type table:
   the recorded type of an unmapped spelling and of an array, beside the mapped
   columns of the same table.
 - `QueryAnalyzerTest.shouldRejectQueryThatUsesAnUnsupportedTypeColumn` covers
-  each reading, binding, and expanding query, and
+  each reading and binding query,
+  `QueryAnalyzerTest.shouldRejectWildcardThatExpandsAnUnsupportedTypeColumn`
+  covers each expanding wildcard and its own message, and
   `QueryAnalyzerTest.shouldAnalyzeQueryBesideAnUnsupportedTypeColumn` and
   `QueryAnalyzerTest.shouldAnalyzeIsNullOnAnUnsupportedTypeColumn` cover the
   queries over the same table that still compile.
