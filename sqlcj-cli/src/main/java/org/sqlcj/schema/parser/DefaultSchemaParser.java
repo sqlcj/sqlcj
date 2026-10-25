@@ -32,6 +32,7 @@ import org.sqlcj.schema.DomainType;
 import org.sqlcj.schema.EnumType;
 import org.sqlcj.schema.Schema;
 import org.sqlcj.schema.Table;
+import org.sqlcj.schema.View;
 import org.sqlcj.sql.SqlParseReason;
 
 import java.util.ArrayList;
@@ -74,12 +75,13 @@ public class DefaultSchemaParser implements SchemaParser {
         List<Table> tables = new ArrayList<>(schema.tables());
         List<EnumType> enums = new ArrayList<>(schema.enums());
         List<DomainType> domains = new ArrayList<>(schema.domains());
+        List<View> views = new ArrayList<>(schema.views());
 
         for (SchemaSourceSplitter.SourceStatement statement : SchemaSourceSplitter.split(sql)) {
-            apply(statement, tables, enums, domains);
+            apply(statement, tables, enums, domains, views);
         }
 
-        return new Schema(tables, enums, domains);
+        return new Schema(tables, enums, domains, views);
     }
 
     /**
@@ -104,14 +106,23 @@ public class DefaultSchemaParser implements SchemaParser {
      * <p>A statement that creates a table named by a variable alone, or adds
      * constraints to one, is ignored before it is parsed at all; see
      * {@link #namesAVariableTable(List)}.
+     *
+     * <p>A view statement is classified by its words before it is parsed as
+     * well, because the parser reads only some of them and none of them states
+     * a column sqlcj models; see {@link #appliesViewStatement(List, List)}.
      */
     private void apply(
         SchemaSourceSplitter.SourceStatement statement,
         List<Table> tables,
         List<EnumType> enums,
-        List<DomainType> domains
+        List<DomainType> domains,
+        List<View> views
     ) {
         if (namesAVariableTable(statement.tokens())) {
+            return;
+        }
+
+        if (appliesViewStatement(statement.tokens(), views)) {
             return;
         }
 
@@ -412,6 +423,146 @@ public class DefaultSchemaParser implements SchemaParser {
 
         return topLevelActions(tokens.subList(index, tokens.size())).stream()
             .allMatch(action -> statesWords(action, 0, "ADD") && addsIgnoredConstraint(action));
+    }
+
+    /**
+     * Records or removes the views one statement states, and reports whether
+     * its words state such a statement at all. The views sqlcj records are the
+     * views and materialized views of the modeled namespace, by name and kind
+     * alone, from the words of
+     * {@code CREATE [OR REPLACE] [RECURSIVE] VIEW},
+     * {@code CREATE MATERIALIZED VIEW [IF NOT EXISTS]}, and
+     * {@code DROP [MATERIALIZED] VIEW [IF EXISTS]}. The words are compared
+     * case-insensitively, as PostgreSQL reads them.
+     *
+     * <p>They are classified from the statement's words alone, because the
+     * parser reads only some view statements and none of them is applied to the
+     * schema model: a view's columns stand in its query, which sqlcj does not
+     * analyze there, so a query that names a view states so instead.
+     *
+     * <p>Words outside these forms state no view statement and are left to the
+     * statement rules that follow, so a temporary view, a view of a schema
+     * sqlcj does not model, and every other form stay ignored and unrecorded.
+     * No form is ever rejected here, so every schema history that loads keeps
+     * loading: a {@code DROP} of an unrecorded name changes nothing.
+     */
+    private boolean appliesViewStatement(List<String> tokens, List<View> views) {
+        if (statesWords(tokens, 0, "CREATE")) {
+            return appliesCreateView(tokens, views);
+        }
+
+        if (!statesWords(tokens, 0, "DROP")) {
+            return false;
+        }
+
+        int index = statesWords(tokens, 1, "MATERIALIZED")
+            ? 2
+            : 1;
+
+        if (!statesWords(tokens, index, "VIEW")) {
+            return false;
+        }
+
+        List<String> names = droppedNames(tokens, index + 1);
+
+        if (names == null) {
+            return false;
+        }
+
+        for (String declaredName : names) {
+            String viewName = SchemaNamespace.modeledTypeName(declaredName);
+
+            if (viewName != null) {
+                removeView(views, viewName);
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Records the view one {@code CREATE} states, and reports whether its words
+     * state such a statement at all. Words that state no name after the view
+     * words record nothing and are left to the statement rules that follow.
+     */
+    private boolean appliesCreateView(List<String> tokens, List<View> views) {
+        int index = 1;
+        boolean materialized = statesWords(tokens, index, "MATERIALIZED");
+
+        if (materialized) {
+            index++;
+        } else {
+            if (statesWords(tokens, index, "OR", "REPLACE")) {
+                index += 2;
+            }
+
+            if (statesWords(tokens, index, "RECURSIVE")) {
+                index++;
+            }
+        }
+
+        if (!statesWords(tokens, index, "VIEW")) {
+            return false;
+        }
+
+        index++;
+
+        if (materialized && statesWords(tokens, index, "IF", "NOT", "EXISTS")) {
+            index += 3;
+        }
+
+        int nameEnd = afterTypeName(tokens, index);
+
+        if (nameEnd < 0) {
+            return false;
+        }
+
+        String viewName = SchemaNamespace.modeledTypeName(declaredName(tokens, index, nameEnd));
+
+        if (viewName != null) {
+            addView(new View(viewName, materialized), views);
+        }
+
+        return true;
+    }
+
+    /**
+     * Appends one view, and replaces a recorded view of the same name in its
+     * position, because PostgreSQL holds one relation of a name at a time.
+     */
+    private void addView(View view, List<View> views) {
+        int index = indexOfView(views, view.name());
+
+        if (index < 0) {
+            views.add(view);
+
+            return;
+        }
+
+        views.set(index, view);
+    }
+
+    /**
+     * Removes the recorded view of {@code viewName}, of either kind, if the
+     * schema has one.
+     */
+    private void removeView(List<View> views, String viewName) {
+        int index = indexOfView(views, viewName);
+
+        if (index >= 0) {
+            views.remove(index);
+        }
+    }
+
+    /** View names are matched case-insensitively, as a query names them. */
+    private int indexOfView(List<View> views, String viewName) {
+        for (int i = 0; i < views.size(); i++) {
+            if (views.get(i).name().equalsIgnoreCase(viewName)) {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     /**
@@ -1031,7 +1182,7 @@ public class DefaultSchemaParser implements SchemaParser {
         SchemaSourceSplitter.SourceStatement statement,
         List<DomainType> domains
     ) {
-        List<String> names = droppedDomainNames(statement.tokens());
+        List<String> names = droppedNames(statement.tokens(), 2);
 
         if (names == null) {
             throw unsupportedOpening("DROP DOMAIN", statement.line());
@@ -1047,13 +1198,14 @@ public class DefaultSchemaParser implements SchemaParser {
     }
 
     /**
-     * The declared names of one {@code DROP DOMAIN}, whose words must state
-     * {@code DROP DOMAIN [IF EXISTS] <name> [, <name> ...]
-     * [CASCADE | RESTRICT]}, or {@code null} when they state anything else.
+     * The declared names of one {@code DROP}, whose words must state
+     * {@code [IF EXISTS] <name> [, <name> ...] [CASCADE | RESTRICT]} from
+     * {@code index} on, or {@code null} when they state anything else.
+     * {@code index} stands after the dropped object's words, which are two for
+     * a {@code DROP DOMAIN} or a {@code DROP VIEW} and three for a
+     * {@code DROP MATERIALIZED VIEW}.
      */
-    private List<String> droppedDomainNames(List<String> tokens) {
-        int index = 2;
-
+    private List<String> droppedNames(List<String> tokens, int index) {
         if (statesWords(tokens, index, "IF", "EXISTS")) {
             index += 2;
         }

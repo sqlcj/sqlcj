@@ -4367,6 +4367,68 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
+     * A migration history that creates a view records its name, so a query that
+     * names it states that sqlcj does not model a view rather than reporting a
+     * missing table, and nothing is generated.
+     */
+    @Test
+    void shouldRejectAQueryOnAViewOfTheMigrationHistory() throws IOException {
+        Path migrations = Files.createDirectories(tempDir.resolve("migrations"));
+
+        Files.writeString(
+            migrations.resolve("V1__users.sql"),
+            """
+                CREATE TABLE users
+                (
+                    id     BIGINT NOT NULL,
+                    active BOOLEAN NOT NULL
+                );
+                """
+        );
+
+        Files.writeString(
+            migrations.resolve("V2__active_users.sql"),
+            """
+                CREATE VIEW active_users AS
+                SELECT id
+                FROM users
+                WHERE active;
+                """
+        );
+
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: ListActiveUsers :many
+                SELECT id
+                FROM active_users;
+                """
+        );
+
+        Path generatedDirectory = tempDir.resolve("generated");
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> generateUsersRepository(
+                List.of(migrations.toString()),
+                queriesFile,
+                generatedDirectory
+            )
+        );
+
+        assertEquals(
+            "Invalid query 'ListActiveUsers' in %s at line 1: ".formatted(queriesFile)
+                + "active_users is a view, which sqlcj does not model; "
+                + "write its query in a WITH clause instead.",
+            exception.getMessage()
+        );
+
+        assertFalse(Files.exists(generatedDirectory));
+    }
+
+    /**
      * A migration whose ignored statements load names the file and the line of
      * the first statement sqlcj does not accept.
      */

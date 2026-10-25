@@ -282,7 +282,10 @@ order the files are read in.
 - A table or a type qualified with any other schema is invisible: sqlcj never
   models it, every statement whose own table or type stands there is ignored
   before anything it names is resolved, and a query that names such a table is
-  rejected as an unknown table. `search_path` is not followed, so an
+  rejected as
+  `<schema>.<t> belongs to schema <schema>, which sqlcj does not model; sqlcj
+  models only the public schema.`, whether or not the snapshot creates it.
+  `search_path` is not followed, so an
   unqualified name always belongs to the one namespace sqlcj models, whatever a
   `SET search_path` statement in the snapshot says.
 
@@ -879,7 +882,7 @@ statements and files before them left; the enum-type statements are listed in
 | `ALTER TABLE ... SET SCHEMA <schema>`, as the statement's sole action, which is the only form PostgreSQL accepts | Removes the table, keeping the order of the remaining ones, because it moves out of the one namespace sqlcj models. `SET SCHEMA public` does nothing: the table already stands there. A table with modeled partitions is rejected as `Unsupported ALTER TABLE action: SET SCHEMA <schema> at line <n>`, because its partitions would stay in the modeled namespace following a parent sqlcj no longer models. |
 | A `CREATE TABLE` or an `ALTER TABLE` whose own table is qualified with a schema other than `public` | Ignored before anything it names is resolved, so neither its rejected clauses, its rejected actions, nor its `LIKE` and `PARTITION OF` sources are resolved and a modeled table of the same unqualified name is left alone. |
 | Any other `ALTER TABLE` action outside the ignored actions listed in [Ignored Statements](#ignored-statements) | Rejected as `Unsupported ALTER TABLE action: <action> at line <n>`, quoting the action's own SQL. |
-| `DROP` of any object other than a table, such as `DROP VIEW` or `DROP INDEX` | Ignored; see [Ignored Statements](#ignored-statements). |
+| `DROP` of any object other than a table, such as `DROP VIEW` or `DROP INDEX` | Ignored; see [Ignored Statements](#ignored-statements). A `DROP VIEW` or `DROP MATERIALIZED VIEW` changes no modeled table either, and only removes the names it states from the recorded views. |
 
 One `ALTER TABLE` may state several actions; they are applied in the written
 order. Table and column names are matched case-insensitively, as query analysis
@@ -933,7 +936,18 @@ Everything else a migration history holds is ignored, including
   `LANGUAGE`,
 - `INSERT`, `UPDATE`, `DELETE`, and `TRUNCATE`, a migration's data statements,
 - `CREATE VIEW`, `DROP VIEW`, and the `CREATE`, `REFRESH`, and `DROP` forms of
-  `MATERIALIZED VIEW`,
+  `MATERIALIZED VIEW`, which change no schema model, because a view's columns
+  stand in its own query; the views and materialized views of the modeled
+  namespace are recorded by their name and their kind nonetheless, from the
+  words of `CREATE [OR REPLACE] [RECURSIVE] VIEW`,
+  `CREATE MATERIALIZED VIEW [IF NOT EXISTS]`, and
+  `DROP [MATERIALIZED] VIEW [IF EXISTS]`, so that a query that names one is
+  rejected as
+  `<v> is a view, which sqlcj does not model; write its query in a WITH clause
+  instead.`, and a materialized view as
+  `<v> is a materialized view, which sqlcj does not model; write its query in a
+  WITH clause instead.`; a view of another schema and a temporary view are
+  recorded nowhere, and a `DROP` of a name no view is recorded of does nothing,
 - `CREATE SCHEMA` and `DROP SCHEMA`,
 - `SET`, including `SET search_path TO a, b`, `RESET`, `ANALYZE`, `VACUUM`,
   `LOCK TABLE`, `BEGIN`, `COMMIT`, `COPY`, and a plain `SELECT`, such as the
