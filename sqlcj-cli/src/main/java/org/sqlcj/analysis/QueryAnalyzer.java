@@ -161,6 +161,15 @@ public final class QueryAnalyzer {
         %s requires a result alias, such as %s AS total.""";
 
     /**
+     * The rejection of a bare {@code *} in a {@code SELECT} without
+     * {@code FROM}, which has no source for the wildcard to expand, so it names
+     * the items such a {@code SELECT} states its result with.
+     */
+    private static final String SOURCELESS_WILDCARD_REJECTION = """
+        SELECT * without FROM selects no columns; list each value with a cast and an alias, \
+        such as SELECT now()::timestamptz AS now.""";
+
+    /**
      * The rejection of a returned item that is neither a column of the write
      * target nor a bare {@code *}, which is written as the query spells it. A
      * cast does not make such an item supported, so the rejection names the
@@ -1026,7 +1035,6 @@ public final class QueryAnalyzer {
                 analyzeCommonTableExpressions(selects, analysis, List.of()),
                 true,
                 0,
-                false,
                 null
             ),
             analysis.placeholders()
@@ -1137,7 +1145,6 @@ public final class QueryAnalyzer {
             analyzeCommonTableExpressions(selects, analysis, commonTableExpressions),
             true,
             listedColumns,
-            false,
             enclosing
         );
     }
@@ -1193,10 +1200,8 @@ public final class QueryAnalyzer {
      * is the body of renames, which are the positions this projection need not
      * name, and {@code 0} elsewhere.
      *
-     * <p>{@code fromOptional} states whether this {@code SELECT} may omit
-     * {@code FROM}, which only a first-term branch of a recursive {@code WITH}
-     * clause may. Such a {@code SELECT} has no source at all, so it names no
-     * source and returns no table's complete row.
+     * <p>This {@code SELECT} may omit {@code FROM}, which reads no source at
+     * all, so it names no source and returns no table's complete row.
      *
      * <p>{@code enclosing} is the level this {@code SELECT} resolves through
      * after its own, which only the body of a {@code LATERAL} source receives
@@ -1208,12 +1213,14 @@ public final class QueryAnalyzer {
         List<Source> commonTableExpressions,
         boolean namesResultColumns,
         int listedColumns,
-        boolean fromOptional,
         Scope enclosing
     ) {
-        List<Source> sources = fromOptional && plainSelect.getFromItem() == null
-            ? List.of()
-            : resolveSources(plainSelect, analysis, commonTableExpressions, enclosing);
+        List<Source> sources = resolvePlainSelectSources(
+            plainSelect,
+            analysis,
+            commonTableExpressions,
+            enclosing
+        );
 
         Scope scope = new Scope(sources, commonTableExpressions, enclosing);
 
@@ -1292,7 +1299,6 @@ public final class QueryAnalyzer {
                     commonTableExpressions,
                     namesResultColumns && index == 0,
                     index == 0 ? listedColumns : 0,
-                    false,
                     enclosing
                 )
             );
@@ -1323,10 +1329,7 @@ public final class QueryAnalyzer {
      *
      * <p>{@code listedColumns} is the number of leading columns a column list
      * renames, which this branch is given only where it is the naming
-     * projection of the renamed derived source. {@code fromOptional} states
-     * whether a plain {@code SELECT} of this branch, parenthesized or not, may
-     * omit {@code FROM}, which only a first-term branch of a recursive
-     * {@code WITH} clause may.
+     * projection of the renamed derived source.
      *
      * <p>{@code enclosing} is the level this branch resolves through after its
      * own, which only the body of a {@code LATERAL} source receives and which
@@ -1338,7 +1341,6 @@ public final class QueryAnalyzer {
         List<Source> commonTableExpressions,
         boolean namesResultColumns,
         int listedColumns,
-        boolean fromOptional,
         Scope enclosing
     ) {
         List<Select> selects = parenthesisLevels(branch);
@@ -1358,7 +1360,6 @@ public final class QueryAnalyzer {
                 branchCommonTableExpressions,
                 namesResultColumns,
                 listedColumns,
-                fromOptional,
                 enclosing
             );
         }
@@ -1828,7 +1829,7 @@ public final class QueryAnalyzer {
         );
 
         Scope scope = new Scope(
-            resolveSources(plainSelect, analysis, commonTableExpressions, enclosing),
+            resolvePlainSelectSources(plainSelect, analysis, commonTableExpressions, enclosing),
             commonTableExpressions,
             enclosing
         );
@@ -2113,8 +2114,7 @@ public final class QueryAnalyzer {
      * own name is unreadable. Their columns, renamed by the item's column list,
      * are the columns the clause exposes, so the recursive term — the last
      * branch — reads them through a provisional source of that name appended to
-     * the scope. A plain {@code SELECT} of the first term may omit {@code FROM}
-     * there, as a series' seed row is written.
+     * the scope.
      *
      * <p>Each column of the recursive term must resolve to the type the first
      * term states, as PostgreSQL requires, so the cast that states one type for
@@ -2152,7 +2152,6 @@ public final class QueryAnalyzer {
                     scope,
                     index == 0,
                     index == 0 && columnList != null ? columnList.size() : 0,
-                    true,
                     null
                 )
             );
@@ -2179,7 +2178,6 @@ public final class QueryAnalyzer {
             List.copyOf(recursiveScope),
             false,
             0,
-            false,
             null
         );
 
@@ -3784,13 +3782,43 @@ public final class QueryAnalyzer {
     }
 
     /**
+     * Resolves the sources of one plain {@code SELECT}, which are the sources
+     * its {@code FROM} clause states and no source at all where it writes no
+     * {@code FROM} item, as PostgreSQL reads one row of the written values
+     * there.
+     *
+     * <p>Such a {@code SELECT} has no source for a bare {@code *} to expand, so
+     * a bare {@code *} there is rejected, while {@code qualifier.*} keeps the
+     * rejection its unknown qualifier states.
+     */
+    private List<Source> resolvePlainSelectSources(
+        PlainSelect plainSelect,
+        Analysis analysis,
+        List<Source> commonTableExpressions,
+        Scope enclosing
+    ) {
+        if (plainSelect.getFromItem() != null) {
+            return resolveSources(plainSelect, analysis, commonTableExpressions, enclosing);
+        }
+
+        for (SelectItem<?> selectItem : plainSelect.getSelectItems()) {
+            if (selectItem.getExpression().getClass() == AllColumns.class) {
+                throw new UnsupportedOperationException(SOURCELESS_WILDCARD_REJECTION);
+            }
+        }
+
+        return List.of();
+    }
+
+    /**
      * Resolves the ordered query sources of one read: its first {@code FROM}
      * item followed by every comma-separated and every joined source, in the
      * order the query writes them, rejecting an exposed name that repeats in
      * this level.
      *
-     * <p>A read whose caller requires a {@code FROM} clause states one absent
-     * first item here, which is rejected as the unsupported source it is.
+     * <p>Every caller resolves a {@code SELECT} that writes no {@code FROM}
+     * item of its own before this, so the first item here is one the query
+     * writes.
      */
     private List<Source> resolveSources(
         PlainSelect plainSelect,

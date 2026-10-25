@@ -179,6 +179,44 @@ class JavaCodeGeneratorTest {
         assertTrue(source.contains("Type: ONE"));
     }
 
+    /**
+     * A query that reads no source carries no table, so its documentation
+     * leaves out the table line and states its name and type alone.
+     */
+    @Test
+    void shouldGenerateJavaDocWithoutATableForASourcelessQuery() throws IOException {
+        QueryModel query = new QueryModel(
+            "NextOrderNumber",
+            QueryType.ONE,
+            null,
+            "SELECT nextval('order_number_seq')::bigint AS next",
+            List.of(),
+            List.of(new QueryColumn("next", ColumnType.BIGINT, true)),
+            List.of(),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        /**
+                         * Query: NextOrderNumber
+                         * Type: ONE
+                         */
+                    """
+                    .stripTrailing()
+            )
+        );
+
+        assertFalse(source.contains("Table:"));
+
+        assertCompiles(file);
+    }
+
     @Test
     void shouldGeneratePackageDeclaration() {
         GeneratedFile file = generate(

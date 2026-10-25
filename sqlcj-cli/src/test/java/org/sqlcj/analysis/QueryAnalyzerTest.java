@@ -2791,6 +2791,180 @@ class QueryAnalyzerTest {
         assertTrue(exception.getMessage().contains("users"));
     }
 
+    /**
+     * A plain {@code SELECT} may omit {@code FROM}, which reads no source at
+     * all, so it names no table and returns no table's complete row while its
+     * projection states the result columns, as a sequence value is read.
+     */
+    @Test
+    void shouldAnalyzeASelectWithoutFrom() {
+        String sql = "SELECT nextval('order_number_seq')::bigint AS next";
+
+        QueryModel model = analyzer.analyze(
+            new Query("NextOrderNumber", QueryType.ONE, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertNull(model.table());
+        assertNull(model.rowTable());
+
+        assertEquals(
+            List.of(new QueryColumn("next", ColumnType.BIGINT, true)),
+            model.columns()
+        );
+
+        assertTrue(model.parameters().isEmpty());
+    }
+
+    /**
+     * A placeholder of a {@code SELECT} without {@code FROM} is typed by its
+     * own cast, as it is in a query that reads a source, so an advisory lock
+     * takes its key as a parameter.
+     */
+    @Test
+    void shouldTypeAPlaceholderOfASelectWithoutFrom() {
+        String sql = "SELECT pg_try_advisory_xact_lock(:key::bigint)::boolean AS locked";
+
+        QueryModel model = analyzer.analyze(
+            new Query("TryLockOrder", QueryType.ONE, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertNull(model.table());
+        assertNull(model.rowTable());
+
+        assertEquals(
+            List.of(new QueryColumn("locked", ColumnType.BOOLEAN, true)),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "key", ColumnType.BIGINT)),
+            model.parameters()
+        );
+    }
+
+    /** A {@code WITH} body may omit {@code FROM} and exposes its own columns. */
+    @Test
+    void shouldAnalyzeASelectWithoutFromAsAWithBody() {
+        String sql = "WITH levels AS (SELECT CAST(1 AS integer) AS level) SELECT level FROM levels";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListLevels", QueryType.MANY, sql),
+            parser.parse(sql),
+            setOperationSchema
+        );
+
+        assertEquals("levels", model.table());
+
+        assertEquals(
+            List.of(new QueryColumn("level", ColumnType.INTEGER, true)),
+            model.columns()
+        );
+    }
+
+    /** A subquery source may omit {@code FROM} and exposes its own columns. */
+    @Test
+    void shouldAnalyzeASelectWithoutFromAsASubquerySource() {
+        String sql = "SELECT s.next FROM (SELECT nextval('order_number_seq')::bigint AS next) s";
+
+        QueryModel model = analyzer.analyze(
+            new Query("NextOrderNumber", QueryType.ONE, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals("s", model.table());
+
+        assertEquals(
+            List.of(new QueryColumn("next", ColumnType.BIGINT, true)),
+            model.columns()
+        );
+    }
+
+    /**
+     * A branch of a set operation may omit {@code FROM}, and its column pairs
+     * with the other branches' by position as every branch's does.
+     */
+    @Test
+    void shouldAnalyzeASelectWithoutFromAsASetOperationBranch() {
+        String sql = """
+            SELECT CAST(0 AS bigint) AS id
+            UNION ALL
+            SELECT id
+            FROM users
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListIds", QueryType.MANY, sql),
+            parser.parse(sql),
+            setOperationSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("id", ColumnType.BIGINT, true)),
+            model.columns()
+        );
+    }
+
+    /**
+     * A predicate subquery may omit {@code FROM}, which reads one row of its
+     * written values, so an {@code EXISTS} of such a subquery is analyzed as
+     * every predicate subquery is.
+     */
+    @Test
+    void shouldAnalyzeASelectWithoutFromInsideExists() {
+        String sql = """
+            SELECT id
+            FROM users
+            WHERE EXISTS (SELECT 1)
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            model.columns()
+        );
+
+        assertTrue(model.parameters().isEmpty());
+    }
+
+    /**
+     * A bare {@code *} in a {@code SELECT} without {@code FROM} has no source
+     * to expand, so it is rejected wherever such a {@code SELECT} is analyzed,
+     * naming the items that state its result.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "SELECT *",
+            "SELECT id FROM users WHERE EXISTS (SELECT *)"
+        }
+    )
+    void shouldRejectABareWildcardWithoutFrom(String sql) {
+        Query query = new Query("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, joinSchema)
+        );
+
+        assertEquals(
+            "SELECT * without FROM selects no columns;"
+                + " list each value with a cast and an alias,"
+                + " such as SELECT now()::timestamptz AS now.",
+            exception.getMessage()
+        );
+    }
+
     @Test
     void shouldAnalyzeSingleInnerJoin() {
         String sql = """
@@ -13322,8 +13496,7 @@ class QueryAnalyzerTest {
      * last operator is not {@code UNION} — a clause declared after the one
      * reading it, a {@code SEARCH} and a {@code CYCLE} clause, a {@code MINUS}
      * of a recursive body, and a recursive term selecting another number of
-     * columns than its first term. A body without {@code FROM} outside a first
-     * term keeps the source rejection every read states.
+     * columns than its first term.
      */
     @ParameterizedTest
     @CsvSource(
@@ -13365,9 +13538,7 @@ class QueryAnalyzerTest {
             "MANY|WITH RECURSIVE tree AS (SELECT id FROM users"
                 + " UNION ALL SELECT t.id, t.id FROM tree t) SELECT id FROM tree"
                 + "|Every branch of a set operation must select the same number of columns;"
-                + " the first selects 1 and branch 2 selects 2.",
-            "MANY|WITH levels AS (SELECT CAST(1 AS integer) AS level) SELECT level FROM levels"
-                + "|Only table sources are supported."
+                + " the first selects 1 and branch 2 selects 2."
         }
     )
     void shouldRejectAnExcludedRecursiveForm(QueryType type, String sql, String message) {

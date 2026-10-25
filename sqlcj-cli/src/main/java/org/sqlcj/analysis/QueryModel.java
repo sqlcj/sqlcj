@@ -7,6 +7,9 @@ import java.util.List;
 /**
  * Analyzed query facts required by code generation.
  *
+ * @param table                    the name this query writes for the source its
+ *                                 rows come from, or {@code null} when the
+ *                                 query reads no source at all
  * @param executableSql            JDBC-executable SQL where every parsed
  *                                 {@code $N} and {@code :name} parameter token
  *                                 is replaced by {@code ?}, written
