@@ -698,17 +698,25 @@ public final class JavaCodeGenerator implements CodeGenerator {
             .formatted(escapeJavadoc(group.name()));
     }
 
+    /**
+     * The documentation of one generated query method, which states the table
+     * of a query that reads or writes one, and no table line at all for a query
+     * that reads no source.
+     */
     private String generateJavaDoc(QueryModel query) {
+        String table = query.table() == null
+            ? ""
+            : " * Table: %s\n".formatted(escapeJavadoc(query.table()));
+
         return """
             /**
              * Query: %s
-             * Table: %s
-             * Type: %s
+            %s * Type: %s
              */
             """
             .formatted(
                 escapeJavadoc(query.name()),
-                escapeJavadoc(query.table()),
+                table,
                 query.type()
             );
     }
