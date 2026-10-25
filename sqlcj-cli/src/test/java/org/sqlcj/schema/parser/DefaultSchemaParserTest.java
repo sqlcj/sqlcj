@@ -12,6 +12,7 @@ import org.sqlcj.schema.DomainType;
 import org.sqlcj.schema.EnumType;
 import org.sqlcj.schema.Schema;
 import org.sqlcj.schema.Table;
+import org.sqlcj.schema.View;
 
 import java.util.List;
 
@@ -1127,6 +1128,114 @@ class DefaultSchemaParserTest {
             """);
 
         assertEquals(parser.parse(BASE_SCHEMA).tables(), schema.tables());
+    }
+
+    /**
+     * The views and materialized views of the modeled namespace are recorded by
+     * their name and their kind, from the words of the statement that creates
+     * them, so that a query naming one states that sqlcj does not model a view.
+     * The statement itself stays ignored: the tables and the enum types the
+     * statements before it left are unchanged.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "CREATE VIEW active_users AS SELECT id FROM users;|active_users|false",
+            "CREATE OR REPLACE VIEW active_users AS SELECT u.id FROM users u;|active_users|false",
+            "CREATE RECURSIVE VIEW active_users (id) AS SELECT id FROM users;|active_users|false",
+            "create or replace view Active_Users as select id from users;|Active_Users|false",
+            "CREATE VIEW public.\"Active\" AS SELECT id FROM users;|Active|false",
+            "CREATE MATERIALIZED VIEW user_totals AS SELECT id FROM users WITH NO DATA;"
+                + "|user_totals|true",
+            "CREATE MATERIALIZED VIEW IF NOT EXISTS user_totals AS SELECT id FROM users;"
+                + "|user_totals|true"
+        }
+    )
+    void shouldRecordTheViewsOfTheModeledNamespace(
+        String statement,
+        String name,
+        boolean materialized
+    ) {
+        Schema base = parser.parse(BASE_SCHEMA);
+        Schema schema = applied(statement);
+
+        assertEquals(List.of(new View(name, materialized)), schema.views());
+        assertEquals(base.tables(), schema.tables());
+        assertEquals(base.enums(), schema.enums());
+    }
+
+    /**
+     * A created view replaces a recorded view of the same name, compared
+     * ignoring case, in its position, because PostgreSQL holds one relation of
+     * a name at a time, and a view created after it was dropped is recorded
+     * once.
+     */
+    @Test
+    void shouldRecordOneViewPerName() {
+        Schema base = parser.parse(BASE_SCHEMA);
+        Schema schema = applied("""
+            CREATE VIEW active_users AS SELECT id FROM users;
+            CREATE VIEW recent_orders AS SELECT id FROM orders;
+            CREATE MATERIALIZED VIEW ACTIVE_USERS AS SELECT id FROM users;
+            DROP VIEW recent_orders;
+            CREATE VIEW recent_orders AS SELECT id FROM orders;
+            """);
+
+        assertEquals(
+            List.of(new View("ACTIVE_USERS", true), new View("recent_orders", false)),
+            schema.views()
+        );
+
+        assertEquals(base.tables(), schema.tables());
+        assertEquals(base.enums(), schema.enums());
+    }
+
+    /**
+     * A {@code DROP VIEW} removes every recorded name it states, of either
+     * kind, and a name the schema records no view of is no failure, so a
+     * history that drops a view it never created keeps loading.
+     */
+    @Test
+    void shouldRemoveTheDroppedViews() {
+        Schema base = parser.parse(BASE_SCHEMA);
+        Schema schema = applied("""
+            CREATE VIEW active_users AS SELECT id FROM users;
+            CREATE MATERIALIZED VIEW user_totals AS SELECT id FROM users;
+            CREATE VIEW recent_orders AS SELECT id FROM orders;
+            CREATE MATERIALIZED VIEW order_totals AS SELECT id FROM orders;
+            DROP VIEW IF EXISTS active_users, user_totals CASCADE;
+            DROP MATERIALIZED VIEW order_totals;
+            DROP VIEW missing_view;
+            """);
+
+        assertEquals(List.of(new View("recent_orders", false)), schema.views());
+        assertEquals(base.tables(), schema.tables());
+        assertEquals(base.enums(), schema.enums());
+    }
+
+    /**
+     * A view of a schema sqlcj does not model and a temporary view, which
+     * PostgreSQL holds outside the modeled namespace, are recorded nowhere, so
+     * a query that names one keeps failing as a missing table.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "CREATE VIEW reporting.v AS SELECT id FROM users;",
+            "CREATE OR REPLACE VIEW reporting.v AS SELECT id FROM users;",
+            "CREATE MATERIALIZED VIEW reporting.v AS SELECT id FROM users;",
+            "CREATE TEMP VIEW t AS SELECT id FROM users;",
+            "CREATE TEMPORARY VIEW t AS SELECT id FROM users;"
+        }
+    )
+    void shouldRecordNoViewOutsideTheModeledNamespace(String statement) {
+        Schema base = parser.parse(BASE_SCHEMA);
+        Schema schema = applied(statement);
+
+        assertEquals(List.of(), schema.views());
+        assertEquals(base.tables(), schema.tables());
+        assertEquals(base.enums(), schema.enums());
     }
 
     /**

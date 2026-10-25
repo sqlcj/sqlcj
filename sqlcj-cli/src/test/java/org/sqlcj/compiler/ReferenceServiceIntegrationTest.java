@@ -2122,8 +2122,9 @@ class ReferenceServiceIntegrationTest {
 
     /**
      * The reporting schema of the history is invisible, so a query that names
-     * its table is rejected as an unknown table rather than resolving to the
-     * {@code projects} table of the one modeled namespace.
+     * its table states the schema it belongs to and that sqlcj models only
+     * {@code public}, rather than resolving to the {@code projects} table of
+     * the one modeled namespace.
      */
     @Test
     void shouldRejectAQueryOnASecondSchemaTable() throws Exception {
@@ -2151,7 +2152,8 @@ class ReferenceServiceIntegrationTest {
 
         assertEquals(
             "Invalid query 'ListExportedProjects' in %s at line 1: ".formatted(queriesFile)
-                + "Table not found in schema: reporting.projects",
+                + "reporting.projects belongs to schema reporting, which sqlcj does not model; "
+                + "sqlcj models only the public schema.",
             exception.getMessage()
         );
 

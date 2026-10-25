@@ -291,6 +291,27 @@ public final class QueryAnalyzer {
     private static final String JOIN_COLUMN_TYPE_REJECTION = """
         Join column %s has types %s and %s; write the join condition with ON and a cast.""";
 
+    /**
+     * The rejection of a source qualified with a schema other than
+     * {@code public}, which names the source as the query writes it, without
+     * its SQL identifier delimiters, and the schema it names. sqlcj models no
+     * other schema at all, so the rejection states that rather than a fix.
+     */
+    private static final String OTHER_SCHEMA_SOURCE_REJECTION = """
+        %s belongs to schema %s, which sqlcj does not model; \
+        sqlcj models only the public schema.""";
+
+    /**
+     * The rejection of a source that names a view or a materialized view the
+     * schema records, which names the view as the query writes it, without its
+     * SQL identifier delimiters and without the modeled schema qualifier, and
+     * its kind as PostgreSQL spells it. A view's columns stand in its own
+     * query, which sqlcj analyzes only where the query itself writes it, so the
+     * named fix is a {@code WITH} clause.
+     */
+    private static final String VIEW_SOURCE_REJECTION = """
+        %s is a %s, which sqlcj does not model; write its query in a WITH clause instead.""";
+
     /** The rejection of a source of a write's {@code FROM} or {@code USING}. */
     private static final String WRITE_SOURCE_REJECTION = "Only table sources are supported.";
 
@@ -4503,17 +4524,54 @@ public final class QueryAnalyzer {
     /**
      * The modeled table one query source names. sqlcj models one namespace, so
      * an unqualified and a {@code public}-qualified name are the same table,
-     * and a name qualified with any other schema names a table sqlcj leaves
-     * unmodeled and fails as a missing table.
+     * and a name qualified with any other schema names a table sqlcj models
+     * nowhere, which is reported from the qualifier alone before any lookup.
+     *
+     * <p>A modeled table is found before a recorded view of its name, so a
+     * source that resolves to a table keeps resolving to it. A source that
+     * names neither is reported as a view or as a missing table; see
+     * {@link #unmodeledSource(Schema, String)}.
      */
     private org.sqlcj.schema.Table findSourceTable(Schema schema, Table table) {
         if (!SchemaNamespace.isModeled(table)) {
             throw new IllegalArgumentException(
-                "Table not found in schema: " + SchemaNamespace.declaredName(table)
+                OTHER_SCHEMA_SOURCE_REJECTION.formatted(
+                    SchemaNamespace.declaredName(table),
+                    MultiPartName.unquote(table.getSchemaName())
+                )
             );
         }
 
-        return findTable(schema, table.getUnquotedName());
+        String tableName = table.getUnquotedName();
+
+        return findTable(schema, tableName)
+            .orElseThrow(() -> unmodeledSource(schema, tableName));
+    }
+
+    /**
+     * The failure of a source that names no modeled table: the view rejection
+     * when the schema records a view or a materialized view of the name, and
+     * the missing-table rejection otherwise.
+     */
+    private IllegalArgumentException unmodeledSource(Schema schema, String tableName) {
+        return schema.views().stream()
+            .filter(view -> view.name().equalsIgnoreCase(tableName))
+            .findFirst()
+            .map(
+                view -> new IllegalArgumentException(
+                    VIEW_SOURCE_REJECTION.formatted(
+                        tableName,
+                        view.materialized()
+                            ? "materialized view"
+                            : "view"
+                    )
+                )
+            )
+            .orElseGet(
+                () -> new IllegalArgumentException(
+                    "Table not found in schema: " + tableName
+                )
+            );
     }
 
     /**
@@ -6422,15 +6480,11 @@ public final class QueryAnalyzer {
             .collect(Collectors.joining(", "));
     }
 
-    private org.sqlcj.schema.Table findTable(Schema schema, String tableName) {
+    /** The modeled table of one name, which names are matched case-insensitively. */
+    private Optional<org.sqlcj.schema.Table> findTable(Schema schema, String tableName) {
         return schema.tables().stream()
             .filter(table -> table.name().equalsIgnoreCase(tableName))
-            .findFirst()
-            .orElseThrow(
-                () -> new IllegalArgumentException(
-                    "Table not found in schema: " + tableName
-                )
-            );
+            .findFirst();
     }
 
     /**

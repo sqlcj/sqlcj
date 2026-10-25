@@ -12,6 +12,7 @@ import org.sqlcj.schema.DomainType;
 import org.sqlcj.schema.EnumType;
 import org.sqlcj.schema.Schema;
 import org.sqlcj.schema.Table;
+import org.sqlcj.schema.View;
 import org.sqlcj.sql.ParsedSql;
 import org.sqlcj.sql.SqlParser;
 
@@ -297,6 +298,30 @@ class QueryAnalyzerTest {
                 ),
                 List.of()
             )
+        )
+    );
+
+    /**
+     * A schema that records a view, a materialized view, and a view of the name
+     * of its one modeled table.
+     */
+    private static final Schema viewSchema = new Schema(
+        List.of(
+            new Table(
+                "users",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("name", ColumnType.VARCHAR, true)
+                ),
+                List.of()
+            )
+        ),
+        List.of(),
+        List.of(),
+        List.of(
+            new View("active_users", false),
+            new View("user_totals", true),
+            new View("users", false)
         )
     );
 
@@ -10528,9 +10553,9 @@ class QueryAnalyzerTest {
 
     /**
      * A source qualified with a schema other than {@code public} names a table
-     * sqlcj leaves unmodeled, so it is rejected as a missing table rather than
-     * resolving to the modeled table of the same unqualified name, in every
-     * query that names a table.
+     * sqlcj models nowhere, so it states the schema it belongs to and that
+     * sqlcj models only {@code public}, rather than resolving to the modeled
+     * table of the same unqualified name, in every query that names a table.
      */
     @ParameterizedTest
     @CsvSource(
@@ -10555,9 +10580,94 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "Table not found in schema: reporting."
-                + (sql.contains("profiles") ? "profiles" : "users"),
+            "reporting.%s belongs to schema reporting, which sqlcj does not model; ".formatted(
+                sql.contains("profiles")
+                    ? "profiles"
+                    : "users"
+            )
+                + "sqlcj models only the public schema.",
             exception.getMessage()
+        );
+    }
+
+    /**
+     * A source that names a view or a materialized view the schema records
+     * states its kind, that sqlcj does not model it, and the {@code WITH}
+     * clause that replaces it, in every position a table is resolved: a
+     * {@code FROM}, a {@code JOIN}, a {@code public}-qualified source, and a
+     * write target. The name is the query's own, without its SQL identifier
+     * delimiters and without the modeled schema qualifier.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "MANY|SELECT id FROM active_users|active_users|view",
+            "MANY|SELECT id FROM public.active_users|active_users|view",
+            "MANY|SELECT id FROM \"ACTIVE_USERS\"|ACTIVE_USERS|view",
+            "MANY|SELECT u.id FROM users u JOIN active_users a ON a.id = u.id|active_users|view",
+            "MANY|SELECT u.id FROM users u LEFT JOIN active_users a ON a.id = u.id"
+                + "|active_users|view",
+            "EXEC|INSERT INTO active_users (name) VALUES ($1)|active_users|view",
+            "EXEC|UPDATE active_users SET name = $1 WHERE id = $2|active_users|view",
+            "EXEC|DELETE FROM active_users WHERE id = $1|active_users|view",
+            "MANY|SELECT id FROM user_totals|user_totals|materialized view",
+            "MANY|SELECT u.id FROM users u JOIN user_totals t ON t.id = u.id"
+                + "|user_totals|materialized view",
+            "EXEC|INSERT INTO user_totals (name) VALUES ($1)|user_totals|materialized view"
+        }
+    )
+    void shouldRejectAViewSource(QueryType type, String sql, String name, String kind) {
+        Query query = new Query("TouchActiveUsers", type, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, viewSchema)
+        );
+
+        assertEquals(
+            "%s is a %s, which sqlcj does not model; write its query in a WITH clause instead."
+                .formatted(name, kind),
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A modeled table is found before a recorded view of its name, and a source
+     * that names neither keeps failing as a missing table.
+     */
+    @Test
+    void shouldResolveAModeledTableBeforeAViewOfItsName() {
+        String sql = "SELECT id, name FROM users";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            viewSchema
+        );
+
+        assertEquals("users", model.table());
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
+            ),
+            model.columns()
+        );
+
+        String missing = "SELECT id FROM missing";
+        Query query = new Query("ListMissing", QueryType.MANY, missing);
+        ParsedSql parsedSql = parser.parse(missing);
+
+        assertEquals(
+            "Table not found in schema: missing",
+            assertThrows(
+                IllegalArgumentException.class,
+                () -> analyzer.analyze(query, parsedSql, viewSchema)
+            )
+                .getMessage()
         );
     }
 

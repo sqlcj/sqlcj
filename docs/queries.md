@@ -189,11 +189,21 @@ configuration entry.
 - sqlcj models one namespace, so a source resolves by its unqualified name:
   `users`, `public.users`, and `"public"."users"` are one table, matched without
   SQL identifier delimiters and case-insensitively. A source qualified with any
-  other schema names a table sqlcj leaves unmodeled and is rejected as
-  `Table not found in schema: <schema>.<t>`, in a `FROM`, a `JOIN`, and the
-  target of an `INSERT`, an `UPDATE`, and a `DELETE` alike. `search_path` is
-  not followed; see
-  [Schema Snapshot Input](postgresql.md#schema-snapshot-input).
+  other schema names a table sqlcj models nowhere and is rejected as
+  `<schema>.<t> belongs to schema <schema>, which sqlcj does not model; sqlcj
+  models only the public schema.`, in a `FROM`, a `JOIN`, and the target of an
+  `INSERT`, an `UPDATE`, and a `DELETE` alike. `search_path` is not followed;
+  see [Schema Snapshot Input](postgresql.md#schema-snapshot-input).
+- A source that names a view the schema source creates is rejected as
+  `<v> is a view, which sqlcj does not model; write its query in a WITH clause
+  instead.`, and a materialized view as
+  `<v> is a materialized view, which sqlcj does not model; write its query in a
+  WITH clause instead.`, in the same positions, because a view's columns stand
+  in its own query, which sqlcj analyzes only where the query itself writes it.
+  A modeled table is resolved before a view of its name, and a source that
+  names neither is rejected as `Table not found in schema: <t>`. The views
+  sqlcj records are those of the modeled namespace; see
+  [Ignored Statements](postgresql.md#ignored-statements).
 - A table or a derived source may be joined with `JOIN` or `INNER JOIN`, with
   `LEFT`, `RIGHT`, or `FULL JOIN` in its bare or `OUTER` spelling, each of them
   written with an `ON` condition, a `USING` list, or `NATURAL`, or with
