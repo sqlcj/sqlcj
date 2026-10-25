@@ -1,6 +1,7 @@
 package org.sqlcj.analysis;
 
 import net.sf.jsqlparser.expression.Alias;
+import net.sf.jsqlparser.expression.BinaryExpression;
 import net.sf.jsqlparser.expression.CastExpression;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.ExpressionVisitorAdapter;
@@ -8,6 +9,10 @@ import net.sf.jsqlparser.expression.Function;
 import net.sf.jsqlparser.expression.JdbcNamedParameter;
 import net.sf.jsqlparser.expression.JdbcParameter;
 import net.sf.jsqlparser.expression.NotExpression;
+import net.sf.jsqlparser.expression.operators.arithmetic.Addition;
+import net.sf.jsqlparser.expression.operators.arithmetic.Division;
+import net.sf.jsqlparser.expression.operators.arithmetic.Multiplication;
+import net.sf.jsqlparser.expression.operators.arithmetic.Subtraction;
 import net.sf.jsqlparser.expression.operators.conditional.AndExpression;
 import net.sf.jsqlparser.expression.operators.conditional.OrExpression;
 import net.sf.jsqlparser.expression.operators.relational.Between;
@@ -474,7 +479,8 @@ public final class QueryAnalyzer {
     /**
      * The scalar numeric types a set operation resolves to the widest of,
      * narrowest first, which is the type PostgreSQL 16 resolves each pair of
-     * them to.
+     * them to. They are also the column types arithmetic types a placeholder
+     * written beside them from.
      */
     private static final List<ColumnType> NUMERIC_WIDENING = List.of(
         ColumnType.SMALLINT,
@@ -2437,14 +2443,12 @@ public final class QueryAnalyzer {
             rowTable = resolveReturningRowTable(returningClause, sources);
         }
 
-        resolveUpdateSetParameters(update.getUpdateSets(), target.table(), placeholders);
+        Scope scope = Scope.of(sources, commonTableExpressions);
+
+        resolveUpdateSetParameters(update.getUpdateSets(), target.table(), scope, placeholders);
 
         if (update.getWhere() != null) {
-            resolveParameters(
-                update.getWhere(),
-                Scope.of(sources, commonTableExpressions),
-                analysis
-            );
+            resolveParameters(update.getWhere(), scope, analysis);
         }
 
         return toQueryModel(
@@ -3073,10 +3077,15 @@ public final class QueryAnalyzer {
      * <p>A target written with a subscript assigns one element of its array
      * column, so its value is not typed from that column, which must still
      * exist.
+     *
+     * <p>Arithmetic inside an assigned value types the placeholders it writes
+     * beside a numeric column of the level the assignment's own clause reads,
+     * which is the level its {@code WHERE} expression reads.
      */
     private void resolveUpdateSetParameters(
         List<UpdateSet> updateSets,
         org.sqlcj.schema.Table table,
+        Scope scope,
         Placeholders placeholders
     ) {
         for (UpdateSet updateSet : updateSets) {
@@ -3092,6 +3101,8 @@ public final class QueryAnalyzer {
             if (directColumn(target) != null) {
                 resolveColumnValue(updateSet.getValue(0), column, placeholders);
             }
+
+            resolveArithmeticParameters(updateSet.getValue(0), scope, placeholders);
         }
     }
 
@@ -3102,7 +3113,9 @@ public final class QueryAnalyzer {
      * proposed one, so its placeholders follow the {@code WHERE} rules over the
      * inserted table and {@code EXCLUDED} as two sources of the same columns,
      * which makes an unqualified column of either one ambiguous, as PostgreSQL
-     * also reports it.
+     * also reports it. An assigned value reads the same two sources, so
+     * arithmetic in it types a placeholder from a qualified column of either
+     * one.
      *
      * <p>{@code DO NOTHING} decides the conflict by itself, so it needs no
      * target, while {@code DO UPDATE} must name the rows it updates.
@@ -3138,18 +3151,16 @@ public final class QueryAnalyzer {
 
         List<UpdateSet> updateSets = action.getUpdateSets();
 
-        resolveUpdateSetParameters(updateSets, source.table(), analysis.placeholders());
+        Scope scope = Scope.of(
+            List.of(source, new Source(EXCLUDED_QUALIFIER, source.table(), false, false)),
+            commonTableExpressions
+        );
+
+        resolveUpdateSetParameters(updateSets, source.table(), scope, analysis.placeholders());
         resolveExcludedColumns(updateSets, source.table());
 
         if (action.getWhereExpression() != null) {
-            resolveParameters(
-                action.getWhereExpression(),
-                Scope.of(
-                    List.of(source, new Source(EXCLUDED_QUALIFIER, source.table(), false, false)),
-                    commonTableExpressions
-                ),
-                analysis
-            );
+            resolveParameters(action.getWhereExpression(), scope, analysis);
         }
     }
 
@@ -5183,6 +5194,9 @@ public final class QueryAnalyzer {
      * <p>An operand that is a subquery states its own value rather than a
      * column's, so it is analyzed as the level inside the one the comparison
      * stands in and types no parameter of this comparison.
+     *
+     * <p>Arithmetic inside either operand types the placeholders it writes
+     * beside a numeric column, which the comparison's own rules never reach.
      */
     private void resolveParameterComparison(
         ComparisonOperator comparison,
@@ -5193,6 +5207,9 @@ public final class QueryAnalyzer {
 
         Expression left = comparison.getLeftExpression();
         Expression right = comparison.getRightExpression();
+
+        resolveArithmeticParameters(left, scope, placeholders);
+        resolveArithmeticParameters(right, scope, placeholders);
 
         if (resolveComparisonSubqueries(left, right, scope, analysis)) {
             return;
@@ -5255,6 +5272,100 @@ public final class QueryAnalyzer {
                 }
             }
         }
+    }
+
+    /**
+     * Resolves the parameters arithmetic types inside one expression of a
+     * clause that reads a row. A placeholder written as a direct operand of
+     * {@code +}, {@code -}, {@code *}, or {@code /} beside a direct numeric
+     * column takes that column's type and name, as PostgreSQL types such a
+     * placeholder from the other operand, and a named placeholder keeps its
+     * own name. The rule reads through nested arithmetic and through a pair of
+     * parentheses around one expression, so {@code visits + :a + 1} and
+     * {@code (score + :b) * 2} type their placeholders as the innermost
+     * operator writes them.
+     *
+     * <p>A direct placeholder or cast operand of the clause itself is none of
+     * these nodes, so the clause's own rules keep typing it. Every other
+     * operand, among them a signed placeholder, a function argument, and a
+     * placeholder written beside a computed expression, states no column, so it
+     * keeps needing a cast.
+     */
+    private void resolveArithmeticParameters(
+        Expression expression,
+        Scope scope,
+        Placeholders placeholders
+    ) {
+        if (expression instanceof ParenthesedExpressionList<?> parentheses && parentheses.size() == 1) {
+            resolveArithmeticParameters(parentheses.get(0), scope, placeholders);
+
+            return;
+        }
+
+        if (!(expression instanceof BinaryExpression arithmetic) || !isArithmetic(arithmetic)) {
+            return;
+        }
+
+        Expression left = arithmetic.getLeftExpression();
+        Expression right = arithmetic.getRightExpression();
+
+        resolveArithmeticOperand(left, right, scope, placeholders);
+        resolveArithmeticOperand(right, left, scope, placeholders);
+
+        resolveArithmeticParameters(left, scope, placeholders);
+        resolveArithmeticParameters(right, scope, placeholders);
+    }
+
+    /**
+     * Reports whether one binary expression is an arithmetic operator that
+     * types a placeholder from the column it is written beside. {@code %} is
+     * none of them, because the decision names exactly the four operators
+     * PostgreSQL was probed with.
+     */
+    private boolean isArithmetic(BinaryExpression expression) {
+        return expression instanceof Addition
+            || expression instanceof Subtraction
+            || expression instanceof Multiplication
+            || expression instanceof Division;
+    }
+
+    /**
+     * Types one operand of an arithmetic operator from the operand written
+     * beside it. The column is resolved only where the operand is an uncast
+     * placeholder, so arithmetic that binds nothing keeps reading its columns
+     * where the clause's own rules read them, and a column of an unmapped, a
+     * date, time, or interval, or an array type types nothing, which leaves the
+     * placeholder to the cast that states its type.
+     */
+    private void resolveArithmeticOperand(
+        Expression operand,
+        Expression sibling,
+        Scope scope,
+        Placeholders placeholders
+    ) {
+        Placeholder placeholder = placeholders.of(operand);
+
+        if (placeholder == null) {
+            return;
+        }
+
+        net.sf.jsqlparser.schema.Column siblingColumn = directColumn(sibling);
+
+        if (siblingColumn == null) {
+            return;
+        }
+
+        org.sqlcj.schema.Column column = resolveColumn(siblingColumn, scope).column();
+
+        if (
+            column.array()
+                || column.type() == null
+                || !NUMERIC_WIDENING.contains(column.type())
+        ) {
+            return;
+        }
+
+        addParameter(placeholder, column, placeholders);
     }
 
     /**

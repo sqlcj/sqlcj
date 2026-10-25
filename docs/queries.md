@@ -534,6 +534,39 @@ write's `WHERE` alike. A cast states the type of such a placeholder, as in
 `WHERE labels[1] = $1::text`, and the subscript itself reaches the database as
 written.
 
+A placeholder written as a direct operand of `+`, `-`, `*`, or `/` beside a
+direct column of one of the numeric types `SMALLINT`, `INTEGER`, `BIGINT`,
+`NUMERIC`, `REAL`, and `DOUBLE PRECISION` takes that column's type and name, as
+PostgreSQL types such a placeholder from the other operand, so it needs no cast.
+The rule holds in either operand of every analyzed comparison — a read's, a
+write's, and a nested query's `WHERE`, a join `ON` condition, and both conflict
+predicates — on either side of the operator, and through nested arithmetic and
+parentheses:
+
+```sql
+-- name: ListUsersWithinBudget :many
+SELECT id, name
+FROM users
+WHERE balance - :amount >= 0
+  AND visits + :extra + 1 > 0
+  AND (score + :bonus) * 2 < 100
+ORDER BY id;
+```
+
+`ListUsersWithinBudget` generates
+`listUsersWithinBudget(BigDecimal amount, Integer extra, Short bonus)`, each
+parameter typed and named from the column its own operator writes it beside.
+An indexed placeholder there is named after that column too.
+
+Only the column beside the placeholder types it, so a placeholder written beside
+a computed expression, under `%`, inside a function argument or a `CASE`, or
+beside a date, time, interval, enum, array, or unmapped column keeps needing a
+cast, and so does a placeholder in arithmetic written in an `IN` list, a `LIKE`
+pattern, a `BETWEEN` bound, an `= ANY` list, a projection, an `INSERT` value, a
+`SELECT` item, `RETURNING`, or pagination. A signed placeholder, such as the
+`-:n` of `-:n + visits`, is an unanalyzed placeholder location instead, which a
+cast does not resolve: `WHERE -:a::int + visits > 0` is rejected.
+
 A `LIKE` or `ILIKE` pattern placeholder requires a `VARCHAR`, `TEXT`, or
 `CITEXT` column and takes that column's type, so it is a `String` method
 parameter, and a pattern of a `CITEXT` column matches ignoring case, as
@@ -938,7 +971,7 @@ states.
 | Statement | Accepted shape |
 | --- | --- |
 | `INSERT` | an explicit column list and a row source — `VALUES` rows or a `SELECT` — writing one value per written column by position, each a placeholder or an expression that binds none, with an optional `ON CONFLICT` clause |
-| `UPDATE` | `SET` assignments that each assign one direct column a placeholder or an expression that binds none, with an optional `FROM` clause of added sources and an optional `WHERE` using the read predicate forms |
+| `UPDATE` | `SET` assignments that each assign one direct column a placeholder, arithmetic that writes a placeholder beside a numeric column, or an expression that binds none, with an optional `FROM` clause of added sources and an optional `WHERE` using the read predicate forms |
 | `DELETE` | one target table, with an optional `USING` clause of added sources and an optional `WHERE` using the read predicate forms |
 
 ```sql
@@ -1117,6 +1150,28 @@ parameter states the type, as [Parameters](#parameters) states:
 `SET bio = COALESCE(:bio, bio) WHERE id = :id AND bio = :bio` executes
 `COALESCE(?::text, bio)`.
 
+An assignment may also compute its value from a numeric column and a
+placeholder. A placeholder written as a direct operand of `+`, `-`, `*`, or `/`
+beside a direct numeric column takes that column's type and name, exactly as
+[Predicates](#predicates) states for a comparison operand, through nested
+arithmetic and parentheses and on either side of the operator:
+
+```sql
+-- name: ReserveStock :exec
+UPDATE stock
+SET reserved = reserved + :qty
+WHERE id = :id;
+```
+
+`ReserveStock` generates `reserveStock(Integer qty, Long id)`. An indexed
+placeholder is named after the column that types it, so
+`SET version = version + $1 WHERE id = $2` binds the parameters `version` and
+`id` and executes `SET version = version + ? WHERE id = ?`. The column resolves
+against the sources the write's `WHERE` clause reads, and a placeholder beside
+a date, time, interval, enum, array, or unmapped column keeps needing a cast:
+`SET age = age + :d` on an `INTERVAL` column stays rejected, while
+`SET version = version + :n::int` is typed by its own cast.
+
 ### Upsert with `ON CONFLICT`
 
 An `INSERT` may end with one conflict clause that names which conflict it
@@ -1155,6 +1210,14 @@ order, and the repeated `:bio` above is bound at both of its positions. A
 `DO UPDATE` placeholder is typed by its assigned column, or by its own cast
 wherever a cast appears inside the assigned value.
 
+Arithmetic in a `DO UPDATE` assignment types a placeholder as it does in an
+`UPDATE`, but the assignment reads both the stored row and the proposed one, so
+qualify the column it is written beside: `SET version = authors.version + $4`
+and `SET version = EXCLUDED.version + $4` each type `$4` from `version`, while
+an unqualified `SET version = version + $4` is rejected as
+`Ambiguous column reference 'version' in sources: authors, EXCLUDED`, as
+PostgreSQL also reports it.
+
 `EXCLUDED.column` reads the proposed row, and that column must exist in the
 inserted table. An `EXCLUDED` reference inside a larger expression is not
 resolved, as no other computed write value is, so PostgreSQL checks it. sqlcj
@@ -1184,7 +1247,9 @@ The two predicates read different sources:
   exposed name, and the proposed row as `EXCLUDED`. Both carry the same
   columns, so an unqualified column compared with a placeholder there is
   ambiguous, as PostgreSQL also reports it; write `authors.version` or
-  `EXCLUDED.version`.
+  `EXCLUDED.version`. A `DO UPDATE` assignment value reads the same two
+  sources, so an unqualified column written beside a placeholder in one is
+  ambiguous too.
 
 A placeholder in a conflict-target predicate is typed and bound like any other,
 but PostgreSQL chooses the arbiter index when it plans the statement rather than
@@ -1954,7 +2019,11 @@ query name, and its header line.
   bound such as `id BETWEEN $1 + 1 AND $2`, a computed pagination value such as
   `LIMIT $1 + 1` or `OFFSET $1 + 1`, a `LIMIT a, b` row count such as
   `LIMIT 5, $1`, a placeholder inside a write value such as
-  `COALESCE($2, bio)`, and a `FETCH FIRST $1 ROWS ONLY` clause, so dynamic `IN`
+  `COALESCE($2, bio)`, arithmetic beside a column that is not numeric, such as
+  `age + :d` on an `INTERVAL` column, `created_at + :d` on a `TIMESTAMP`
+  column, and arithmetic beside a column whose type sqlcj does not map, because
+  [Predicates](#predicates) types such a placeholder only from a numeric
+  column, and a `FETCH FIRST $1 ROWS ONLY` clause, so dynamic `IN`
   expansion is unavailable. Each is rejected as `Cannot infer the type of $1 in
   $1 + 1; state it with a cast, such as $1::text`, which names the placeholder
   as the query spells it and, after `in`, the smallest expression the query
@@ -2239,6 +2308,12 @@ Reads:
   `PostgresIntegrationTest.shouldExecuteGeneratedTextAndNullPredicatesAgainstPostgres`
   executes `LIKE`, a case-insensitive `ILIKE`, `IS NULL`, and `IS NOT NULL`
   reads against PostgreSQL 16.
+- `QueryAnalyzerTest.shouldTypeAnArithmeticPlaceholderFromTheNumericColumnBesideIt`,
+  `QueryAnalyzerTest.shouldTypeAnArithmeticPlaceholderInAWritePredicate`, and
+  `QueryAnalyzerTest.shouldTypeAnArithmeticPlaceholderThroughNestedArithmetic`
+  cover the placeholder arithmetic types in a comparison operand: either
+  operand of a read's `WHERE`, a write's `WHERE` whose occurrence stays a bare
+  `?`, and the nested and parenthesized forms.
 - `QueryAnalyzerTest.shouldTypeAComparisonParameterOfACitextOrNetworkColumn`,
   `QueryAnalyzerTest.shouldTypeAnInListOfACitextColumn`,
   `QueryAnalyzerTest.shouldTypeALikePatternOfACitextColumn`,
@@ -2810,6 +2885,17 @@ Writes and `RETURNING`:
   `QueryAnalyzerTest.shouldRejectExcludedWriteValueForm` cover the values that
   bind no placeholder, their numbering and binding order, and the nearby
   rejections.
+- `QueryAnalyzerTest.shouldTypeAnAssignedPlaceholderFromTheNumericColumnBesideIt`,
+  `QueryAnalyzerTest.shouldNameAnIndexedAssignedPlaceholderAfterItsNumericColumn`,
+  `QueryAnalyzerTest.shouldKeepTheCastTypeOfAnAssignedPlaceholderInArithmetic`,
+  `QueryAnalyzerTest.shouldRejectAnArithmeticPlaceholderBesideATemporalColumn`,
+  and
+  `QueryAnalyzerTest.shouldRejectAnArithmeticPlaceholderBesideAnUnmappedColumn`
+  cover the placeholder arithmetic types in an assignment: each of the six
+  numeric types on either side of the operator, the indexed placeholder named
+  after its column whose occurrence stays a bare `?`, the cast that keeps
+  stating its own type, and the interval, timestamp, and unmapped columns that
+  type nothing.
 - `QueryAnalyzerTest.shouldAnalyzeUpsertThatUpdatesOnConflict`,
   `QueryAnalyzerTest.shouldAnalyzeReturningUpsertThatUpdatesOnConflict`,
   `QueryAnalyzerTest.shouldAnalyzeNamedUpsertThatUpdatesOnConflict`,
@@ -2817,11 +2903,14 @@ Writes and `RETURNING`:
   `QueryAnalyzerTest.shouldResolveRowTableForUpsertThatDoesNothingOnConflict`,
   `QueryAnalyzerTest.shouldRejectAConflictTargetThatIsNotColumnNames`,
   `QueryAnalyzerTest.shouldRejectExcludedConflictForm`,
-  `QueryAnalyzerTest.shouldRejectAnUncastPlaceholderInsideAConflictUpdateValue`,
+  `QueryAnalyzerTest.shouldTypeAnArithmeticPlaceholderInAConflictUpdateValue`,
+  `QueryAnalyzerTest.shouldRejectAnAmbiguousColumnInsideAConflictUpdateValue`,
   and `QueryAnalyzerTest.shouldRejectAnUnknownConflictColumn` cover the accepted
   conflict target, both actions, the `EXCLUDED`, placeholder, cast, and
   computed assignments, the binding order after the `VALUES` placeholders, the
-  returning row type, and the conflict forms, untyped placeholder, and
+  arithmetic that types a placeholder from a qualified stored-row or
+  `EXCLUDED` column after the `VALUES` parameters and the ambiguity of an
+  unqualified one, the returning row type, and the conflict forms and
   unknown target, assigned, and `EXCLUDED` columns that are rejected on an
   `:exec` and on a returning insert alike, and
   `PostgresIntegrationTest.shouldExecuteGeneratedUpsertsAgainstPostgres`
