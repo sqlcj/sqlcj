@@ -30,6 +30,8 @@ import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -113,10 +115,35 @@ class ReferenceServiceIntegrationTest {
                 + "state it with a cast, such as :email::text"
         ),
         new UnsupportedQuery(
+            "unmapped_wildcard.sql",
+            "GetOrganization",
+            "Column 'billing_address' has unsupported type POSTAL_ADDRESS; "
+                + "a wildcard selects it, so list the columns the query needs instead."
+        ),
+        new UnsupportedQuery(
+            "materialized_view_source.sql",
+            "ListProjectTaskCounts",
+            "project_task_counts is a materialized view, which sqlcj does not model; "
+                + "write its query in a WITH clause instead."
+        ),
+        new UnsupportedQuery(
             "subscripted_column.sql",
             "ListTasksByFirstLabel",
             "Cannot infer the type of :label in labels[1] = :label; "
                 + "state it with a cast, such as :label::text"
+        ),
+        new UnsupportedQuery(
+            "function_source.sql",
+            "ListTasksByIds",
+            "unnest(...) is a function source, which sqlcj does not model; "
+                + "insert many rows with a :batchexec INSERT ... VALUES query, "
+                + "or match a list with id = ANY(:ids)."
+        ),
+        new UnsupportedQuery(
+            "view_source.sql",
+            "ListUnfinishedTasks",
+            "unfinished_tasks is a view, which sqlcj does not model; "
+                + "write its query in a WITH clause instead."
         )
     );
 
@@ -2036,6 +2063,190 @@ class ReferenceServiceIntegrationTest {
         );
 
         return matches;
+    }
+
+    /**
+     * The generated repository executes the query shapes this milestone adds
+     * against the migrated database: {@code NextAuditId} and
+     * {@code TryLockProject}, which select without a {@code FROM} clause,
+     * {@code IsEmailRegistered}, whose aliased {@code EXISTS} is its one
+     * non-null column and so returns {@code Boolean}, and
+     * {@code DeprioritizeTask}, whose {@code priority + :steps} is typed from
+     * the column it stands beside in both the {@code SET} value and the
+     * {@code WHERE} bound.
+     *
+     * <p>The database is shared with the other tests of this class, so this one
+     * works inside its own organization, user, project, and task, and writes no
+     * audit entry.
+     */
+    @Test
+    void shouldExecuteTheGeneratedQueriesWithoutFromAndArithmeticUpdate() throws Exception {
+        Path generatedDirectory = tempDir.resolve("generated-sourceless");
+
+        generate(List.of(migrations().toString()), generatedDirectory);
+
+        Path classesDirectory = compile(
+            generatedDirectory,
+            tempDir.resolve("classes-sourceless")
+        );
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Object firstAuditId = invoke(repository, "nextAuditId");
+
+            assertEquals(
+                List.of("nextId"),
+                recordComponentNames(firstAuditId.getClass()),
+                "the sequence read returns its one cast column as a record"
+            );
+
+            assertEquals(
+                (Long) component(firstAuditId, "nextId") + 1L,
+                component(invoke(repository, "nextAuditId"), "nextId"),
+                "a second sequence read advances the audit log sequence by one"
+            );
+
+            Long organizationId = (Long) component(
+                invoke(repository, "createOrganization", "Sourceless Test", "{}"),
+                "id"
+            );
+
+            Long userId = (Long) component(
+                invoke(
+                    repository,
+                    "createUser",
+                    organizationId,
+                    "sourceless@example.com",
+                    "Radia Perlman"
+                ),
+                "id"
+            );
+
+            Long projectId = (Long) component(
+                invoke(repository, "createProject", organizationId, "NOFROM", "Sourceless"),
+                "id"
+            );
+
+            Object lock = invoke(repository, "tryLockProject", projectId);
+
+            assertEquals(
+                List.of("locked"),
+                recordComponentNames(lock.getClass()),
+                "the advisory lock read returns its one cast column as a record"
+            );
+
+            assertEquals(
+                true,
+                component(lock, "locked"),
+                "the advisory lock of a free key is taken"
+            );
+
+            try (Connection holder = dataSource.getConnection()) {
+                holder.setAutoCommit(false);
+
+                try (
+                    PreparedStatement held = holder.prepareStatement(
+                        "SELECT pg_advisory_xact_lock(?)"
+                    )
+                ) {
+                    held.setLong(1, projectId);
+
+                    held.execute();
+                }
+
+                assertEquals(
+                    false,
+                    component(invoke(repository, "tryLockProject", projectId), "locked"),
+                    "the advisory lock is refused while another transaction holds it"
+                );
+
+                holder.rollback();
+
+                assertEquals(
+                    true,
+                    component(invoke(repository, "tryLockProject", projectId), "locked"),
+                    "the advisory lock is free again once that transaction ends"
+                );
+            }
+
+            assertEquals(
+                Boolean.class,
+                returnType(repository, "isEmailRegistered"),
+                "the aliased EXISTS is one non-null column, so the check returns Boolean"
+            );
+
+            assertEquals(
+                true,
+                invoke(repository, "isEmailRegistered", "sourceless@example.com"),
+                "the existence check finds the live user's address"
+            );
+
+            assertEquals(
+                true,
+                invoke(repository, "isEmailRegistered", "SOURCELESS@EXAMPLE.COM"),
+                "the existence check matches the domain column in another case"
+            );
+
+            assertEquals(
+                false,
+                invoke(repository, "isEmailRegistered", "no.such.user@example.com"),
+                "the existence check finds no unknown address"
+            );
+
+            assertEquals(1, invoke(repository, "softDeleteUser", userId));
+
+            assertEquals(
+                false,
+                invoke(repository, "isEmailRegistered", "sourceless@example.com"),
+                "the existence check skips a soft-deleted user"
+            );
+
+            Object open = enumConstant(classLoader, "TaskStatus", "OPEN");
+
+            Long taskId = (Long) component(
+                createShapeTask(repository, projectId, "Sourceless Alpha", (short) 1, open),
+                "id"
+            );
+
+            assertEquals(
+                Optional.of((short) 3),
+                invoke(repository, "deprioritizeTask", (short) 2, taskId),
+                "the arithmetic update returns the priority its typed steps raised"
+            );
+
+            assertEquals(
+                Optional.empty(),
+                invoke(repository, "deprioritizeTask", (short) 3, taskId),
+                "the arithmetic bound skips a step the check constraint would exceed"
+            );
+
+            assertEquals(
+                List.of((short) 3),
+                componentsOf(
+                    (List<?>) invoke(repository, "listProjectTasks", projectId, List.of(open), 10),
+                    "priority"
+                ),
+                "the skipped update left the priority as it was"
+            );
+
+            assertEquals(
+                Optional.of((short) 5),
+                invoke(repository, "deprioritizeTask", (short) 2, taskId),
+                "the arithmetic update raises the priority to the bound it admits"
+            );
+        }
+    }
+
+    /** The declared return type of one generated repository method. */
+    private Class<?> returnType(Object repository, String methodName) {
+        for (Method method : repository.getClass().getMethods()) {
+            if (method.getName().equals(methodName)) {
+                return method.getReturnType();
+            }
+        }
+
+        return fail("missing generated method: " + methodName);
     }
 
     /**

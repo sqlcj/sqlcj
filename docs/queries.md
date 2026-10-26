@@ -3326,10 +3326,26 @@ Reference service:
   `CountSearchedTasks`, which counts the matches of every one of those criteria
   sets, including while the search reads one page, against PostgreSQL 16
   through the generated repository.
+- `ReferenceServiceIntegrationTest.shouldExecuteTheGeneratedQueriesWithoutFromAndArithmeticUpdate`
+  executes the reference service's `NextAuditId` and `TryLockProject`, which
+  select `nextval('audit_log_id_seq')::bigint` and
+  `pg_try_advisory_xact_lock(:projectId::bigint)::boolean` without a `FROM`
+  clause and each read their one cast column as a record, the advisory lock
+  taken, refused while another transaction holds it, and free again once that
+  transaction ends, its `IsEmailRegistered`, whose aliased `EXISTS` is its one
+  non-null column and so returns `Boolean` for a live, a differently cased, an
+  unknown, and a soft-deleted address, and its `DeprioritizeTask`, whose
+  `priority + :steps` is typed from the `smallint` column it stands beside in
+  both the `SET` value and the `WHERE` bound and so raises a priority and
+  skips the step the check constraint would exceed, against PostgreSQL 16
+  through the generated repository.
 - `ReferenceServiceIntegrationTest.shouldRejectEachUnsupportedCatalogueQuery`
   covers the whole located diagnostic line, and the absence of generated
   output, of every entry of the reference service's unsupported query
   catalogue: a data-modifying CTE, an uncast
-  `lower(:email)`, and a placeholder beside a subscripted column, and
+  `lower(:email)`, a placeholder beside a subscripted column, a read of the
+  `unfinished_tasks` view, a read of the `project_task_counts` materialized
+  view, an `unnest(:ids::bigint[])` function source, and a `SELECT *` over
+  `organizations`, whose `billing_address` column no Java type maps, and
   `ReferenceServiceIntegrationTest.shouldCatalogueExactlyTheUnsupportedQueryFiles`
   covers that the catalogue directory holds exactly those queries.
