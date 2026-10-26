@@ -1273,8 +1273,9 @@ Schema snapshot input:
 - `ReferenceServiceIntegrationTest.shouldRejectTheUnsupportedSetDataTypeMigration`
   and
   `ReferenceServiceIntegrationTest.shouldRejectAQueryOnASecondSchemaTable`
-  cover the located `SET DATA TYPE` diagnostic and the unknown-table diagnostic
-  of a query that names a table of the reporting schema, each writing no file.
+  cover the located `SET DATA TYPE` diagnostic and the other-schema diagnostic
+  of a query that names a table of the reporting schema, which belongs to a
+  schema sqlcj does not model, each writing no file.
 
 Migration tool schemas:
 
