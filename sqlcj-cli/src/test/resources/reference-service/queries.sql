@@ -417,3 +417,22 @@ SELECT id,
        retention_period
 FROM organizations
 WHERE id = :id;
+
+-- name: NextAuditId :one
+SELECT nextval('audit_log_id_seq')::bigint AS next_id;
+
+-- name: TryLockProject :one
+SELECT pg_try_advisory_xact_lock(:projectId::bigint)::boolean AS locked;
+
+-- name: IsEmailRegistered :one
+SELECT EXISTS (SELECT 1
+               FROM users
+               WHERE email = :email
+                 AND deleted_at IS NULL) AS registered;
+
+-- name: DeprioritizeTask :optional
+UPDATE tasks
+SET priority = priority + :steps
+WHERE id = :id
+  AND priority + :steps <= 5
+RETURNING priority;
