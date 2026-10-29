@@ -15,6 +15,7 @@
     <modules>
         <module>sqlcj-runtime</module>
         <module>sqlcj-cli</module>
+        <module>sqlcj-spring-boot-starter</module>
     </modules>
 
     <properties>
