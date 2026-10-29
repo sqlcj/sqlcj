@@ -1791,8 +1791,11 @@ included.
   parameters are, and it returns `int[]` from
   `<method>(List<<QueryName>Params> batch)`. The method passes one argument list
   per element to `executor.executeBatch`, built as
-  `batch.stream().map(params -> java.util.Arrays.asList(...)).toList()`, so each
-  argument is wrapped exactly as the same argument of a single execution is. A
+  `batch.stream().map(params -> <argument list>).toList()`, where each
+  element's argument list is built with `java.util.Collections.emptyList`,
+  `java.util.Collections.singletonList`, or `java.util.Arrays.asList` by the
+  number of binding positions, and each argument is wrapped exactly as the same
+  argument of a single execution is. A
   query that binds no parameter reads no component, so its argument lists are
   built with an added `.map(java.util.Objects::requireNonNull)` that rejects a
   `null` element.
@@ -1922,7 +1925,7 @@ public final class AuthorRepository {
                 SELECT *
                 FROM authors
                 WHERE id = ?;""",
-                java.util.Arrays.asList(id),
+                java.util.Collections.singletonList(id),
                 authorsRowMapper
         );
     }
