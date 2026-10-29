@@ -95,7 +95,7 @@ mkdir -p sql/migrations src/main/java/com/example/app
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
-            <version>42.7.13</version>
+            <version>42.7.14</version>
         </dependency>
     </dependencies>
 

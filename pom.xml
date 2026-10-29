@@ -24,12 +24,12 @@
         <spotless.eclipse.version>4.40</spotless.eclipse.version>
         <spotless.java.config>${project.basedir}/config/eclipse-java-formatter.xml</spotless.java.config>
         <picocli.version>4.7.7</picocli.version>
-        <jackson.version>3.2.1</jackson.version>
+        <jackson.version>3.2.4</jackson.version>
         <jsqlparser.version>5.4</jsqlparser.version>
         <junit.version>6.1.2</junit.version>
         <h2.version>2.4.240</h2.version>
         <testcontainers.version>1.21.4</testcontainers.version>
-        <postgresql.version>42.7.13</postgresql.version>
+        <postgresql.version>42.7.14</postgresql.version>
         <commons-compress.version>1.28.0</commons-compress.version>
         <spring.version>7.0.9</spring.version>
         <hibernate.version>7.4.13.Final</hibernate.version>

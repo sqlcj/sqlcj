@@ -1674,7 +1674,7 @@ list as `?::task_status[]`, the assignee as `?::int8`, and the priority bound as
 
 A criteria query is one statement whatever criteria it carries, so the database
 may plan it once and reuse that plan for another combination. What follows
-describes PostgreSQL 16 and pgjdbc 42.7.13 behavior rather than anything sqlcj
+describes PostgreSQL 16 and pgjdbc 42.7.14 behavior rather than anything sqlcj
 guarantees: sqlcj sets no driver or session option.
 
 - pgjdbc prepares a statement on the server at its fifth execution on one
@@ -3202,7 +3202,7 @@ Criteria queries:
   PostgreSQL 16 through the generated repository, as the reference service group
   below states.
 - No sqlcj test asserts a query plan: [Query planning](#query-planning)
-  describes PostgreSQL 16 and pgjdbc 42.7.13 behavior rather than generated or
+  describes PostgreSQL 16 and pgjdbc 42.7.14 behavior rather than generated or
   runtime behavior of sqlcj.
 
 Generated Java:
