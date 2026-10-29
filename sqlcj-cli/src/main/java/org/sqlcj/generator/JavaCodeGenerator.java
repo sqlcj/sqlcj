@@ -1216,15 +1216,24 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * method parameter of a single execution and a component of the parameter
      * record of a batched one.
      *
-     * <p>The argument list is built with {@code java.util.Arrays.asList} rather
-     * than {@code List.of} so that a null argument can be bound.
+     * <p>A list of no binding position is built with
+     * {@code java.util.Collections.emptyList}, of one with
+     * {@code java.util.Collections.singletonList}, and of two or more with
+     * {@code java.util.Arrays.asList}. Each of the three accepts a null
+     * argument, unlike {@code List.of}, so a null parameter can be bound.
      */
     private String generateParameterList(QueryModel query, List<String> valueNames) {
         Map<Integer, String> argumentsByIndex = generateArgumentsByIndex(query, valueNames);
-
-        return query.bindingParameterIndexes().stream()
+        List<String> arguments = query.bindingParameterIndexes().stream()
             .map(argumentsByIndex::get)
-            .collect(Collectors.joining(", ", "java.util.Arrays.asList(", ")"));
+            .toList();
+
+        return switch (arguments.size()) {
+            case 0 -> "java.util.Collections.emptyList()";
+            case 1 -> "java.util.Collections.singletonList(%s)".formatted(arguments.get(0));
+            default -> arguments.stream()
+                .collect(Collectors.joining(", ", "java.util.Arrays.asList(", ")"));
+        };
     }
 
     /**

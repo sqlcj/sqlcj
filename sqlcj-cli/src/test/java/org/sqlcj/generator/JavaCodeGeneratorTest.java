@@ -25,6 +25,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -33,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -457,7 +459,7 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertTrue(source.contains("import java.util.List;"));
-        assertTrue(source.contains("java.util.Arrays.asList()"));
+        assertTrue(source.contains("java.util.Collections.emptyList()"));
     }
 
     @Test
@@ -1203,7 +1205,7 @@ class JavaCodeGeneratorTest {
         String source = generate(query).content();
 
         assertTrue(source.contains("return executor.queryOne("));
-        assertTrue(source.contains("java.util.Arrays.asList(id)"));
+        assertTrue(source.contains("java.util.Collections.singletonList(id)"));
         assertTrue(source.contains("getUserRowMapper"));
         assertFalse(source.contains("UnsupportedOperationException"));
     }
@@ -2039,7 +2041,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "java.util.Arrays.asList(id)"
+                "java.util.Collections.singletonList(id)"
             )
         );
 
@@ -2106,7 +2108,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "java.util.Arrays.asList(active)"
+                "java.util.Collections.singletonList(active)"
             )
         );
 
@@ -2238,6 +2240,171 @@ class JavaCodeGeneratorTest {
         assertCompiles(file);
     }
 
+    /**
+     * The argument list counts binding positions, not logical parameters, so
+     * one parameter bound at two placeholders is rendered with
+     * {@code java.util.Arrays.asList} rather than as a singleton.
+     */
+    @Test
+    void shouldGenerateTwoArgumentListForOneParameterBoundAtTwoPlaceholders()
+        throws IOException {
+        QueryModel query = new QueryModel(
+            "FindUser",
+            QueryType.ONE,
+            "users",
+            """
+                SELECT id
+                FROM users
+                WHERE id = ? OR parent_id = ?
+                """,
+            List.of(1, 1),
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(source.contains("public Long findUser(Long id)"), source);
+        assertTrue(source.contains("java.util.Arrays.asList(id, id)"), source);
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A generated single execution passes the executor the arguments of its
+     * binding positions: no element when it binds none, and otherwise the
+     * argument itself, a {@code null} and a {@code byte[]} included.
+     */
+    @Test
+    void shouldPassTheArgumentListOfASingleExecutionToTheExecutor() throws Exception {
+        QueryModel touchUsers = new QueryModel(
+            "TouchUsers",
+            QueryType.EXEC,
+            "users",
+            "UPDATE users SET updated_at = now()",
+            List.of(),
+            List.of(),
+            List.of(),
+            null
+        );
+
+        QueryModel deleteUser = new QueryModel(
+            "DeleteUser",
+            QueryType.EXEC,
+            "users",
+            "DELETE FROM users\nWHERE id = ?",
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null
+        );
+
+        QueryModel storeAvatar = new QueryModel(
+            "StoreAvatar",
+            QueryType.EXEC,
+            "users",
+            "UPDATE users SET avatar = ?",
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "avatar", ColumnType.BYTEA)),
+            null
+        );
+
+        GeneratedFile file = generate(
+            new QueryGroupModel(GROUP, List.of(touchUsers, deleteUser, storeAvatar))
+        );
+
+        assertCompiles(file);
+
+        byte[] avatar = { 1, 2, 3 };
+
+        try (URLClassLoader classLoader = classLoader()) {
+            Class<?> repositoryType = Class.forName(
+                "generated.UsersRepository",
+                true,
+                classLoader
+            );
+
+            RecordingQueryExecutor executor = new RecordingQueryExecutor();
+
+            Object repository = repositoryType
+                .getConstructor(QueryExecutor.class)
+                .newInstance(executor);
+
+            repositoryType.getMethod("touchUsers").invoke(repository);
+            repositoryType.getMethod("deleteUser", Long.class).invoke(repository, (Long) null);
+            repositoryType.getMethod("storeAvatar", byte[].class).invoke(repository, avatar);
+
+            assertEquals(3, executor.parameters.size());
+            assertEquals(List.of(), executor.parameters.get(0));
+            assertEquals(Collections.singletonList(null), executor.parameters.get(1));
+            assertEquals(1, executor.parameters.get(2).size());
+            assertSame(avatar, executor.parameters.get(2).get(0));
+        }
+    }
+
+    /**
+     * A generated batch passes the executor one argument list per row of the
+     * list it takes, in its order, each holding that row's arguments.
+     */
+    @Test
+    void shouldPassOneArgumentListPerBatchRowToTheExecutor() throws Exception {
+        QueryModel query = new QueryModel(
+            "StoreAvatars",
+            QueryType.BATCH_EXEC,
+            "users",
+            "UPDATE users SET avatar = ?",
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "avatar", ColumnType.BYTEA)),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        assertCompiles(file);
+
+        byte[] first = { 1, 2 };
+        byte[] second = { 3, 4 };
+
+        try (URLClassLoader classLoader = classLoader()) {
+            Class<?> repositoryType = Class.forName(
+                "generated.UsersRepository",
+                true,
+                classLoader
+            );
+
+            Class<?> paramsType = Class.forName(
+                "generated.UsersRepository$StoreAvatarsParams",
+                true,
+                classLoader
+            );
+
+            RecordingQueryExecutor executor = new RecordingQueryExecutor();
+
+            Object repository = repositoryType
+                .getConstructor(QueryExecutor.class)
+                .newInstance(executor);
+
+            List<Object> batch = List.of(
+                paramsType.getConstructor(byte[].class).newInstance(first),
+                paramsType.getConstructor(byte[].class).newInstance(second)
+            );
+
+            repositoryType.getMethod("storeAvatars", List.class).invoke(repository, batch);
+
+            assertEquals(1, executor.batches);
+            assertEquals(2, executor.batchParameters.size());
+            assertEquals(1, executor.batchParameters.get(0).size());
+            assertSame(first, executor.batchParameters.get(0).get(0));
+            assertEquals(1, executor.batchParameters.get(1).size());
+            assertSame(second, executor.batchParameters.get(1).get(0));
+        }
+    }
+
     @Test
     void shouldGenerateEmptyArgumentListForQueryWithoutParameters() throws IOException {
         QueryModel query = new QueryModel(
@@ -2268,7 +2435,7 @@ class JavaCodeGeneratorTest {
         );
 
         assertTrue(source.contains("import java.util.List;"));
-        assertTrue(source.contains("java.util.Arrays.asList()"));
+        assertTrue(source.contains("java.util.Collections.emptyList()"));
 
         assertCompiles(file);
     }
@@ -2402,7 +2569,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "batch.stream().map(java.util.Objects::requireNonNull)"
-                    + ".map(params -> java.util.Arrays.asList()).toList()"
+                    + ".map(params -> java.util.Collections.emptyList()).toList()"
             )
         );
 
@@ -2635,7 +2802,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "batch.stream().map(params -> java.util.Arrays.asList("
+                "batch.stream().map(params -> java.util.Collections.singletonList("
                     + "params.hashCode1())).toList()"
             )
         );
@@ -3013,7 +3180,7 @@ class JavaCodeGeneratorTest {
         );
         assertTrue(source.contains("public Optional<FindUserResult> findUser(Long id)"));
         assertTrue(source.contains("return executor.queryOptional("));
-        assertTrue(source.contains("java.util.Arrays.asList(id)"));
+        assertTrue(source.contains("java.util.Collections.singletonList(id)"));
         assertTrue(source.contains("Type: OPTIONAL"));
 
         assertFalse(source.contains("return executor.queryOne("));
@@ -3273,7 +3440,7 @@ class JavaCodeGeneratorTest {
                                     FROM users
 
                                     WHERE id = ?\""",
-                                    java.util.Arrays.asList(id),
+                                    java.util.Collections.singletonList(id),
                                     listUsersRowMapper
                             );
                         }
@@ -3292,7 +3459,7 @@ class JavaCodeGeneratorTest {
                                 \"""
                                 DELETE FROM users
                                 WHERE id = ?\""",
-                                java.util.Arrays.asList(id)
+                                java.util.Collections.singletonList(id)
                         );
                     }
                     """
@@ -3312,7 +3479,7 @@ class JavaCodeGeneratorTest {
                                 INSERT INTO users (name)
                                 VALUES (?)\""",
                                 batch.stream().map(params -> \
-                    java.util.Arrays.asList(params.name())).toList()
+                    java.util.Collections.singletonList(params.name())).toList()
                         );
                     }
                     """
@@ -4469,7 +4636,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "java.util.Arrays.asList(new org.sqlcj.runtime.SqlArray(\"%s\", values))"
+                "java.util.Collections.singletonList(new org.sqlcj.runtime.SqlArray(\"%s\", values))"
                     .formatted(elementTypeName)
             )
         );
@@ -4519,7 +4686,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "java.util.Arrays.asList(new org.sqlcj.runtime.SqlArray(\"%s\", marks))"
+                "java.util.Collections.singletonList(new org.sqlcj.runtime.SqlArray(\"%s\", marks))"
                     .formatted(elementTypeName)
             )
         );
@@ -4680,8 +4847,15 @@ class JavaCodeGeneratorTest {
         );
     }
 
-    /** An executor that counts the batches a generated method ran. */
+    /**
+     * An executor that counts the batches a generated method ran and records
+     * the argument list of every execution and of every row of every batch.
+     */
     private static final class RecordingQueryExecutor implements QueryExecutor {
+
+        private final List<List<?>> parameters = new ArrayList<>();
+
+        private final List<List<?>> batchParameters = new ArrayList<>();
 
         private int batches;
 
@@ -4720,6 +4894,8 @@ class JavaCodeGeneratorTest {
 
         @Override
         public int execute(String repository, String query, String sql, List<?> parameters) {
+            this.parameters.add(parameters);
+
             return 0;
         }
 
@@ -4731,6 +4907,7 @@ class JavaCodeGeneratorTest {
             List<? extends List<?>> batch
         ) {
             batches++;
+            batchParameters.addAll(batch);
 
             return new int[batch.size()];
         }

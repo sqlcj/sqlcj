@@ -1145,8 +1145,9 @@ mixed:
 
 Null handling does not depend on the column type:
 
-- the generated argument list is built with `java.util.Arrays.asList`, which
-  accepts null elements,
+- the generated argument list is built with `java.util.Collections.emptyList`,
+  `java.util.Collections.singletonList`, or `java.util.Arrays.asList`, by the
+  number of binding positions, and each of the three accepts null elements,
 - `JdbcQueryExecutor` binds each argument positionally with
   `PreparedStatement.setObject`, so a null argument is bound as SQL `NULL`. A
   `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`, or `MACADDR8` argument

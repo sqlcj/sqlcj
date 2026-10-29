@@ -843,7 +843,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        assertTrue(source.contains("java.util.Arrays.asList()"));
+        assertTrue(source.contains("java.util.Collections.emptyList()"));
 
         QueryExecutor executor = new JdbcQueryExecutor(usersDataSource());
 
@@ -995,7 +995,7 @@ class SqlcjCompilerIntegrationTest {
         String source = Files.readString(tempDir.resolve("generated/generated/UsersRepository.java"));
 
         assertTrue(source.contains("public int deleteUser(Long id)"));
-        assertTrue(source.contains("java.util.Arrays.asList(id)"));
+        assertTrue(source.contains("java.util.Collections.singletonList(id)"));
 
         QueryExecutor executor = new JdbcQueryExecutor(usersDataSource());
 
@@ -5047,7 +5047,7 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             repository.contains(
-                "java.util.Arrays.asList(new org.sqlcj.runtime.SqlArray(\"int8\", id))"
+                "java.util.Collections.singletonList(new org.sqlcj.runtime.SqlArray(\"int8\", id))"
             )
         );
     }
