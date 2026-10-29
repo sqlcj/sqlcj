@@ -37,6 +37,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -2387,12 +2388,7 @@ class ReferenceServiceIntegrationTest {
         try (Stream<Path> files = Files.list(migrations())) {
             return files
                 .map(file -> file.getFileName().toString())
-                .sorted(
-                    (first, second) -> Integer.compare(
-                        migrationVersion(first),
-                        migrationVersion(second)
-                    )
-                )
+                .sorted(Comparator.comparingInt(ReferenceServiceIntegrationTest::migrationVersion))
                 .toList();
         }
     }

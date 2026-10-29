@@ -2154,7 +2154,7 @@ public final class QueryAnalyzer {
             return false;
         }
 
-        return joins.stream().anyMatch(join -> namesSource(join.getRightItem(), name));
+        return joins.stream().anyMatch(join -> namesSource(join.getFromItem(), name));
     }
 
     /**
@@ -4037,7 +4037,7 @@ public final class QueryAnalyzer {
                     sources,
                     group,
                     resolveSource(
-                        join.getRightItem(),
+                        join.getFromItem(),
                         groupItemRejection,
                         analysis,
                         commonTableExpressions,
@@ -4638,7 +4638,7 @@ public final class QueryAnalyzer {
         requireSupportedJoinKind(join);
 
         return resolveSource(
-            join.getRightItem(),
+            join.getFromItem(),
             unsupportedSourceRejection,
             analysis,
             commonTableExpressions,
@@ -5353,7 +5353,6 @@ public final class QueryAnalyzer {
                         resolveColumn(leftColumn, scope).column().name(),
                         placeholders
                     );
-                    return;
                 }
             } else if (rightColumn != null) {
                 CastPlaceholder cast = placeholders.ofCast(left);
@@ -5600,7 +5599,7 @@ public final class QueryAnalyzer {
      * element type. An array column's own values are not elements of its type,
      * and the element types the schema maps no array of have no array binding.
      */
-    private org.sqlcj.schema.Column requireArrayElementColumn(org.sqlcj.schema.Column column) {
+    private void requireArrayElementColumn(org.sqlcj.schema.Column column) {
         if (column.array() || !columnTypeMapping.isArrayElementType(column.type())) {
             throw new UnsupportedOperationException(
                 ("An = ANY placeholder requires a non-array column of a type other than BYTEA, "
@@ -5613,8 +5612,6 @@ public final class QueryAnalyzer {
                     )
             );
         }
-
-        return column;
     }
 
     /**

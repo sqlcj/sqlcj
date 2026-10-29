@@ -1,6 +1,7 @@
 package org.sqlcj.runtime;
 
 import org.h2.jdbcx.JdbcDataSource;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -24,7 +25,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -604,7 +604,7 @@ class JdbcTransactionsTest {
 
         assertEquals(1L, rows);
 
-        transactions.useTransaction(connection -> assertNotNull(connection));
+        transactions.useTransaction(Assertions::assertNotNull);
     }
 
     private void insert(Connection connection, long id, String name) throws SQLException {

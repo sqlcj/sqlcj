@@ -2014,9 +2014,11 @@ class SqlcjCompilerIntegrationTest {
         }
 
         assertEquals(
-            "dev/example/generated/AuthorRepository.java\n"
-                + "dev/example/generated/AuthorsRow.java\n"
-                + "dev/example/generated/LibraryRepository.java\n",
+            """
+                dev/example/generated/AuthorRepository.java
+                dev/example/generated/AuthorsRow.java
+                dev/example/generated/LibraryRepository.java
+                """,
             Files.readString(generatedDirectory.resolve("sqlcj-manifest.txt"))
         );
 
@@ -2537,9 +2539,11 @@ class SqlcjCompilerIntegrationTest {
         assertTrue(Files.exists(packageDirectory.resolve("StageSetting.java")));
 
         assertEquals(
-            "dev/example/generated/AuthorRepository.java\n"
-                + "dev/example/generated/LibraryRepository.java\n"
-                + "dev/example/generated/StageSetting.java\n",
+            """
+                dev/example/generated/AuthorRepository.java
+                dev/example/generated/LibraryRepository.java
+                dev/example/generated/StageSetting.java
+                """,
             Files.readString(generatedDirectory.resolve("sqlcj-manifest.txt"))
         );
 
@@ -2817,8 +2821,10 @@ class SqlcjCompilerIntegrationTest {
         assertArrayEquals(firstOrders, Files.readAllBytes(ordersFile));
 
         assertEquals(
-            "dev/example/generated/OrdersRepository.java\n"
-                + "dev/example/generated/UsersRepository.java\n",
+            """
+                dev/example/generated/OrdersRepository.java
+                dev/example/generated/UsersRepository.java
+                """,
             Files.readString(manifestFile)
         );
     }
@@ -3302,7 +3308,7 @@ class SqlcjCompilerIntegrationTest {
     }
 
     @Test
-    void shouldRejectRepeatedRepositoryMethodBeforeWriting() throws IOException {
+    void shouldRejectRepeatedRepositoryMethodBeforeWriting() {
         Path generatedDirectory = tempDir.resolve("generated");
 
         CompilationException exception = assertThrows(
@@ -3337,7 +3343,7 @@ class SqlcjCompilerIntegrationTest {
      * share one path on a case-insensitive filesystem.
      */
     @Test
-    void shouldRejectRepositoryResultTypesThatDifferOnlyByCaseBeforeWriting() throws IOException {
+    void shouldRejectRepositoryResultTypesThatDifferOnlyByCaseBeforeWriting() {
         Path generatedDirectory = tempDir.resolve("generated");
 
         CompilationException exception = assertThrows(
@@ -3369,7 +3375,7 @@ class SqlcjCompilerIntegrationTest {
     }
 
     @Test
-    void shouldRejectDuplicateRepositoryBeforeWriting() throws IOException {
+    void shouldRejectDuplicateRepositoryBeforeWriting() {
         Path generatedDirectory = tempDir.resolve("generated");
 
         CompilationException exception = assertThrows(
@@ -3391,7 +3397,7 @@ class SqlcjCompilerIntegrationTest {
      * generate one repository name, so they collide as a duplicate path.
      */
     @Test
-    void shouldRejectRepositoryNamesThatDifferOnlyByTheirFirstCharacterCase() throws IOException {
+    void shouldRejectRepositoryNamesThatDifferOnlyByTheirFirstCharacterCase() {
         Path generatedDirectory = tempDir.resolve("generated");
 
         CompilationException exception = assertThrows(
@@ -3409,7 +3415,7 @@ class SqlcjCompilerIntegrationTest {
     }
 
     @Test
-    void shouldRejectRepositoryPathsThatDifferOnlyByCaseBeforeWriting() throws IOException {
+    void shouldRejectRepositoryPathsThatDifferOnlyByCaseBeforeWriting() {
         Path generatedDirectory = tempDir.resolve("generated");
 
         CompilationException exception = assertThrows(

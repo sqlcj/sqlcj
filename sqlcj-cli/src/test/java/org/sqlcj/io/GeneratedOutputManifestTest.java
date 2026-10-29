@@ -63,8 +63,10 @@ class GeneratedOutputManifestTest {
         );
 
         assertEquals(
-            "dev/example/generated/OrdersRepository.java\n"
-                + "dev/example/generated/UsersRepository.java\n",
+            """
+                dev/example/generated/OrdersRepository.java
+                dev/example/generated/UsersRepository.java
+                """,
             Files.readString(outputDirectory.resolve("sqlcj-manifest.txt"))
         );
     }
