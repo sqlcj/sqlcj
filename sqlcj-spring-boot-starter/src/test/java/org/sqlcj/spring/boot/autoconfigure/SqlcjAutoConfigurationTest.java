@@ -1,6 +1,7 @@
 package org.sqlcj.spring.boot.autoconfigure;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.autoconfigure.AutoConfigurationPackage;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
@@ -15,6 +16,9 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.sqlcj.runtime.JdbcQueryExecutor;
 import org.sqlcj.runtime.QueryExecutor;
+import org.sqlcj.spring.boot.autoconfigure.outside.OutsideRepository;
+import org.sqlcj.spring.boot.autoconfigure.repositories.NotesRepository;
+import org.sqlcj.spring.boot.autoconfigure.repositories.UnmarkedRepository;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -28,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -35,8 +40,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@link QueryExecutor} over the application's single {@link DataSource}
  * candidate, that the executor takes part in a transaction Spring manages,
  * that the auto-configuration backs off from an application's own executor,
- * and that an application reaches it through the imports file and turns it off
- * with {@code spring.autoconfigure.exclude}.
+ * that it registers the generated repositories of the auto-configuration
+ * packages over the one executor and nothing else, and that an application
+ * reaches it through the imports file and turns it off with
+ * {@code spring.autoconfigure.exclude}.
  *
  * <p>Every context runs on its own in-memory H2 database, so no test leaves
  * state behind.
@@ -117,6 +124,99 @@ class SqlcjAutoConfigurationTest {
     }
 
     @Test
+    void registersAMarkedRepositoryAsOneSingletonOverTheConfiguredExecutor() {
+        runner.withUserConfiguration(RepositoryPackageConfiguration.class).run(context -> {
+            String name = NotesRepository.class.getName();
+            assertArrayEquals(new String[] { name }, context.getBeanNamesForType(NotesRepository.class));
+            assertSame(
+                context.getBean(QueryExecutor.class),
+                context.getBean(NotesRepository.class).executor()
+            );
+            assertTrue(context.isSingleton(name));
+        });
+    }
+
+    @Test
+    void registersNoUnmarkedRepository() {
+        runner.withUserConfiguration(RepositoryPackageConfiguration.class)
+            .run(context -> assertTrue(context.getBeansOfType(UnmarkedRepository.class).isEmpty()));
+    }
+
+    @Test
+    void registersNoMarkedRepositoryOutsideTheAutoConfigurationPackages() {
+        runner.withUserConfiguration(RepositoryPackageConfiguration.class)
+            .run(context -> assertTrue(context.getBeansOfType(OutsideRepository.class).isEmpty()));
+    }
+
+    @Test
+    void registersARepositoryOverAnApplicationExecutorWithoutADataSourceAutoConfiguration() {
+        new ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(SqlcjAutoConfiguration.class))
+            .withUserConfiguration(
+                RepositoryPackageConfiguration.class,
+                ApplicationExecutorConfiguration.class
+            )
+            .run(context -> {
+                assertArrayEquals(
+                    new String[] { "applicationQueryExecutor" },
+                    context.getBeanNamesForType(QueryExecutor.class)
+                );
+                assertSame(
+                    context.getBean(QueryExecutor.class),
+                    context.getBean(NotesRepository.class).executor()
+                );
+            });
+    }
+
+    @Test
+    void registersNoRepositoryTheApplicationAlreadyDefines() {
+        runner.withUserConfiguration(
+            RepositoryPackageConfiguration.class,
+            ApplicationRepositoryConfiguration.class
+        )
+            .run(
+                context -> assertArrayEquals(
+                    new String[] { "applicationNotesRepository" },
+                    context.getBeanNamesForType(NotesRepository.class)
+                )
+            );
+    }
+
+    @Test
+    void registersNoRepositoryWithoutAnExecutor() {
+        new ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(SqlcjAutoConfiguration.class))
+            .withUserConfiguration(RepositoryPackageConfiguration.class)
+            .run(context -> {
+                assertNull(context.getStartupFailure());
+                assertTrue(context.getBeansOfType(QueryExecutor.class).isEmpty());
+                assertTrue(context.getBeansOfType(NotesRepository.class).isEmpty());
+            });
+    }
+
+    @Test
+    void registersNoRepositoryWithTwoExecutorsOfWhichOneIsPrimary() {
+        runner.withUserConfiguration(
+            RepositoryPackageConfiguration.class,
+            PrimaryExecutorConfiguration.class
+        )
+            .run(context -> {
+                assertNull(context.getStartupFailure());
+                assertEquals(2, context.getBeansOfType(QueryExecutor.class).size());
+                assertTrue(context.getBeansOfType(NotesRepository.class).isEmpty());
+            });
+    }
+
+    @Test
+    void registersNoRepositoryWithoutAnAutoConfigurationPackage() {
+        runner.run(context -> {
+            assertNull(context.getStartupFailure());
+            assertEquals(1, context.getBeansOfType(QueryExecutor.class).size());
+            assertTrue(context.getBeansOfType(NotesRepository.class).isEmpty());
+        });
+    }
+
+    @Test
     void executorWriteIsRolledBackWithTheSpringTransaction() {
         transactionalRunner.run(context -> {
             DataSource dataSource = context.getBean(DataSource.class);
@@ -145,9 +245,10 @@ class SqlcjAutoConfigurationTest {
 
     @Test
     void anApplicationReachesTheAutoConfigurationThroughTheImportsFile() {
-        new ApplicationContextRunner()
-            .withUserConfiguration(AutoConfiguredApplication.class)
-            .run(context -> assertEquals(1, context.getBeansOfType(QueryExecutor.class).size()));
+        new ApplicationContextRunner().withUserConfiguration(AutoConfiguredApplication.class).run(context -> {
+            assertEquals(1, context.getBeansOfType(QueryExecutor.class).size());
+            assertEquals(1, context.getBeansOfType(NotesRepository.class).size());
+        });
     }
 
     @Test
@@ -160,6 +261,7 @@ class SqlcjAutoConfigurationTest {
             .run(context -> {
                 assertNull(context.getStartupFailure());
                 assertTrue(context.getBeansOfType(QueryExecutor.class).isEmpty());
+                assertTrue(context.getBeansOfType(NotesRepository.class).isEmpty());
             });
     }
 
@@ -242,6 +344,41 @@ class SqlcjAutoConfigurationTest {
 
         @Bean
         QueryExecutor applicationQueryExecutor(DataSource dataSource) {
+            return new JdbcQueryExecutor(dataSource);
+        }
+    }
+
+    /**
+     * An application whose auto-configuration package is the one holding the
+     * fixture repositories.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @AutoConfigurationPackage(basePackageClasses = NotesRepository.class)
+    static class RepositoryPackageConfiguration {
+    }
+
+    /** An application that declares a generated repository itself. */
+    @Configuration(proxyBeanMethods = false)
+    static class ApplicationRepositoryConfiguration {
+
+        @Bean
+        NotesRepository applicationNotesRepository(QueryExecutor executor) {
+            return new NotesRepository(executor);
+        }
+    }
+
+    /** Two application executors, of which one is primary. */
+    @Configuration(proxyBeanMethods = false)
+    static class PrimaryExecutorConfiguration {
+
+        @Bean
+        @Primary
+        QueryExecutor firstQueryExecutor(DataSource dataSource) {
+            return new JdbcQueryExecutor(dataSource);
+        }
+
+        @Bean
+        QueryExecutor secondQueryExecutor(DataSource dataSource) {
             return new JdbcQueryExecutor(dataSource);
         }
     }

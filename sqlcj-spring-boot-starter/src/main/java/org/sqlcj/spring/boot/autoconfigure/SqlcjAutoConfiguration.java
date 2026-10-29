@@ -13,7 +13,7 @@ import javax.sql.DataSource;
 
 /**
  * Auto-configures the {@link QueryExecutor} that sqlcj generated repositories
- * execute their queries through.
+ * execute their queries through, and registers those repositories as beans.
  *
  * <p>The executor is a {@link JdbcQueryExecutor} over a
  * {@link TransactionAwareDataSourceProxy} of the application's single
@@ -27,6 +27,12 @@ import javax.sql.DataSource;
  * itself always applies. It backs off when the application defines its own
  * {@code QueryExecutor}, and when no single {@code DataSource} candidate
  * qualifies the context simply has no sqlcj executor.
+ *
+ * <p>Beside the executor, the {@link GeneratedRepositoryRegistrar} registers
+ * every generated repository in the application's auto-configuration packages
+ * as a singleton built from the application's one {@code QueryExecutor} bean
+ * definition, whether that is the executor above or the application's own, so
+ * a repository is injected like any other bean.
  */
 @AutoConfiguration(after = DataSourceAutoConfiguration.class)
 public final class SqlcjAutoConfiguration {
@@ -39,5 +45,15 @@ public final class SqlcjAutoConfiguration {
     @ConditionalOnMissingBean(QueryExecutor.class)
     QueryExecutor sqlcjQueryExecutor(DataSource dataSource) {
         return new JdbcQueryExecutor(new TransactionAwareDataSourceProxy(dataSource));
+    }
+
+    /**
+     * Returns the registry post-processor that registers the generated
+     * repositories. It is static so that registering them never instantiates
+     * this auto-configuration or the executor.
+     */
+    @Bean
+    static GeneratedRepositoryRegistrar sqlcjGeneratedRepositoryRegistrar() {
+        return new GeneratedRepositoryRegistrar();
     }
 }
