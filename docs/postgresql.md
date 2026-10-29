@@ -84,7 +84,7 @@ Each call manages the transaction by these rules:
   `QueryCardinalityException` a generated operation raised.
 - A failure to begin or to commit raises
   `org.sqlcj.runtime.TransactionException` with the `SQLException` as its cause.
-  On a begin failure the callback does not run.
+  If the transaction fails to begin, the callback does not run.
 - A failure to roll back is attached to the callback's failure as a suppressed
   `TransactionException`.
 - Auto-commit is restored to `true` only when the call disabled it, and only
@@ -586,9 +586,9 @@ left:
 | --- | --- |
 | `CREATE TYPE ... AS ENUM (...)` | Adds the type with its declared labels. |
 | `ALTER TYPE ... ADD VALUE '<label>'` | Appends the label after the last one. |
-| `ALTER TYPE ... ADD VALUE '<label>' BEFORE '<neighbour>'` | Inserts the label directly before the neighbour. |
-| `ALTER TYPE ... ADD VALUE '<label>' AFTER '<neighbour>'` | Inserts the label directly after the neighbour. |
-| `ALTER TYPE ... ADD VALUE IF NOT EXISTS '<label>'` | Does nothing when the type already has the label. As PostgreSQL does, the existing label decides before the neighbour, so a neighbour the type does not have is not resolved at all. |
+| `ALTER TYPE ... ADD VALUE '<label>' BEFORE '<neighbor>'` | Inserts the label directly before the neighbor. |
+| `ALTER TYPE ... ADD VALUE '<label>' AFTER '<neighbor>'` | Inserts the label directly after the neighbor. |
+| `ALTER TYPE ... ADD VALUE IF NOT EXISTS '<label>'` | Does nothing when the type already has the label. As PostgreSQL does, the existing label decides before the neighbor, so a neighbor the type does not have is not resolved at all. |
 | `ALTER TYPE ... RENAME TO <name>` | Renames the type in its position, keeping its labels, and every column of that type, scalar and array alike, follows it. |
 | `ALTER TYPE ... RENAME VALUE '<label>' TO '<new label>'` | Renames the label in its position, so the modeled labels keep PostgreSQL's sort order. |
 | A `CREATE TYPE ... AS ENUM (...)` or an `ALTER TYPE ... RENAME TO` whose name a modeled enum already has | Replaces that enum in its position with the newly declared or renamed one, because the `DROP TYPE ... CASCADE` that freed the name is never seen. This is how the migration that replaces an enum loads, in either of its usual shapes: renaming the old type away before declaring the new one under its name, or declaring the new type beside it and renaming the new type onto its name once the columns are retyped. A column that still names a replaced enum keeps that name, so it is modeled as a column of the replacing enum with its labels, which is the same unseen `DROP TYPE ... CASCADE` case: PostgreSQL would have removed the column. |
@@ -596,7 +596,7 @@ left:
 | `ALTER TYPE ... SET SCHEMA <schema>` | Rejected for a modeled enum as `Unsupported ALTER TYPE action: SET SCHEMA <schema> at line <n>`, because the columns of that type would keep it in a namespace sqlcj does not model. |
 | `ALTER TYPE ... SET SCHEMA public` | Does nothing for a modeled enum: the type already stands in the one namespace sqlcj models. |
 | `ALTER TYPE ... RENAME TO` or `SET SCHEMA` of a type sqlcj does not model | Ignored, however the type is qualified, because such a type is none of its enum types. |
-| A `CREATE TYPE` or an `ALTER TYPE` whose own type is qualified with a schema other than `public` | Ignored before anything it states is resolved, so it never touches the modeled enum of the same unqualified name and neither a repeated label nor a missing label or neighbour fails. |
+| A `CREATE TYPE` or an `ALTER TYPE` whose own type is qualified with a schema other than `public` | Ignored before anything it states is resolved, so it never touches the modeled enum of the same unqualified name and neither a repeated label nor a missing label or neighbor fails. |
 | `CREATE TYPE` of a composite, range, or shell type | Ignored. A column of such a type is recorded with its declared type, as [Unsupported Types and DDL](#unsupported-types-and-ddl) describes. |
 | `DROP TYPE` | Ignored. sqlcj's parser cannot read the statement, and an unreadable statement that does not open as table or type DDL is ignored, so an enum the schema models stays modeled with its labels and the columns of that type stay modeled; see [Ignored Statements](#ignored-statements). |
 
@@ -1471,7 +1471,7 @@ Enum types:
   `RENAME VALUE`, and `RENAME TO`;
   `DefaultSchemaParserTest.shouldIgnoreATypeStatementOfAnotherSchema` covers
   every `CREATE TYPE` and `ALTER TYPE` of another schema that is ignored,
-  including the repeated label and the missing neighbour that are never
+  including the repeated label and the missing neighbor that are never
   resolved; and
   `DefaultSchemaParserTest.shouldIgnoreSetSchemaPublicOfAModeledEnum` covers
   `SET SCHEMA public` of a modeled enum.

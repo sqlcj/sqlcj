@@ -404,7 +404,7 @@ sqlcj: Invalid query group 'Stage' in /home/dev/project/sql/queries.sql: Enum ty
 Two entries of one package that return or embed the complete row of one table
 generate one row record, so they must define that table alike: the analyzed row
 columns must have the same names, types, and nullability, in the same order.
-Otherwise the run ends, naming the entry that defined the table first:
+Otherwise, the run ends, naming the entry that defined the table first:
 
 ```text
 sqlcj: Invalid query group 'Library' in /home/dev/project/sql/library.sql: Table 'authors' differs from its definition in query group 'Author', which generates the same row type AuthorsRow
@@ -479,7 +479,7 @@ with `/`
 between its name elements, sorted, one per line. The next successful run deletes
 the files the previous manifest listed that it did not generate itself, so a
 renamed or removed configuration entry leaves no stale repository behind, and a
-row record no entry returns any more, and an enum no entry uses any more, are
+row record no entry returns anymore, and an enum no entry uses anymore, are
 deleted too.
 
 Cleanup is deliberately narrow:
