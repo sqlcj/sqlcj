@@ -1557,14 +1557,13 @@ in its `SET` clause, so the generated method takes `(id, bio)` and binds
 ```java
 public int updateAuthorBio(Long id, String bio) {
     return executor.execute(
-        "AuthorRepository",
-        "UpdateAuthorBio",
-        """
+            "AuthorRepository",
+            "UpdateAuthorBio",
+            """
             UPDATE authors
             SET bio = ?
-            WHERE id = ?;
-        """,
-        java.util.Arrays.asList(bio, id)
+            WHERE id = ?;""",
+            java.util.Arrays.asList(bio, id)
     );
 }
 ```
@@ -1768,18 +1767,18 @@ included.
   ```java
   private static final RowMapper<ListUserProfilesResult> listUserProfilesRowMapper =
           resultSet -> new ListUserProfilesResult(
-          new UsersRow(
-                  resultSet.getObject(1, Long.class),
-                  resultSet.getObject(2, String.class)
-          ),
-          org.sqlcj.runtime.SqlRow.isNull(resultSet, 3, 5)
-              ? null
-              : new ProfilesRow(
-                      resultSet.getObject(3, Long.class),
-                      resultSet.getObject(4, Long.class),
-                      resultSet.getObject(5, String.class)
-              )
-  );
+                  new UsersRow(
+                          resultSet.getObject(1, Long.class),
+                          resultSet.getObject(2, String.class)
+                  ),
+                  org.sqlcj.runtime.SqlRow.isNull(resultSet, 3, 5)
+                      ? null
+                      : new ProfilesRow(
+                              resultSet.getObject(3, Long.class),
+                              resultSet.getObject(4, Long.class),
+                              resultSet.getObject(5, String.class)
+                      )
+          );
   ```
 
   `SqlRow.isNull` reads that range alone, stops at the first column that reads a
@@ -1884,11 +1883,11 @@ public final class AuthorRepository {
 
     private static final RowMapper<AuthorsRow> authorsRowMapper =
             resultSet -> new AuthorsRow(
-            resultSet.getObject(1, Long.class),
-            resultSet.getObject(2, String.class),
-            resultSet.getObject(3, String.class),
-            resultSet.getObject(4, LocalDateTime.class)
-    );
+                    resultSet.getObject(1, Long.class),
+                    resultSet.getObject(2, String.class),
+                    resultSet.getObject(3, String.class),
+                    resultSet.getObject(4, LocalDateTime.class)
+            );
 
     /**
      * Query: CreateAuthor
@@ -1900,9 +1899,9 @@ public final class AuthorRepository {
                 "AuthorRepository",
                 "CreateAuthor",
                 """
-    INSERT INTO authors (name, bio)
-    VALUES (?, ?)
-    RETURNING *;""",
+                INSERT INTO authors (name, bio)
+                VALUES (?, ?)
+                RETURNING *;""",
                 java.util.Arrays.asList(name, bio),
                 authorsRowMapper
         );
@@ -1920,9 +1919,9 @@ public final class AuthorRepository {
                 "AuthorRepository",
                 "FindAuthor",
                 """
-    SELECT *
-    FROM authors
-    WHERE id = ?;""",
+                SELECT *
+                FROM authors
+                WHERE id = ?;""",
                 java.util.Arrays.asList(id),
                 authorsRowMapper
         );

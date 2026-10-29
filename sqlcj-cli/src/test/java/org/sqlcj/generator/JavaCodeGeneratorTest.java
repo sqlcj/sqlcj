@@ -2969,7 +2969,6 @@ class JavaCodeGeneratorTest {
                  *
                  * Table: users
                  */
-
                 public record UsersRow(
                     Long id,
                     String name,
@@ -3213,6 +3212,177 @@ class JavaCodeGeneratorTest {
         assertCompiles(file);
     }
 
+    /**
+     * Every line of a generated method's SQL is written at the column of its
+     * opening delimiter, where the other executor arguments start, in a read,
+     * an exec, and a batch call alike, and a blank SQL line is written empty.
+     */
+    @Test
+    void shouldWriteSqlAtTheColumnOfItsOpeningDelimiter() throws IOException {
+        QueryModel listUsers = new QueryModel(
+            "ListUsers",
+            QueryType.MANY,
+            "users",
+            "SELECT id\nFROM users\n\nWHERE id = ?",
+            List.of(1),
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null
+        );
+
+        QueryModel deleteUser = new QueryModel(
+            "DeleteUser",
+            QueryType.EXEC,
+            "users",
+            "DELETE FROM users\nWHERE id = ?",
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null
+        );
+
+        QueryModel createUsers = new QueryModel(
+            "CreateUsers",
+            QueryType.BATCH_EXEC,
+            "users",
+            "INSERT INTO users (name)\nVALUES (?)",
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            null
+        );
+
+        GeneratedFile file = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(listUsers, deleteUser, createUsers)
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public List<Long> listUsers(Long id) {
+                            return executor.queryMany(
+                                    "UsersRepository",
+                                    "ListUsers",
+                                    \"""
+                                    SELECT id
+                                    FROM users
+
+                                    WHERE id = ?\""",
+                                    java.util.Arrays.asList(id),
+                                    listUsersRowMapper
+                            );
+                        }
+                    """
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                """
+                    public int deleteUser(Long id) {
+                        return executor.execute(
+                                "UsersRepository",
+                                "DeleteUser",
+                                \"""
+                                DELETE FROM users
+                                WHERE id = ?\""",
+                                java.util.Arrays.asList(id)
+                        );
+                    }
+                    """
+                    .indent(4)
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                """
+                    public int[] createUsers(List<CreateUsersParams> batch) {
+                        return executor.executeBatch(
+                                "UsersRepository",
+                                "CreateUsers",
+                                \"""
+                                INSERT INTO users (name)
+                                VALUES (?)\""",
+                                batch.stream().map(params -> \
+                    java.util.Arrays.asList(params.name())).toList()
+                        );
+                    }
+                    """
+                    .indent(4)
+            ),
+            source
+        );
+
+        assertTrue(
+            source.lines().noneMatch(line -> line.isBlank() && !line.isEmpty()),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * The Javadoc of every generated type is written directly above the
+     * declaration it documents, in the repository, the row record, and the
+     * generated enum alike.
+     */
+    @Test
+    void shouldWriteEveryClassJavadocDirectlyAboveItsDeclaration() throws IOException {
+        GeneratedFile repository = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(getUsersRow("GetUser"), enumQuery("GetStage")),
+                List.of(new EnumType("stage_setting", List.of("indoor")))
+            )
+        );
+
+        GeneratedFile row = codeGenerator.generateRows().get(0);
+        GeneratedFile generatedEnum = codeGenerator.generateEnums().get(0);
+
+        assertTrue(
+            repository.content().contains(
+                """
+                     * Repository: Users
+                     */
+                    public final class UsersRepository {
+                    """
+            ),
+            repository.content()
+        );
+
+        assertTrue(
+            row.content().contains(
+                """
+                     * Table: users
+                     */
+                    public record UsersRow(
+                    """
+            ),
+            row.content()
+        );
+
+        assertTrue(
+            generatedEnum.content().contains(
+                """
+                     * Enum: stage_setting
+                     */
+                    public enum StageSetting {
+                    """
+            ),
+            generatedEnum.content()
+        );
+
+        assertCompiles(repository, row, generatedEnum);
+    }
+
     @Test
     void shouldGenerateOneRowRecordPerRowTable() throws IOException {
         QueryModel getUser = new QueryModel(
@@ -3420,16 +3590,16 @@ class JavaCodeGeneratorTest {
                 """
                     private static final RowMapper<ListUserProfilesResult> listUserProfilesRowMapper =
                             resultSet -> new ListUserProfilesResult(
-                            new UsersRow(
-                                    resultSet.getObject(1, Long.class),
-                                    resultSet.getObject(2, String.class)
-                            ),
-                            new ProfilesRow(
-                                    resultSet.getObject(3, Long.class),
-                                    resultSet.getObject(4, Long.class),
-                                    resultSet.getObject(5, String.class)
-                            )
-                    );
+                                    new UsersRow(
+                                            resultSet.getObject(1, Long.class),
+                                            resultSet.getObject(2, String.class)
+                                    ),
+                                    new ProfilesRow(
+                                            resultSet.getObject(3, Long.class),
+                                            resultSet.getObject(4, Long.class),
+                                            resultSet.getObject(5, String.class)
+                                    )
+                            );
                     """
                     .indent(4)
             ),
@@ -3489,18 +3659,18 @@ class JavaCodeGeneratorTest {
                 """
                     private static final RowMapper<ListUserProfilesResult> listUserProfilesRowMapper =
                             resultSet -> new ListUserProfilesResult(
-                            new UsersRow(
-                                    resultSet.getObject(1, Long.class),
-                                    resultSet.getObject(2, String.class)
-                            ),
-                            org.sqlcj.runtime.SqlRow.isNull(resultSet, 3, 5)
-                                ? null
-                                : new ProfilesRow(
-                                        resultSet.getObject(3, Long.class),
-                                        resultSet.getObject(4, Long.class),
-                                        resultSet.getObject(5, String.class)
-                                )
-                    );
+                                    new UsersRow(
+                                            resultSet.getObject(1, Long.class),
+                                            resultSet.getObject(2, String.class)
+                                    ),
+                                    org.sqlcj.runtime.SqlRow.isNull(resultSet, 3, 5)
+                                        ? null
+                                        : new ProfilesRow(
+                                                resultSet.getObject(3, Long.class),
+                                                resultSet.getObject(4, Long.class),
+                                                resultSet.getObject(5, String.class)
+                                        )
+                            );
                     """
                     .indent(4)
             ),
@@ -3561,14 +3731,14 @@ class JavaCodeGeneratorTest {
                 """
                     private static final RowMapper<ListProfilesResult> listProfilesRowMapper =
                             resultSet -> new ListProfilesResult(
-                            org.sqlcj.runtime.SqlRow.isNull(resultSet, 1, 3)
-                                ? null
-                                : new ProfilesRow(
-                                        resultSet.getObject(1, Long.class),
-                                        resultSet.getObject(2, Long.class),
-                                        resultSet.getObject(3, String.class)
-                                )
-                    );
+                                    org.sqlcj.runtime.SqlRow.isNull(resultSet, 1, 3)
+                                        ? null
+                                        : new ProfilesRow(
+                                                resultSet.getObject(1, Long.class),
+                                                resultSet.getObject(2, Long.class),
+                                                resultSet.getObject(3, String.class)
+                                        )
+                            );
                     """
                     .indent(4)
             ),
@@ -4463,7 +4633,6 @@ class JavaCodeGeneratorTest {
                  *
                  * Table: stages
                  */
-
                 public record StagesRow(
                     LocalDate openedOn,
                     List<String> tags,

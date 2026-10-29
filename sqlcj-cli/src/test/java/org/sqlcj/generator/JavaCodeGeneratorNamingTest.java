@@ -255,6 +255,72 @@ class JavaCodeGeneratorNamingTest {
     }
 
     /**
+     * The SQL a generated method passes to the executor is the analyzed SQL
+     * character for character, although every line of its text block is
+     * written at the column of its opening delimiter: a line keeps its own
+     * relative indentation, a blank line stays blank, a tab-indented line
+     * keeps its tab, and a line's trailing whitespace survives.
+     */
+    @Test
+    void shouldExecuteExactSqlForIndentedBlankAndTabbedLines() throws Exception {
+        String sql = "SELECT id,\n       name \n\n\tFROM users";
+
+        QueryModel query = new QueryModel(
+            "ListUsers",
+            QueryType.MANY,
+            "users",
+            sql,
+            List.of(),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
+            ),
+            List.of(),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        assertTrue(file.content().contains("                SELECT id,"));
+        assertTrue(file.content().contains("                       name\\s"));
+        assertTrue(file.content().contains("                \tFROM users"));
+
+        assertCompiles(file);
+
+        assertEquals(sql, executedSql(file, "listUsers"));
+    }
+
+    /**
+     * A batch method passes the same exact SQL, read from the text block of an
+     * {@code executeBatch} call, which an empty batch reaches without binding a
+     * row of its own.
+     */
+    @Test
+    void shouldExecuteExactSqlForABatch() throws Exception {
+        String sql = "INSERT INTO users (name)\n\n\tVALUES (?) ";
+
+        QueryModel query = new QueryModel(
+            "CreateUsers",
+            QueryType.BATCH_EXEC,
+            "users",
+            sql,
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        assertTrue(file.content().contains("                INSERT INTO users (name)"));
+        assertTrue(file.content().contains("                \tVALUES (?)\\s"));
+
+        assertCompiles(file);
+
+        assertEquals(sql, executedSql(file, "createUsers", List.of()));
+    }
+
+    /**
      * A query name containing a quote and a backslash is passed to the runtime
      * as its exact SQL spelling, so the generated identity literal escapes both
      * characters.
