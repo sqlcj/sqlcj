@@ -534,7 +534,6 @@ package com.example.app.db;
  *
  * Enum: stage_setting
  */
-
 public enum StageSetting {
 
     INDOOR("indoor"),

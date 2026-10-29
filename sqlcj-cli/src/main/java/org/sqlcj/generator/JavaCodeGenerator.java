@@ -35,6 +35,19 @@ public final class JavaCodeGenerator implements CodeGenerator {
     /** Generator-owned name of the row a generated batch method binds. */
     private static final String PARAMS_NAME = "params";
 
+    /**
+     * The indentation, inside the member a generated method is, of the executor
+     * arguments of its call, which is where its SQL text block starts.
+     */
+    private static final String SQL_INDENT = " ".repeat(12);
+
+    /**
+     * The indentation, inside the member a generated row mapper is, of the
+     * constructor arguments it reads, one level past its {@code resultSet ->}
+     * line.
+     */
+    private static final int MAPPING_INDENT = 16;
+
     private final TypeResolver typeResolver = new DefaultTypeResolver();
     private final String packageName;
 
@@ -380,16 +393,24 @@ public final class JavaCodeGenerator implements CodeGenerator {
             %s
 
             %s
-
-            %s
             """
             .formatted(
                 GENERATED_NOTICE,
                 generatePackage(),
                 generateImports(group),
-                generateRepositoryJavaDoc(group).stripTrailing(),
-                generateClass(group, names)
+                generateDeclaration(
+                    generateRepositoryJavaDoc(group),
+                    generateClass(group, names)
+                )
             );
+    }
+
+    /**
+     * Writes the Javadoc of one generated type directly above the declaration
+     * it documents, as hand-written Java does.
+     */
+    private String generateDeclaration(String javaDoc, String declaration) {
+        return javaDoc.stripTrailing() + "\n" + declaration;
     }
 
     /** Generates the file of one row record of the package. */
@@ -412,13 +433,14 @@ public final class JavaCodeGenerator implements CodeGenerator {
             sections.add(imports);
         }
 
-        sections.add(generateRowJavaDoc(row).stripTrailing());
-
         sections.add(
-            generateRecord(
-                row.typeName(),
-                row.columns(),
-                row.componentNames()
+            generateDeclaration(
+                generateRowJavaDoc(row),
+                generateRecord(
+                    row.typeName(),
+                    row.columns(),
+                    row.componentNames()
+                )
             )
         );
 
@@ -438,8 +460,10 @@ public final class JavaCodeGenerator implements CodeGenerator {
             "\n\n",
             GENERATED_NOTICE,
             generatePackage(),
-            generateEnumJavaDoc(sharedEnum).stripTrailing(),
-            generateEnum(sharedEnum)
+            generateDeclaration(
+                generateEnumJavaDoc(sharedEnum),
+                generateEnum(sharedEnum)
+            )
         );
     }
 
@@ -478,7 +502,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             .formatted(
                 sharedEnum.typeName(),
                 members.stream()
-                    .map(this::indentEnumMember)
+                    .map(this::indent)
                     .collect(Collectors.joining("\n\n"))
             );
     }
@@ -813,20 +837,19 @@ public final class JavaCodeGenerator implements CodeGenerator {
             );
     }
 
-    private String indent(String text) {
-        return text.indent(4).stripTrailing();
-    }
-
     /**
-     * Indents one member of a generated enum, leaving a blank line inside it
-     * blank rather than indented, so the generated enum carries no trailing
-     * whitespace. Only these members are written with blank lines inside them.
+     * Indents one member of a generated type, leaving a blank line inside it
+     * blank rather than indented, so the generated source carries no trailing
+     * whitespace. A line of a generated SQL text block never ends in a space or
+     * a tab, because the escaping writes a line's last one as {@code \s} or
+     * {@code \t}, so stripping each line leaves every generated string exact.
      */
-    private String indentEnumMember(String text) {
-        return indent(text)
+    private String indent(String text) {
+        return text.indent(4)
             .lines()
             .map(String::stripTrailing)
-            .collect(Collectors.joining("\n"));
+            .collect(Collectors.joining("\n"))
+            .stripTrailing();
     }
 
     /** Generates one result or row record in selected-column order. */
@@ -1108,8 +1131,31 @@ public final class JavaCodeGenerator implements CodeGenerator {
 
     private String generateSql(QueryModel query) {
         return "\"\"\"\n"
-            + escapeTextBlock(query.executableSql())
+            + indentSql(escapeTextBlock(query.executableSql()))
             + "\"\"\"";
+    }
+
+    /**
+     * Indents the escaped SQL of a generated method to the column its opening
+     * delimiter and the other executor arguments start at, writing a blank line
+     * empty. The line the closing delimiter ends is indented with the others,
+     * including the empty line SQL ending in a line terminator leaves, because
+     * the compiler reads that line's indentation as well.
+     *
+     * <p>The analyzed SQL never starts with whitespace, so the indentation the
+     * compiler strips as incidental is exactly this one and the compiled string
+     * is the analyzed SQL character for character.
+     */
+    private String indentSql(String sql) {
+        String[] lines = sql.split("\n", -1);
+
+        return IntStream.range(0, lines.length)
+            .mapToObj(
+                index -> lines[index].isEmpty() && index < lines.length - 1
+                    ? ""
+                    : SQL_INDENT + lines[index]
+            )
+            .collect(Collectors.joining("\n"));
     }
 
     /**
@@ -1355,7 +1401,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             .formatted(
                 valueType(query),
                 mapperName,
-                generateResultMapping(query.columns().get(0), 1).strip()
+                generateResultMapping(query.columns().get(0), 1)
             );
     }
 
@@ -1364,7 +1410,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             private static final RowMapper<%s> %s =
                     resultSet -> new %s(
             %s
-            );
+                    );
             """
             .formatted(
                 typeName,
@@ -1387,17 +1433,27 @@ public final class JavaCodeGenerator implements CodeGenerator {
 
         for (QueryColumn column : columns) {
             if (column.row()) {
-                mappings.add(generateRowMapping(column, position));
+                mappings.add(indentMapping(generateRowMapping(column, position)));
                 position += column.rowColumns().size();
 
                 continue;
             }
 
-            mappings.add(generateResultMapping(column, position));
+            mappings.add(indentMapping(generateResultMapping(column, position)));
             position++;
         }
 
         return String.join(",\n", mappings);
+    }
+
+    /**
+     * Indents one argument of a generated row mapper, keeping the relative
+     * indentation of an embedded row's own lines.
+     */
+    private String indentMapping(String mapping) {
+        return mapping
+            .indent(MAPPING_INDENT)
+            .stripTrailing();
     }
 
     /**
@@ -1413,16 +1469,18 @@ public final class JavaCodeGenerator implements CodeGenerator {
         List<QueryColumn> columns = column.rowColumns();
 
         String components = IntStream.range(0, columns.size())
-            .mapToObj(index -> generateResultMapping(columns.get(index), firstPosition + index))
+            .mapToObj(
+                index -> generateResultMapping(columns.get(index), firstPosition + index)
+                    .indent(8)
+                    .stripTrailing()
+            )
             .collect(Collectors.joining(",\n"));
 
         String construction = "new %s(\n%s\n)"
             .formatted(JavaNames.rowTypeName(column.rowTable()), components);
 
         if (!column.nullable()) {
-            return construction
-                .indent(8)
-                .stripTrailing();
+            return construction;
         }
 
         return """
@@ -1433,9 +1491,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 firstPosition,
                 firstPosition + columns.size() - 1,
                 construction.indent(4).strip()
-            )
-            .indent(8)
-            .stripTrailing();
+            );
     }
 
     /**
@@ -1452,38 +1508,27 @@ public final class JavaCodeGenerator implements CodeGenerator {
      */
     private String generateResultMapping(QueryColumn column, int position) {
         if (column.array()) {
-            return generateArrayMapping(column, position)
-                .indent(8)
-                .stripTrailing();
+            return generateArrayMapping(column, position);
         }
 
         if (column.type() == ColumnType.ENUM) {
             return "%s.fromLabel(resultSet.getString(%d))"
-                .formatted(JavaNames.enumTypeName(column.enumType()), position)
-                .indent(8)
-                .stripTrailing();
+                .formatted(JavaNames.enumTypeName(column.enumType()), position);
         }
 
         if (isUntypedText(column.type())) {
-            return "resultSet.getString(%d)"
-                .formatted(position)
-                .indent(8)
-                .stripTrailing();
+            return "resultSet.getString(%d)".formatted(position);
         }
 
         if (column.type() == ColumnType.INTERVAL) {
             return "org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(%d))"
-                .formatted(position)
-                .indent(8)
-                .stripTrailing();
+                .formatted(position);
         }
 
         String javaType = typeResolver.resolve(column.type());
 
         return "resultSet.getObject(%d, %s.class)"
-            .formatted(position, javaType)
-            .indent(8)
-            .stripTrailing();
+            .formatted(position, javaType);
     }
 
     /**
