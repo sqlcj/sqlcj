@@ -3982,7 +3982,7 @@ class PostgresIntegrationTest {
                 recordComponentTypes(created)
             );
 
-            Object albumId = component(created, "albumId");
+            Integer albumId = (Integer) component(created, "albumId");
 
             assertNotNull(albumId);
             assertEquals(1, component(created, "studioId"));
