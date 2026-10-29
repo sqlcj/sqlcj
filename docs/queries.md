@@ -400,7 +400,7 @@ FROM royalties r
 GROUP BY r.author_id;
 ```
 
-- The aggregate name is case insensitive and must be written unqualified, with
+- The aggregate name is case-insensitive and must be written unqualified, with
   exactly one argument. `DISTINCT` or `ALL` may stand before the argument,
   except before `*`: `COUNT(DISTINCT *)` and `COUNT(ALL *)` are rejected,
   because PostgreSQL's grammar admits `*` alone.
@@ -859,7 +859,7 @@ LIMIT $1;
 - A `WITH` clause written before the set operation belongs to the whole list,
   so every branch reads it.
 - Every branch must select the same number of columns, which a wildcard counts
-  as the columns it expands to. Otherwise the query is rejected as
+  as the columns it expands to. Otherwise, the query is rejected as
   `Every branch of a set operation must select the same number of columns; the
   first selects 2 and branch 2 selects 1.`
 - The result takes the **leftmost branch's column names**, so only that branch
@@ -2379,7 +2379,7 @@ Reads:
   `QueryAnalyzerTest.shouldTypeACastIntervalPlaceholderInATimestampExpression`,
   and `QueryAnalyzerTest.shouldTypeAggregatesOfAnIntervalColumn` cover an
   `INTERVAL` column in a comparison, an `IN` list, a `BETWEEN` range, an
-  `= ANY` list, a cast of every fields and precision spelling, a cast
+  `= ANY` list, a cast of every spelling of the fields and precision, a cast
   placeholder inside `now() - :age::interval`, and a `MIN`, `MAX`, `SUM`, and
   `AVG`, and
   `PostgresIntegrationTest.shouldRoundTripIntervalValues` executes the round
@@ -2674,8 +2674,8 @@ Reads:
   derived column as `null`;
   `PostgresIntegrationTest.shouldExecuteGeneratedWithColumnListsAgainstPostgres`
   executes a joined `WITH` clause whose column list renames its grouped column
-  and names an unaliased `count(*)`, and a shorter list whose unrenamed column
-  keeps its body's name.
+  and names an unaliased `count(*)`, and a shorter list, where a column the
+  list does not name keeps its body's name.
 - `QueryAnalyzerTest.shouldAnalyzeARecursiveCommonTableExpression`,
   `QueryAnalyzerTest.shouldNameRecursiveCommonTableExpressionColumnsByItsColumnList`,
   `QueryAnalyzerTest.shouldAnalyzeARecursiveFirstTermWithoutFrom`,

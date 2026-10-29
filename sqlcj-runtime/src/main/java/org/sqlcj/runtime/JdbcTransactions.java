@@ -36,7 +36,7 @@ import java.sql.SQLException;
  * is rethrown unchanged, as the same instance.</li>
  * <li>A failure to begin or to commit raises
  * {@link TransactionException} carrying the {@code SQLException} as its
- * cause; on a begin failure the callback does not run.</li>
+ * cause; if the transaction fails to begin, the callback does not run.</li>
  * <li>A failure to roll back is attached to the callback's failure as a
  * suppressed {@link TransactionException}.</li>
  * <li>Auto-commit is restored to {@code true} only when this helper disabled it,
