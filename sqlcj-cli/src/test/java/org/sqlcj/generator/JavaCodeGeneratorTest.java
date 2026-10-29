@@ -9,6 +9,7 @@ import org.sqlcj.analysis.QueryGroupModel;
 import org.sqlcj.analysis.QueryModel;
 import org.sqlcj.analysis.QueryParameter;
 import org.sqlcj.parser.QueryType;
+import org.sqlcj.runtime.GeneratedRepository;
 import org.sqlcj.runtime.QueryExecutor;
 import org.sqlcj.runtime.RowMapper;
 import org.sqlcj.schema.ColumnType;
@@ -19,6 +20,7 @@ import javax.tools.ToolProvider;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
@@ -3519,6 +3521,7 @@ class JavaCodeGeneratorTest {
                 """
                      * <p>Repository: Users
                      */
+                    @org.sqlcj.runtime.GeneratedRepository
                     public final class UsersRepository {
                     """
             ),
@@ -3548,6 +3551,126 @@ class JavaCodeGeneratorTest {
         );
 
         assertCompiles(repository, row, generatedEnum);
+    }
+
+    /**
+     * Every repository carries the runtime's marker, written in full directly
+     * above its declaration, so the repository's import list is unchanged. A
+     * row record and a generated enum are no repositories and carry none.
+     */
+    @Test
+    void shouldMarkEveryRepositoryWithTheRuntimeMarker() throws IOException {
+        GeneratedFile repository = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(getUsersRow("GetUser"), enumQuery("GetStage")),
+                List.of(new EnumType("stage_setting", List.of("indoor")))
+            )
+        );
+
+        GeneratedFile row = codeGenerator.generateRows().get(0);
+        GeneratedFile generatedEnum = codeGenerator.generateEnums().get(0);
+
+        String source = repository.content();
+
+        assertTrue(
+            source.contains(
+                """
+                     * <p>Repository: Users
+                     */
+                    @org.sqlcj.runtime.GeneratedRepository
+                    public final class UsersRepository {
+                    """
+            ),
+            source
+        );
+
+        assertEquals(
+            List.of(
+                "import org.sqlcj.runtime.QueryExecutor;",
+                "import org.sqlcj.runtime.RowMapper;",
+                "import java.util.List;"
+            ),
+            source.lines()
+                .filter(line -> line.startsWith("import "))
+                .toList()
+        );
+
+        assertFalse(row.content().contains("GeneratedRepository"));
+        assertFalse(generatedEnum.content().contains("GeneratedRepository"));
+
+        assertCompiles(repository, row, generatedEnum);
+    }
+
+    /**
+     * A generated repository compiles against only the runtime's classes and
+     * the JDK, as an application that depends on the runtime alone does, and
+     * the class it leaves carries the marker at run time.
+     */
+    @Test
+    void shouldCarryTheMarkerWhenCompiledAgainstTheRuntimeAlone() throws Exception {
+        GeneratedFile file = generate(
+            new QueryModel(
+                "FindUser",
+                QueryType.OPTIONAL,
+                "users",
+                "SELECT id, name FROM users WHERE id = ?",
+                List.of(1),
+                List.of(
+                    new QueryColumn("id", ColumnType.BIGINT, false),
+                    new QueryColumn("name", ColumnType.VARCHAR, true)
+                ),
+                List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+                null
+            )
+        );
+
+        Path sourceDirectory = tempDir.resolve("generated");
+        Path outputDirectory = tempDir.resolve("classes");
+
+        Files.createDirectories(sourceDirectory);
+        Files.createDirectories(outputDirectory);
+
+        Path sourceFile = sourceDirectory.resolve("UsersRepository.java");
+
+        Files.writeString(sourceFile, file.content());
+
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+
+        assertNotNull(compiler);
+
+        assertEquals(
+            0,
+            compiler.run(
+                null,
+                null,
+                null,
+                "-classpath",
+                runtimeClasses(),
+                "-d",
+                outputDirectory.toString(),
+                sourceFile.toString()
+            ),
+            file.content()
+        );
+
+        try (URLClassLoader classLoader = classLoader()) {
+            Class<?> repositoryType = Class.forName(
+                "generated.UsersRepository",
+                true,
+                classLoader
+            );
+
+            assertTrue(repositoryType.isAnnotationPresent(GeneratedRepository.class));
+        }
+    }
+
+    /** The location the runtime's own compiled classes are read from. */
+    private String runtimeClasses() throws URISyntaxException {
+        return Path.of(
+            QueryExecutor.class.getProtectionDomain().getCodeSource().getLocation().toURI()
+        )
+            .toString();
     }
 
     @Test
