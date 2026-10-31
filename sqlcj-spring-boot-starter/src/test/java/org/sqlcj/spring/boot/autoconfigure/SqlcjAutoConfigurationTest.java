@@ -1,18 +1,24 @@
 package org.sqlcj.spring.boot.autoconfigure;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfigurationPackage;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceTransactionManagerAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.transaction.autoconfigure.TransactionAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseBuilder;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseType;
+import org.springframework.jdbc.support.JdbcTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.sqlcj.runtime.JdbcQueryExecutor;
 import org.sqlcj.runtime.QueryExecutor;
@@ -33,6 +39,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -44,6 +51,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * packages over the one executor and nothing else, and that an application
  * reaches it through the imports file and turns it off with
  * {@code spring.autoconfigure.exclude}.
+ *
+ * <p>Two tests cover the configurations the Spring guide documents beside the
+ * auto-configured one: a repository of a package outside the
+ * auto-configuration packages registered with {@code @Import}, and an
+ * application with a second, non-default-candidate database whose repository,
+ * executor, and transaction manager are its own.
  *
  * <p>Every context runs on its own in-memory H2 database, so no test leaves
  * state behind.
@@ -72,6 +85,17 @@ class SqlcjAutoConfigurationTest {
             AutoConfigurations.of(
                 DataSourceAutoConfiguration.class,
                 DataSourceTransactionManagerAutoConfiguration.class,
+                SqlcjAutoConfiguration.class
+            )
+        );
+
+    /** The transactional runner with {@code @Transactional} enabled on top. */
+    private final ApplicationContextRunner annotatedTransactionRunner = new ApplicationContextRunner()
+        .withConfiguration(
+            AutoConfigurations.of(
+                DataSourceAutoConfiguration.class,
+                DataSourceTransactionManagerAutoConfiguration.class,
+                TransactionAutoConfiguration.class,
                 SqlcjAutoConfiguration.class
             )
         );
@@ -146,6 +170,24 @@ class SqlcjAutoConfigurationTest {
     void registersNoMarkedRepositoryOutsideTheAutoConfigurationPackages() {
         runner.withUserConfiguration(RepositoryPackageConfiguration.class)
             .run(context -> assertTrue(context.getBeansOfType(OutsideRepository.class).isEmpty()));
+    }
+
+    @Test
+    void importsOneRepositoryOutsideTheAutoConfigurationPackagesOverTheConfiguredExecutor() {
+        runner.withUserConfiguration(
+            RepositoryPackageConfiguration.class,
+            ImportedOutsideRepositoryConfiguration.class
+        )
+            .run(context -> {
+                assertArrayEquals(
+                    new String[] { OutsideRepository.class.getName() },
+                    context.getBeanNamesForType(OutsideRepository.class)
+                );
+                assertSame(
+                    context.getBean(QueryExecutor.class),
+                    context.getBean(OutsideRepository.class).executor()
+                );
+            });
     }
 
     @Test
@@ -240,6 +282,52 @@ class SqlcjAutoConfigurationTest {
             createNotes(dataSource);
             context.getBean(QueryExecutor.class).execute(REPOSITORY, QUERY, INSERT_NOTE, List.of(2));
             assertEquals(List.of(2), noteIds(dataSource));
+        });
+    }
+
+    @Test
+    void keepsEachDatabaseOfTheSeveralDatabasesConfigurationToItsOwnTransaction() {
+        annotatedTransactionRunner.withUserConfiguration(SeveralDatabasesConfiguration.class).run(context -> {
+            DataSource first = context.getBean(DataSource.class);
+            DataSource second = context.getBean("secondDataSource", DataSource.class);
+            createNotes(first);
+            createNotes(second);
+
+            QueryExecutor starterExecutor = context.getBean("sqlcjQueryExecutor", QueryExecutor.class);
+            QueryExecutor secondExecutor = context.getBean("secondQueryExecutor", QueryExecutor.class);
+
+            assertArrayEquals(
+                new String[] { NotesRepository.class.getName() },
+                context.getBeanNamesForType(NotesRepository.class)
+            );
+            assertArrayEquals(
+                new String[] { "secondOutsideRepository" },
+                context.getBeanNamesForType(OutsideRepository.class)
+            );
+            assertSame(starterExecutor, context.getBean(NotesRepository.class).executor());
+            assertSame(secondExecutor, context.getBean(OutsideRepository.class).executor());
+
+            SeveralDatabasesService service = context.getBean(SeveralDatabasesService.class);
+
+            service.writeToFirst(1);
+
+            assertEquals(List.of(1), noteIds(first));
+            assertEquals(List.of(), noteIds(second));
+
+            service.writeToSecond(2);
+
+            assertEquals(List.of(1), noteIds(first));
+            assertEquals(List.of(2), noteIds(second));
+
+            assertThrows(IllegalStateException.class, () -> service.writeToFirstAndFail(3));
+
+            assertEquals(List.of(1), noteIds(first));
+            assertEquals(List.of(2), noteIds(second));
+
+            assertThrows(IllegalStateException.class, () -> service.writeToSecondAndFail(4));
+
+            assertEquals(List.of(1), noteIds(first));
+            assertEquals(List.of(2), noteIds(second));
         });
     }
 
@@ -380,6 +468,111 @@ class SqlcjAutoConfigurationTest {
         @Bean
         QueryExecutor secondQueryExecutor(DataSource dataSource) {
             return new JdbcQueryExecutor(dataSource);
+        }
+    }
+
+    /**
+     * An application that imports a generated repository of a package outside
+     * its auto-configuration packages, as an application whose generated
+     * package sits beside its own packages has to.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @Import(OutsideRepository.class)
+    static class ImportedOutsideRepositoryConfiguration {
+    }
+
+    /**
+     * The several-databases configuration of the Spring guide: the
+     * auto-configured first database keeps the starter's executor and Spring
+     * Boot's transaction manager, while the second database's data source,
+     * executor, and transaction manager are non-default candidates qualified
+     * {@code second}. Two executor definitions leave the starter registering
+     * no repository, so the repository of the auto-configuration package is
+     * imported and the second database's is declared over its own executor.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @AutoConfigurationPackage(basePackageClasses = NotesRepository.class)
+    @Import(NotesRepository.class)
+    static class SeveralDatabasesConfiguration {
+
+        @Bean(defaultCandidate = false)
+        @Qualifier("second")
+        DataSource secondDataSource() {
+            return embeddedDataSource();
+        }
+
+        @Bean(defaultCandidate = false)
+        @Qualifier("second")
+        QueryExecutor secondQueryExecutor(
+            @Qualifier("second")
+            DataSource dataSource
+        ) {
+            return new JdbcQueryExecutor(new TransactionAwareDataSourceProxy(dataSource));
+        }
+
+        @Bean(defaultCandidate = false)
+        @Qualifier("second")
+        JdbcTransactionManager secondTransactionManager(
+            @Qualifier("second")
+            DataSource dataSource
+        ) {
+            return new JdbcTransactionManager(dataSource);
+        }
+
+        @Bean
+        OutsideRepository secondOutsideRepository(
+            @Qualifier("second")
+            QueryExecutor executor
+        ) {
+            return new OutsideRepository(executor);
+        }
+
+        @Bean
+        SeveralDatabasesService severalDatabasesService(NotesRepository first, OutsideRepository second) {
+            return new SeveralDatabasesService(first, second);
+        }
+    }
+
+    /**
+     * An application service that writes through the repository of one
+     * database per method, inside the transaction of that database.
+     *
+     * <p>The class and its methods are public and non-final so that the
+     * container can proxy them.
+     */
+    public static class SeveralDatabasesService {
+
+        private final NotesRepository first;
+
+        private final OutsideRepository second;
+
+        SeveralDatabasesService(NotesRepository first, OutsideRepository second) {
+            this.first = first;
+            this.second = second;
+        }
+
+        @Transactional
+        public void writeToFirst(int id) {
+            first.executor().execute(REPOSITORY, QUERY, INSERT_NOTE, List.of(id));
+        }
+
+        @Transactional("second")
+        public void writeToSecond(int id) {
+            second.executor().execute(REPOSITORY, QUERY, INSERT_NOTE, List.of(id));
+        }
+
+        @Transactional
+        public void writeToFirstAndFail(int id) {
+            first.executor().execute(REPOSITORY, QUERY, INSERT_NOTE, List.of(id));
+
+            throw new IllegalStateException("the first database's transaction is rolled back");
+        }
+
+        @Transactional("second")
+        public void writeToSecondAndFail(int id) {
+            second.executor().execute(REPOSITORY, QUERY, INSERT_NOTE, List.of(id));
+
+            throw new IllegalStateException("the second database's transaction is rolled back");
         }
     }
 }
