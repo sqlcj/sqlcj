@@ -56,12 +56,13 @@ procedure yet either.
 
 ## Artifacts
 
-`mvn -DskipTests install` produces both artifacts from this repository:
+`mvn -DskipTests install` produces all three artifacts from this repository:
 
 | Artifact | What it is |
 | --- | --- |
 | `sqlcj-cli/target/sqlcj-cli-0.1.0-SNAPSHOT.jar` | The executable command line tool. It bundles its own dependencies and starts `org.sqlcj.Main`. |
 | `org.sqlcj:sqlcj-runtime:0.1.0-SNAPSHOT` | The dependency of generated code. It has no dependencies of its own, so compiler, YAML, and SQL-parser libraries never reach an application. |
+| `org.sqlcj:sqlcj-spring-boot-starter:0.1.0-SNAPSHOT` | The Spring Boot 4 starter, released at the runtime's version. It brings the runtime, auto-configures the executor over the application's `DataSource`, and registers the generated repositories as beans. |
 
 The CLI and the runtime must always be used at the same version.
 
@@ -96,6 +97,11 @@ generates, compiles, and runs PostgreSQL create, read, list, update, and delete
 operations, including a committed and a rolled-back transaction run through the
 runtime's transaction helper.
 
+Its last step builds the same queries into a Spring Boot application on the
+Spring Boot starter, which declares no sqlcj bean of its own and commits and
+rolls back its generated writes with `@Transactional`; see
+[Spring](docs/spring.md) for the Spring configurations in full.
+
 ## Documentation
 
 - [Quickstart](docs/quickstart.md) — an end-to-end PostgreSQL project from an
@@ -107,6 +113,9 @@ runtime's transaction helper.
 - [PostgreSQL Support](docs/postgresql.md) — the engine contract, accepted
   column types and `CREATE TABLE` constructs, null handling, and connection
   ownership.
+- [Spring](docs/spring.md) — the Spring Boot starter, a generated package
+  outside the application's packages, several databases, and Spring without the
+  starter.
 
 ## License
 
