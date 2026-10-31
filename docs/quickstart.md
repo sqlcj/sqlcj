@@ -160,9 +160,11 @@ java:
 repository, so the entry above generates one `AuthorRepository` holding every
 query of `sql/queries.sql`.
 
-`sqlcj generate` reads `sqlcj.yaml` from the directory it is run in, and the
+`sqlcj generate` reads whichever of `sqlcj.yaml` and `sqlcj.yml` exists in the
+directory it is run in, and the
 relative paths above are resolved against the directory that contains the file.
-`--config <path>` names another file when the command runs from elsewhere.
+Holding both names is an error, so this project keeps only `sqlcj.yaml`.
+`--config <path>` names the file itself when the command runs from elsewhere.
 Generated output therefore belongs in the build directory, where `mvn clean`
 removes it. See [Configuration](configuration.md) for the full file format.
 
@@ -453,8 +455,8 @@ mvn exec:java
   repository that is no longer generated.
 - `sqlcj generate` is a separate command. It is not bound to the Maven
   lifecycle, so it must run after `clean` and before `compile`. The commands
-  above run from the project root, because `generate` reads `sqlcj.yaml` from
-  the current directory; from another directory, pass
+  above run from the project root, because `generate` reads the `sqlcj.yaml` or
+  `sqlcj.yml` of the current directory; from another directory, pass
   `--config <path to sqlcj.yaml>` instead, and the paths inside the file keep
   resolving against the project root.
 - `mvn compile` then compiles `src/main/java` together with
