@@ -35,6 +35,32 @@
                 <scope>import</scope>
             </dependency>
             <!--
+                Testcontainers' BOM is imported ahead of Spring Boot's so that
+                the starter's tests run one version of Testcontainers: Spring
+                Boot manages its core at 2.0.5, under which the reactor's
+                PostgreSQL module would not run.
+            -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!--
+                Jackson's BOM is imported ahead of Spring Boot's for the same
+                reason: Spring Boot manages Jackson at 3.1.7, which would hold
+                the CLI's modules below the reactor's YAML module, and the
+                tests generate their repositories with the CLI.
+            -->
+            <dependency>
+                <groupId>tools.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!--
                 Spring Boot's BOM decides the versions the starter compiles and
                 tests against. It is imported by this module alone; an
                 application's own Spring Boot BOM decides the versions it runs.
@@ -80,6 +106,37 @@
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!--
+            The command line tool is not part of the starter. The tests that
+            verify it against PostgreSQL use it to generate the repositories
+            the applications they start register.
+        -->
+        <dependency>
+            <groupId>org.sqlcj</groupId>
+            <artifactId>sqlcj-cli</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!--
+            Spring Boot's JPA support is not part of the starter. The tests use
+            it to start a JPA application beside the JDBC one and prove that an
+            entity's write and a generated write share one transaction.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
