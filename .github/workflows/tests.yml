@@ -52,7 +52,7 @@ jobs:
       - name: Run tests
         run: mvn --batch-mode --no-transfer-progress -Dsqlcj.test.requireDocker=true test
 
-      - name: Verify staged artifacts with the external Maven sample
+      - name: Verify staged artifacts with the external samples
         env:
           SQLCJ_SAMPLE_JDBC_URL: jdbc:postgresql://localhost:${{ job.services.postgres.ports['5432'] }}/quickstart
           SQLCJ_SAMPLE_DB_USER: quickstart

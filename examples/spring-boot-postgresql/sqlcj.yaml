@@ -1,0 +1,11 @@
+version: "1"
+sql:
+  - name: Author
+    schema: sql/migrations
+    queries: sql/authors.sql
+  - name: Book
+    schema: sql/migrations
+    queries: sql/books.sql
+java:
+  package: com.example.app.db
+  out: target/generated-sources/sqlcj
