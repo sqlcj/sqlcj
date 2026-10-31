@@ -236,8 +236,11 @@ connection of its own, so its work would be a second, independent transaction.
 Inside a Spring-managed transaction the transaction belongs to Spring, and the
 repository takes part through the proxy alone.
 
-Spring and a JPA provider are used only by sqlcj's own tests, which verify the
-behavior above; neither the runtime nor the generated code depends on either.
+The `org.sqlcj:sqlcj-spring-boot-starter` configures exactly this executor for
+a Spring Boot 4 application and registers its generated repositories as beans;
+[Spring](spring.md) documents the starter and the configurations an application
+writes itself. Neither the runtime nor the generated code depends on Spring or
+on a JPA provider, which sqlcj's own tests use to verify the behavior above.
 
 Behavior is verified against PostgreSQL 16. The pipeline is executed end to end
 against a `postgres:16-alpine` container: the schema snapshot is run as
@@ -246,8 +249,11 @@ executed through the JDBC runtime. Those tests are skipped when Docker is
 unavailable.
 
 H2 is used only inside sqlcj's own tests as a convenience database and is not a
-supported target. The PostgreSQL driver, the container library, H2, Spring
-Framework, and Hibernate ORM are all test-scoped dependencies of the build.
+supported target. The PostgreSQL driver, the container library, H2, and
+Hibernate ORM are all test-scoped dependencies of the build, and so is Spring
+Framework for the runtime and the command line tool. Spring reaches an
+application only through the Spring Boot starter, whose dependency on
+`spring-boot-starter-jdbc` is compile-scoped.
 
 ## Schema Snapshot Input
 

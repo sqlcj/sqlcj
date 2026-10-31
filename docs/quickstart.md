@@ -8,6 +8,11 @@ The finished project uses only the packaged sqlcj artifacts: the executable CLI
 JAR and the `org.sqlcj:sqlcj-runtime` dependency. The sqlcj source tree is never
 on the application's classpath.
 
+Sections 1 to 11 build that application on the runtime alone. Section 12 then
+builds a second application from the same configuration, the same SQL, and the
+same database, on the `org.sqlcj:sqlcj-spring-boot-starter` instead, where
+Spring Boot owns the data source and the transactions.
+
 ## 1. Prerequisites
 
 - A full JDK 17 or later on the `PATH`.
@@ -27,7 +32,9 @@ mvn -f /path/to/sqlcj/pom.xml -DskipTests install
 That command:
 
 - installs `org.sqlcj:sqlcj-runtime:0.1.0-SNAPSHOT` into the local Maven
-  repository, where the application below resolves it, and
+  repository, where the application below resolves it,
+- installs `org.sqlcj:sqlcj-spring-boot-starter:0.1.0-SNAPSHOT` beside it,
+  which the Spring Boot application of section 12 resolves, and
 - produces the executable CLI at
   `/path/to/sqlcj/sqlcj-cli/target/sqlcj-cli-0.1.0-SNAPSHOT.jar`.
 
@@ -555,7 +562,264 @@ sqlcj: Invalid query 'ListAuthorNames' in /home/dev/my-app/sql/queries.sql at li
 Every configured source is compiled before any file is written, so a diagnostic
 like this writes no new file and leaves the previous output in place.
 
-## 12. Clean up
+## 12. The Spring Boot path
+
+The same `sqlcj.yaml`, the same SQL, the same CLI, and the same database also
+drive a Spring Boot application. There, Spring Boot owns the `DataSource` and
+the transactions, and the `org.sqlcj:sqlcj-spring-boot-starter` wires the
+generated repository, so the application declares no sqlcj bean of its own.
+
+Empty the two tables the plain run filled, so that this application starts from
+the same state it did:
+
+```bash
+docker exec -i sqlcj-quickstart psql -U quickstart -d quickstart \
+  -c 'TRUNCATE books, authors RESTART IDENTITY'
+```
+
+Create the new project beside `my-app`, and copy the tool, the configuration,
+and the SQL into it unchanged:
+
+```bash
+cd ..
+mkdir -p my-boot-app/src/main/java/com/example/app my-boot-app/src/main/resources
+cp -R my-app/tools my-app/sqlcj.yaml my-app/sql my-boot-app/
+cd my-boot-app
+```
+
+```text
+my-boot-app/
+├── pom.xml
+├── sqlcj.yaml
+├── sql/
+│   ├── migrations/
+│   │   ├── V1__create_authors_and_books.sql
+│   │   └── V2__add_author_created_at_and_book_index.sql
+│   └── queries.sql
+├── src/main/java/com/example/app/App.java
+├── src/main/java/com/example/app/LibraryService.java
+├── src/main/resources/application.properties
+└── tools/sqlcj-cli-0.1.0-SNAPSHOT.jar
+```
+
+`pom.xml`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>my-boot-app</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <sqlcj.version>0.1.0-SNAPSHOT</sqlcj.version>
+        <spring-boot.version>4.1.2</spring-boot.version>
+        <sqlcj.generated.sources>${project.build.directory}/generated-sources/sqlcj</sqlcj.generated.sources>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.sqlcj</groupId>
+            <artifactId>sqlcj-spring-boot-starter</artifactId>
+            <version>${sqlcj.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.15.0</version>
+                <configuration>
+                    <compileSourceRoots>
+                        <compileSourceRoot>${project.basedir}/src/main/java</compileSourceRoot>
+                        <compileSourceRoot>${sqlcj.generated.sources}</compileSourceRoot>
+                    </compileSourceRoots>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring-boot.version}</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+The starter is the only sqlcj dependency: it brings `sqlcj-runtime`, which the
+generated sources compile against, and `spring-boot-starter-jdbc`, which brings
+Spring Boot's data source and transaction support. Spring Boot's own BOM
+decides every Spring Boot version, the driver's included. The generated sources
+are compiled by the same `compileSourceRoots` list as before, and
+`spring-boot-maven-plugin` runs the application.
+
+`src/main/resources/application.properties`:
+
+```properties
+spring.datasource.url=jdbc:postgresql://localhost:5432/quickstart
+spring.datasource.username=quickstart
+spring.datasource.password=quickstart
+```
+
+`src/main/java/com/example/app/LibraryService.java`:
+
+```java
+package com.example.app;
+
+import com.example.app.db.AuthorRepository;
+import com.example.app.db.AuthorsRow;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class LibraryService {
+
+    private final AuthorRepository authors;
+
+    public LibraryService(AuthorRepository authors) {
+        this.authors = authors;
+    }
+
+    @Transactional
+    public AuthorsRow createAuthorWithBook(String name, String bio, String title) {
+        AuthorsRow author = authors.createAuthor(name, bio);
+
+        authors.createBook(author.id(), title);
+
+        return author;
+    }
+
+    @Transactional
+    public void createAuthorWithBookAndFail(String name, String bio, String title) {
+        AuthorsRow author = authors.createAuthor(name, bio);
+
+        authors.createBook(author.id(), title);
+
+        throw new RuntimeException("the application rolls this transaction back");
+    }
+}
+```
+
+`AuthorRepository` arrives by constructor injection, and both methods write the
+author and that author's book through it. The first returns normally, so its
+transaction commits; the second makes the same two writes and then throws, so
+its transaction is rolled back.
+
+`src/main/java/com/example/app/App.java`:
+
+```java
+package com.example.app;
+
+import com.example.app.db.AuthorRepository;
+import com.example.app.db.AuthorsRow;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.ConfigurableApplicationContext;
+
+@SpringBootApplication
+public class App {
+
+    public static void main(String[] args) {
+        try (ConfigurableApplicationContext context = SpringApplication.run(App.class, args)) {
+            AuthorRepository authors = context.getBean(AuthorRepository.class);
+            LibraryService library = context.getBean(LibraryService.class);
+
+            AuthorsRow outside = authors.createAuthor("Ada Lovelace", "First programmer");
+
+            System.out.println("stored without a transaction: " + outside.id() + " " + outside.name());
+
+            AuthorsRow committed = library.createAuthorWithBook(
+                "Grace Hopper",
+                "Compiler pioneer",
+                "The Education of a Computer"
+            );
+
+            System.out.println("committed: " + committed.id() + " " + committed.name());
+
+            for (AuthorRepository.ListAuthorBooksResult book : authors.listAuthorBooks()) {
+                System.out.println("book: " + book.name() + " / " + book.title());
+            }
+
+            try {
+                library.createAuthorWithBookAndFail("Temporary Author", "never stored", "Never Stored");
+            } catch (RuntimeException e) {
+                System.out.println("rolled back: " + e.getMessage());
+            }
+
+            System.out.println("rolled back authors: " + authors.searchAuthors("Temporary Author").size());
+
+            System.out.println("count: " + authors.countAuthors());
+        }
+    }
+}
+```
+
+Generate and run, from the project root:
+
+```bash
+mvn clean
+java -jar tools/sqlcj-cli-0.1.0-SNAPSHOT.jar generate
+mvn spring-boot:run
+```
+
+`sqlcj generate` reads the copied `sqlcj.yaml`, so it writes the same
+`AuthorRepository` and `AuthorsRow` into `com.example.app.db` as before.
+`mvn spring-boot:run` compiles the project and runs the application, which
+prints these lines among Spring Boot's own log lines:
+
+```text
+stored without a transaction: 1 Ada Lovelace
+committed: 2 Grace Hopper
+book: Ada Lovelace / null
+book: Grace Hopper / The Education of a Computer
+rolled back: the application rolls this transaction back
+rolled back authors: 0
+count: 2
+```
+
+The run shows what the starter does, and what it does not ask for:
+
+- The application declares no sqlcj bean, no `@Import`, and no sqlcj property.
+  Its only database configuration is Spring Boot's own `spring.datasource.*`.
+- The starter defines one `QueryExecutor` over a transaction-aware view of the
+  application's `DataSource`, so the write made straight through the repository
+  bean is committed on its own connection, while every write of a
+  `@Transactional` method is committed or rolled back with that method's
+  transaction. The rolled-back author is gone, which `searchAuthors` reports as
+  zero matching rows, and `countAuthors` still counts the two stored authors.
+- `AuthorRepository` is registered as a bean because `sqlcj.yaml` generates it
+  into `com.example.app.db`, which is below the `com.example.app` package of
+  the `@SpringBootApplication` class.
+
+[Spring](spring.md) documents the starter's rules in full, together with a
+generated package outside the application's packages, several databases, and
+Spring Framework or Spring Boot 3 without the starter.
+
+## 13. Clean up
 
 ```bash
 docker rm -f sqlcj-quickstart
@@ -569,3 +833,6 @@ docker rm -f sqlcj-quickstart
   generated naming.
 - [PostgreSQL Support](postgresql.md) — column types, nulls, and the runtime
   connection contract.
+- [Spring](spring.md) — the Spring Boot starter, a generated package outside
+  the application's packages, several databases, and Spring without the
+  starter.

@@ -1721,8 +1721,9 @@ included.
   directly above `public final class`, as every runtime helper is, so the
   repository's import list is unchanged. It marks the class as one sqlcj
   generated, which a hand-written class must not carry, and has no effect in
-  plain Java. A row record and a generated enum are no repositories and carry
-  no marker.
+  plain Java, while the Spring Boot starter registers the marked classes of the
+  application's packages as beans, as [Spring](spring.md) documents. A row
+  record and a generated enum are no repositories and carry no marker.
 - The repository has one `org.sqlcj.runtime.QueryExecutor` field and one
   constructor taking that executor.
 - Methods appear in query-source order. A method name is the lower camel form
