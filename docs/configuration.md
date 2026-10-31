@@ -1,32 +1,40 @@
 # Configuration
 
-sqlcj is configured by a single YAML file named `sqlcj.yaml`.
+sqlcj is configured by a single YAML file, named either `sqlcj.yaml` or
+`sqlcj.yml`. The examples in this documentation all use `sqlcj.yaml`.
 
 For a project that uses this file end to end, see the
 [Quickstart](quickstart.md). For the query annotations, supported SQL, and
 generated API, see [Queries](queries.md).
 
-The `generate` command reads `sqlcj.yaml` from the directory it is run in:
+The `generate` command reads whichever of `sqlcj.yaml` and `sqlcj.yml` exists
+in the directory it is run in:
 
 ```bash
 sqlcj generate
 ```
 
-`--config <path>` selects another file, so generation can run from any working
-directory:
+Neither name takes precedence over the other. A directory that holds both
+files, and a directory that holds neither, end the run before any file is read,
+with one diagnostic on standard error and status `1`; nothing is generated and
+output from an earlier run is left unchanged.
+
+`--config <path>` reads exactly the file it names, whatever its extension, so
+generation can run from any working directory:
 
 ```bash
 sqlcj generate --config ../project/sqlcj.yaml
 ```
 
-The option defaults to `sqlcj.yaml`, and a relative value is resolved against
-the directory the command is run in. Relative paths inside the file are still
-resolved against the directory that contains the file, not against the working
-directory. A missing or invalid explicit file reports the usual configuration
-diagnostic and exits with status `1`; there is no fallback to `sqlcj.yaml`.
+Neither the discovery of the two default names nor the conflict check applies
+to an explicit path. A relative value is resolved against the directory the
+command is run in. Relative paths inside the file are still resolved against
+the directory that contains the file, not against the working directory. A
+missing or invalid explicit file reports the usual configuration diagnostic and
+exits with status `1`; there is no fallback to `sqlcj.yaml` or `sqlcj.yml`.
 
-There is no short alias, no environment variable, and no configuration
-discovery in parent directories.
+There is no short alias, no environment variable, no further accepted file name,
+spelling, or letter case, and no configuration discovery in parent directories.
 
 ## Supported Version
 
@@ -206,9 +214,10 @@ generated/dev/example/generated/AuthorRepository.java
 ## Path Resolution
 
 A relative `queries`, `java.out`, or listed `schema` path is resolved against
-the directory that contains the configuration file, whether that file is the
-default `sqlcj.yaml` or one named by `--config`, and not against the process
-working directory at a later point in time. An absolute path is used as-is.
+the directory that contains the configuration file, whether that file is a
+`sqlcj.yaml` or `sqlcj.yml` found in the working directory or one named by
+`--config`, and not against the process working directory at a later point in
+time. An absolute path is used as-is.
 
 Resolved paths are normalized lexically, so `../sql/schema.sql` is supported.
 Resolution does not require `java.out` to exist, does not expand `~`,
@@ -436,14 +445,18 @@ sqlcj: Generated file paths for repositories 'UserData' and 'Userdata' differ on
 
 ## Diagnostics
 
-Invalid configuration, unreadable SQL sources, and output that cannot be written
+A configuration file that cannot be found or chosen, invalid configuration,
+unreadable SQL sources, and output that cannot be written
 or cleaned up make `sqlcj generate` print a single message on standard error and
-exit with status `1`. The message names the configuration file and, when
+exit with status `1`. The message names the configuration file or the directory
+searched and, when
 available, the offending field, value, source path, or output path, and ends
 with the fact that explains the failure, such as the reason the filesystem
 reports or the problem the YAML parser reports with its line and column:
 
 ```text
+sqlcj: Cannot find configuration file: /home/dev/project: neither sqlcj.yaml nor sqlcj.yml exists
+sqlcj: Conflicting configuration files: /home/dev/project/sqlcj.yaml and /home/dev/project/sqlcj.yml: remove one or pass --config
 sqlcj: Cannot read configuration file: /home/dev/project/sqlcj.yaml: No such file or directory
 sqlcj: Malformed configuration file: /home/dev/project/sqlcj.yaml: expected <block end>, but found '<block mapping start>' at line 2, column 3
 sqlcj: Invalid configuration in /home/dev/project/sqlcj.yaml: 'java.package' value 'dev.class.generated' is not a valid Java package name

@@ -3,6 +3,7 @@ package org.sqlcj.cli.command;
 import org.sqlcj.compiler.CompilationException;
 import org.sqlcj.compiler.SqlcjCompiler;
 import org.sqlcj.config.Config;
+import org.sqlcj.config.ConfigFileLocator;
 import org.sqlcj.config.ConfigLoader;
 import org.sqlcj.config.ConfigurationException;
 import org.sqlcj.config.YamlConfigLoader;
@@ -29,12 +30,12 @@ public class GenerateCommand implements Callable<Integer> {
     @Option(
         names = "--config",
         paramLabel = "<path>",
-        defaultValue = "sqlcj.yaml",
         description = """
             Configuration file to generate from. A relative path is \
             resolved against the current directory, while relative paths \
             inside the file are resolved against its own directory. \
-            Default: ${DEFAULT-VALUE}
+            Without this option, sqlcj.yaml or sqlcj.yml in the current \
+            directory is used, and holding both is an error.
             """
     )
     Path configFile;
@@ -42,7 +43,11 @@ public class GenerateCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         try {
-            Config config = configLoader.load(configFile);
+            Path file = configFile == null
+                ? ConfigFileLocator.locate(Path.of("").toAbsolutePath())
+                : configFile;
+
+            Config config = configLoader.load(file);
             SqlcjCompiler compiler = new SqlcjCompiler();
             compiler.compile(config);
             return CommandLine.ExitCode.OK;

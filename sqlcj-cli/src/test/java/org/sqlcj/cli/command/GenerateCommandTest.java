@@ -17,8 +17,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Exercises the {@code generate} command from its default {@code sqlcj.yaml}
- * entry point and from an explicit {@code --config} path, in an isolated
- * working directory.
+ * and {@code sqlcj.yml} entry points and from an explicit {@code --config}
+ * path, in an isolated working directory.
  */
 class GenerateCommandTest {
 
@@ -75,6 +75,120 @@ class GenerateCommandTest {
         );
         assertTrue(source.contains("public final class UsersRepository {"));
         assertTrue(source.contains("public GetUserResult getUser(Long id)"));
+    }
+
+    @Test
+    void shouldGenerateFromYmlConfigurationInWorkingDirectory() throws Exception {
+        Files.writeString(workingDirectory.resolve("schema.sql"), SCHEMA);
+        Files.writeString(workingDirectory.resolve("queries.sql"), QUERIES);
+        Files.writeString(
+            workingDirectory.resolve("sqlcj.yml"),
+            """
+                version: "1"
+                sql:
+                  - name: Users
+                    schema: schema.sql
+                    queries: queries.sql
+                java:
+                  package: dev.example.generated
+                  out: generated
+                """
+        );
+
+        Result result = runGenerate();
+
+        assertEquals(0, result.exitCode(), result.error());
+
+        Path generated = workingDirectory.resolve("generated/dev/example/generated/UsersRepository.java");
+
+        assertTrue(Files.exists(generated), result.error());
+        assertTrue(
+            Files.readString(generated).contains("public GetUserResult getUser(Long id)")
+        );
+    }
+
+    @Test
+    void shouldFailWhenBothDefaultConfigurationFilesExist() throws Exception {
+        writeBothDefaultConfigurations();
+
+        Path output = Files.createDirectories(
+            workingDirectory.resolve("generated-yaml/dev/example/generated")
+        );
+        Path existing = output.resolve("UsersRepository.java");
+
+        Files.writeString(existing, "// from an earlier run\n");
+
+        Result result = runGenerate();
+
+        assertEquals(1, result.exitCode(), result.error());
+        assertEquals(
+            List.of(
+                "sqlcj: Conflicting configuration files: %s and %s: remove one or pass --config"
+                    .formatted(
+                        workingDirectory.resolve("sqlcj.yaml"),
+                        workingDirectory.resolve("sqlcj.yml")
+                    )
+            ),
+            result.error().lines().toList()
+        );
+        assertFalse(result.error().contains("\tat "));
+        assertEquals("// from an earlier run\n", Files.readString(existing));
+        assertFalse(
+            Files.exists(workingDirectory.resolve("generated-yaml/sqlcj-manifest.txt"))
+        );
+        assertFalse(Files.exists(workingDirectory.resolve("generated-yml")));
+    }
+
+    @Test
+    void shouldFailWhenNoDefaultConfigurationFileExists() throws Exception {
+        Files.writeString(workingDirectory.resolve("schema.sql"), SCHEMA);
+        Files.writeString(workingDirectory.resolve("queries.sql"), QUERIES);
+
+        Result result = runGenerate();
+
+        assertEquals(1, result.exitCode(), result.error());
+        assertEquals(
+            List.of(
+                "sqlcj: Cannot find configuration file: %s: "
+                    .formatted(workingDirectory)
+                    + "neither sqlcj.yaml nor sqlcj.yml exists"
+            ),
+            result.error().lines().toList()
+        );
+        assertFalse(result.error().contains("\tat "));
+        assertFalse(Files.exists(workingDirectory.resolve("generated")));
+    }
+
+    @Test
+    void shouldGenerateFromExplicitYamlWhileBothDefaultFilesExist() throws Exception {
+        writeBothDefaultConfigurations();
+
+        Result result = runGenerate("--config", "sqlcj.yaml");
+
+        assertEquals(0, result.exitCode(), result.error());
+        assertTrue(
+            Files.exists(
+                workingDirectory.resolve("generated-yaml/dev/example/generated/UsersRepository.java")
+            ),
+            result.error()
+        );
+        assertFalse(Files.exists(workingDirectory.resolve("generated-yml")));
+    }
+
+    @Test
+    void shouldGenerateFromExplicitYmlWhileBothDefaultFilesExist() throws Exception {
+        writeBothDefaultConfigurations();
+
+        Result result = runGenerate("--config", "sqlcj.yml");
+
+        assertEquals(0, result.exitCode(), result.error());
+        assertTrue(
+            Files.exists(
+                workingDirectory.resolve("generated-yml/dev/example/generated/UsersRepository.java")
+            ),
+            result.error()
+        );
+        assertFalse(Files.exists(workingDirectory.resolve("generated-yaml")));
     }
 
     @Test
@@ -397,6 +511,32 @@ class GenerateCommandTest {
         assertFalse(result.error().contains("\tat "));
         assertTrue(Files.isRegularFile(output));
         assertEquals("not a directory", Files.readString(output));
+    }
+
+    /**
+     * Writes both default configuration file names into the working directory,
+     * generating into a different output directory each, so a run reveals which
+     * of the two it read.
+     */
+    private void writeBothDefaultConfigurations() throws IOException {
+        Files.writeString(workingDirectory.resolve("schema.sql"), SCHEMA);
+        Files.writeString(workingDirectory.resolve("queries.sql"), QUERIES);
+
+        for (String name : List.of("sqlcj.yaml", "sqlcj.yml")) {
+            Files.writeString(
+                workingDirectory.resolve(name),
+                """
+                    version: "1"
+                    sql:
+                      - name: Users
+                        schema: schema.sql
+                        queries: queries.sql
+                    java:
+                      package: dev.example.generated
+                      out: generated-%s
+                    """.formatted(name.substring("sqlcj.".length()))
+            );
+        }
     }
 
     private Result runGenerate(String... arguments) throws IOException, InterruptedException {
