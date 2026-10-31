@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Verifies that a clean external Maven project can consume staged sqlcj
+# Verifies that clean external Maven projects can consume staged sqlcj
 # artifacts.
 #
 # The script stages the reactor into an isolated local Maven repository, runs
@@ -26,6 +26,18 @@
 # repository whose methods cover every named query, including the named
 # parameter filter, the 'now()' rename, the grouped book count, the upsert, and
 # the id-list read.
+#
+# The second external project, examples/spring-boot-postgresql, consumes the
+# staged Spring Boot starter. It is verified once per supported Spring Boot
+# version, each time from a fresh copy outside the repository: the staged CLI
+# generates its two marked repositories, the resolved classpath is checked to
+# hold the staged starter and runtime and that version's 'spring-boot' jar but
+# neither the source tree nor the command line tool, the schema is reset, and
+# 'spring-boot:run' runs the application in a forked JVM, whose goal fails on a
+# non-zero exit. The application configures nothing of sqlcj's: the starter
+# registers both generated repositories as beans, so the run proves a write
+# outside a transaction, a committed '@Transactional' write across both
+# repositories, and a '@Transactional' rollback that undoes both of them.
 #
 # Requirements: JDK 17 or later, Maven, psql, and a reachable PostgreSQL
 # server.
@@ -68,6 +80,18 @@ sample_mvn() {
         "$@"
 }
 
+# Runs Maven over the Spring Boot sample copy of the version under
+# verification, pinning both the staged sqlcj artifacts and that Spring Boot
+# version.
+spring_sample_mvn() {
+    mvn --batch-mode --no-transfer-progress \
+        -f "${spring_sample_dir}/pom.xml" \
+        -Dmaven.repo.local="${local_repo}" \
+        -Dsqlcj.version="${version}" \
+        -Dspring-boot.version="${spring_boot_version}" \
+        "$@"
+}
+
 command -v psql >/dev/null 2>&1 || fail "psql is required to apply the sample migrations"
 
 log "Staging the reactor into ${local_repo}"
@@ -93,9 +117,11 @@ log "Verifying the staged artifacts for version ${version}"
 
 cli_jar="${local_repo}/org/sqlcj/sqlcj-cli/${version}/sqlcj-cli-${version}.jar"
 runtime_jar="${local_repo}/org/sqlcj/sqlcj-runtime/${version}/sqlcj-runtime-${version}.jar"
+starter_jar="${local_repo}/org/sqlcj/sqlcj-spring-boot-starter/${version}/sqlcj-spring-boot-starter-${version}.jar"
 
 [ -f "${cli_jar}" ] || fail "the staged CLI is missing: ${cli_jar}"
 [ -f "${runtime_jar}" ] || fail "the staged runtime is missing: ${runtime_jar}"
+[ -f "${starter_jar}" ] || fail "the staged Spring Boot starter is missing: ${starter_jar}"
 
 reported_version=$(java -jar "${cli_jar}" version | tr -d '[:space:]')
 
@@ -314,5 +340,94 @@ sample_mvn exec:java | tee "${sample_output}"
 
 grep -q 'sqlcj sample verification passed' "${sample_output}" \
     || fail "the sample did not report a successful run"
+
+for spring_boot_version in 4.0.9 4.1.2; do
+    log "Copying the external Spring Boot sample for Spring Boot ${spring_boot_version}"
+
+    spring_sample_dir="${workspace}/spring-boot-sample-${spring_boot_version}"
+
+    cp -R "${repo_root}/examples/spring-boot-postgresql" "${spring_sample_dir}"
+    rm -rf "${spring_sample_dir}/target"
+
+    spring_generated_root="${spring_sample_dir}/target/generated-sources/sqlcj"
+    spring_generated_package="${spring_generated_root}/com/example/app/db"
+
+    log "Generating the Spring Boot sample with the packaged CLI"
+
+    (cd "${spring_sample_dir}" && java -jar "${cli_jar}" generate)
+
+    for generated in AuthorRepository BookRepository AuthorsRow BooksRow; do
+        [ -f "${spring_generated_package}/${generated}.java" ] \
+            || fail "the Spring Boot sample is missing ${spring_generated_package}/${generated}.java"
+    done
+
+    spring_generated_count=$(find "${spring_generated_root}" -type f -name '*.java' | wc -l)
+
+    [ "${spring_generated_count}" -eq 4 ] \
+        || fail "expected 4 generated Spring Boot sample sources but found ${spring_generated_count}"
+
+    find "${spring_generated_root}" -type f -name '*.java' | sort
+
+    # The marker is printed rather than matched quietly, so the run records
+    # that both repositories carry the annotation the starter scans for.
+    for repository in AuthorRepository BookRepository; do
+        grep -H '@org.sqlcj.runtime.GeneratedRepository' "${spring_generated_package}/${repository}.java" \
+            || fail "the generated ${repository} does not carry the marker the starter scans for"
+    done
+
+    log "Verifying the Spring Boot sample dependency classpath"
+
+    spring_classpath_file="${workspace}/spring-boot-sample-classpath-${spring_boot_version}.txt"
+
+    spring_sample_mvn org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
+        "-Dmdep.outputFile=${spring_classpath_file}"
+
+    grep -q "sqlcj-spring-boot-starter-${version}.jar" "${spring_classpath_file}" \
+        || fail "the Spring Boot sample classpath does not use the staged starter artifact"
+
+    grep -q "sqlcj-runtime-${version}.jar" "${spring_classpath_file}" \
+        || fail "the Spring Boot sample classpath does not use the staged runtime artifact"
+
+    grep -q "/spring-boot-${spring_boot_version}.jar" "${spring_classpath_file}" \
+        || fail "the Spring Boot sample classpath does not run on Spring Boot ${spring_boot_version}"
+
+    if grep -q "${repo_root}" "${spring_classpath_file}"; then
+        fail "the Spring Boot sample classpath references the sqlcj source tree: $(cat "${spring_classpath_file}")"
+    fi
+
+    # The starter's dependency on the command line tool is test scope, so it
+    # must not reach a consumer of the published starter.
+    if grep -q 'sqlcj-cli-' "${spring_classpath_file}"; then
+        fail "the Spring Boot sample classpath reaches the command line tool: $(cat "${spring_classpath_file}")"
+    fi
+
+    tr ':' '\n' < "${spring_classpath_file}"
+
+    log "Resetting the Spring Boot sample schema in ${jdbc_url}"
+
+    PGPASSWORD="${db_password}" psql \
+        --set=ON_ERROR_STOP=1 \
+        --quiet \
+        --username "${db_user}" \
+        --command 'DROP TABLE IF EXISTS books, authors; DROP TYPE IF EXISTS book_format;' \
+        --file "${spring_sample_dir}/sql/migrations/V1__create_authors_and_books.sql" \
+        "${jdbc_url#jdbc:}"
+
+    log "Compiling the Spring Boot sample against the staged starter"
+
+    spring_sample_mvn compile
+
+    log "Running the Spring Boot sample on Spring Boot ${spring_boot_version}"
+
+    spring_sample_output="${workspace}/spring-boot-sample-output-${spring_boot_version}.txt"
+
+    spring_sample_mvn spring-boot:run | tee "${spring_sample_output}"
+
+    grep -q '^rolled back: ' "${spring_sample_output}" \
+        || fail "the Spring Boot sample did not report a rolled back transaction"
+
+    grep -q 'sqlcj spring boot sample verification passed' "${spring_sample_output}" \
+        || fail "the Spring Boot sample did not report a successful run"
+done
 
 log "Release verification passed for version ${version}"
