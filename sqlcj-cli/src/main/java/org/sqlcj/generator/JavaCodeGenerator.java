@@ -37,6 +37,23 @@ public final class JavaCodeGenerator implements CodeGenerator {
      */
     private static final String REPOSITORY_MARKER = "@org.sqlcj.runtime.GeneratedRepository";
 
+    /**
+     * The mark every generated repository, row record, and enum carries, so
+     * that every type it declares is non-null unless it states otherwise. A
+     * nested result or parameter record is marked by its repository. The
+     * annotation is written fully qualified, as every runtime helper is, so
+     * that no generated enum can shadow it and the generated imports stay
+     * unchanged.
+     */
+    private static final String NULL_MARKED = "@org.jspecify.annotations.NullMarked";
+
+    /**
+     * The annotation one nullable type carries, written fully qualified for the
+     * same reason and placed directly before the simple type name it
+     * qualifies, which every generated type is.
+     */
+    private static final String NULLABLE = "@org.jspecify.annotations.Nullable";
+
     /** Generator-owned name of the list one generated batch method takes. */
     private static final String BATCH_NAME = "batch";
 
@@ -408,7 +425,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 generateImports(group),
                 generateDeclaration(
                     generateRepositoryJavaDoc(group),
-                    REPOSITORY_MARKER + "\n" + generateClass(group, names)
+                    REPOSITORY_MARKER + "\n" + NULL_MARKED + "\n" + generateClass(group, names)
                 )
             );
     }
@@ -444,7 +461,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
         sections.add(
             generateDeclaration(
                 generateRowJavaDoc(row),
-                generateRecord(
+                NULL_MARKED + "\n" + generateRecord(
                     row.typeName(),
                     row.columns(),
                     row.componentNames()
@@ -470,7 +487,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             generatePackage(),
             generateDeclaration(
                 generateEnumJavaDoc(sharedEnum),
-                generateEnum(sharedEnum)
+                NULL_MARKED + "\n" + generateEnum(sharedEnum)
             )
         );
     }
@@ -552,7 +569,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
      */
     private String generateFromLabelMethod(SharedEnum sharedEnum) {
         return """
-            public static %s fromLabel(String label) {
+            public static %s %s fromLabel(%s String label) {
                 if (label == null) {
                     return null;
                 }
@@ -567,7 +584,9 @@ public final class JavaCodeGenerator implements CodeGenerator {
             }
             """
             .formatted(
+                NULLABLE,
                 sharedEnum.typeName(),
+                NULLABLE,
                 sharedEnum.typeName(),
                 generateStringLiteral(
                     "Unknown label for enum type " + sharedEnum.enumName() + ": "
@@ -722,11 +741,14 @@ public final class JavaCodeGenerator implements CodeGenerator {
         return !column.row() && !column.nullable();
     }
 
-    /** The Java type of the value one value-returning query reads. */
+    /**
+     * The Java type of the value one value-returning query reads, which is
+     * non-null, because only a column that cannot be NULL returns its value.
+     */
     private String valueType(QueryModel query) {
         QueryColumn column = query.columns().get(0);
 
-        return javaType(column.type(), column.enumType(), column.array());
+        return javaType(column.type(), column.enumType(), column.array(), false);
     }
 
     private String resolveImport(ColumnType type) {
@@ -913,7 +935,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
 
                 return "%s %s"
                     .formatted(
-                        javaType(parameter.type(), parameter.enumType(), parameter.array()),
+                        javaType(parameter.type(), parameter.enumType(), parameter.array(), true),
                         names.parameterNames().get(index)
                     )
                     .indent(4)
@@ -940,8 +962,8 @@ public final class JavaCodeGenerator implements CodeGenerator {
      */
     private String generateResultComponent(QueryColumn column, String name) {
         String type = column.row()
-            ? JavaNames.rowTypeName(column.rowTable())
-            : javaType(column.type(), column.enumType(), column.array());
+            ? rowComponentType(column)
+            : javaType(column.type(), column.enumType(), column.array(), column.nullable());
 
         return "%s %s"
             .formatted(type, name)
@@ -950,20 +972,51 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
+     * The type of one component holding another table's complete row, which is
+     * that table's row record by its simple name, nullable exactly when a join
+     * null-extends the source the row stands for.
+     */
+    private String rowComponentType(QueryColumn column) {
+        String rowType = JavaNames.rowTypeName(column.rowTable());
+
+        return column.nullable()
+            ? nullable(rowType)
+            : rowType;
+    }
+
+    /**
      * The Java type of one column or parameter, which is the generated enum of
      * its enum type for an enum and the mapped type of its column type
      * otherwise. A generated enum belongs to the generated package, so it is
      * referenced by its simple name and needs no import. An array column or
-     * parameter is a {@code List} of that type.
+     * parameter is a {@code List} of that type, whose element is always
+     * nullable, because a SQL array may hold a {@code NULL} element. The type
+     * itself states its nullness when {@code nullable}.
      */
-    private String javaType(ColumnType type, String enumType, boolean array) {
+    private String javaType(ColumnType type, String enumType, boolean array, boolean nullable) {
         String elementType = type == ColumnType.ENUM
             ? JavaNames.enumTypeName(enumType)
             : typeResolver.resolve(type);
 
-        return array
-            ? "List<" + elementType + ">"
+        String declaredType = array
+            ? "List<" + nullable(elementType) + ">"
             : elementType;
+
+        return nullable
+            ? nullable(declaredType)
+            : declaredType;
+    }
+
+    /**
+     * Writes one type as a nullable one, with the annotation directly before
+     * the simple type name it qualifies. An array type carries it before its
+     * brackets, as in {@code byte @org.jspecify.annotations.Nullable []},
+     * which states that the array itself may be null rather than its elements.
+     */
+    private String nullable(String type) {
+        return type.endsWith("[]")
+            ? type.substring(0, type.length() - "[]".length()) + " " + NULLABLE + " []"
+            : NULLABLE + " " + type;
     }
 
     private String generateMethodParameters(QueryModel query, JavaNames.QueryNames names) {
@@ -971,7 +1024,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             .mapToObj(index -> {
                 QueryParameter parameter = query.parameters().get(index);
 
-                return javaType(parameter.type(), parameter.enumType(), parameter.array())
+                return javaType(parameter.type(), parameter.enumType(), parameter.array(), true)
                     + " "
                     + names.parameterNames().get(index);
             })

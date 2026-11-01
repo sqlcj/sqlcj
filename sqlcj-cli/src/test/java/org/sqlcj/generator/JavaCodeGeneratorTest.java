@@ -1,5 +1,6 @@
 package org.sqlcj.generator;
 
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -17,6 +18,7 @@ import org.sqlcj.schema.EnumType;
 
 import javax.tools.JavaCompiler;
 import javax.tools.ToolProvider;
+import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -142,7 +144,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "Long id, String name"
+                "@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable String name"
             )
         );
     }
@@ -409,7 +411,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "public List<ListUsersByIdAndNameResult> listUsersByIdAndName(Long id, String name)"
+                "public List<ListUsersByIdAndNameResult> listUsersByIdAndName(@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable String name)"
             )
         );
     }
@@ -436,7 +438,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "public GetUserResult getUser(Long id)"
+                "public GetUserResult getUser(@org.jspecify.annotations.Nullable Long id)"
             )
         );
     }
@@ -479,7 +481,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "Long userId, Boolean enabled"
+                "@org.jspecify.annotations.Nullable Long userId, @org.jspecify.annotations.Nullable Boolean enabled"
             )
         );
     }
@@ -563,7 +565,9 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                expectedJavaType + " value"
+                columnType == ColumnType.BYTEA
+                    ? "byte @org.jspecify.annotations.Nullable [] value"
+                    : "@org.jspecify.annotations.Nullable " + expectedJavaType + " value"
             )
         );
     }
@@ -649,7 +653,7 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertTrue(
-            source.contains("public Optional<UUID> findUserExternalId(Long id)"),
+            source.contains("public Optional<UUID> findUserExternalId(@org.jspecify.annotations.Nullable Long id)"),
             source
         );
 
@@ -717,7 +721,7 @@ class JavaCodeGeneratorTest {
 
         String source = file.content();
 
-        assertTrue(source.contains("public Long insertUser(String name)"), source);
+        assertTrue(source.contains("public Long insertUser(@org.jspecify.annotations.Nullable String name)"), source);
 
         assertTrue(
             source.contains(
@@ -757,7 +761,7 @@ class JavaCodeGeneratorTest {
         String source = repository.content();
 
         assertTrue(
-            source.contains("public StageSetting getStageSetting(String handle)"),
+            source.contains("public StageSetting getStageSetting(@org.jspecify.annotations.Nullable String handle)"),
             source
         );
 
@@ -792,11 +796,17 @@ class JavaCodeGeneratorTest {
 
         String source = file.content();
 
-        assertTrue(source.contains("public List<String> getUserTags(Long id)"), source);
+        assertTrue(
+            source.contains(
+                "public List<@org.jspecify.annotations.Nullable String> getUserTags("
+                    + "@org.jspecify.annotations.Nullable Long id)"
+            ),
+            source
+        );
 
         assertTrue(
             source.contains(
-                "private static final RowMapper<List<String>> getUserTagsRowMapper = "
+                "private static final RowMapper<List<@org.jspecify.annotations.Nullable String>> getUserTagsRowMapper = "
                     + "resultSet -> org.sqlcj.runtime.SqlArray.getList(resultSet, 1, String.class);"
             ),
             source
@@ -825,10 +835,12 @@ class JavaCodeGeneratorTest {
 
         String source = file.content();
 
-        assertTrue(source.contains("public GetUserNameResult getUserName(Long id)"), source);
+        assertTrue(
+            source.contains("public GetUserNameResult getUserName(@org.jspecify.annotations.Nullable Long id)"), source
+        );
 
         assertEquals(
-            List.of("String name"),
+            List.of("@org.jspecify.annotations.Nullable String name"),
             recordComponents(source, "GetUserNameResult")
         );
 
@@ -888,7 +900,7 @@ class JavaCodeGeneratorTest {
 
         String source = file.content();
 
-        assertTrue(source.contains("public CodesRow getCode(String code)"), source);
+        assertTrue(source.contains("public CodesRow getCode(@org.jspecify.annotations.Nullable String code)"), source);
 
         assertTrue(
             source.contains("private static final RowMapper<CodesRow> codesRowMapper ="),
@@ -1062,7 +1074,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public GetUserResult getUser(UUID externalId, OffsetDateTime createdAt)"
+                "public GetUserResult getUser(@org.jspecify.annotations.Nullable UUID externalId, @org.jspecify.annotations.Nullable OffsetDateTime createdAt)"
             )
         );
 
@@ -1333,7 +1345,7 @@ class JavaCodeGeneratorTest {
         assertTrue(source.contains("import java.time.LocalTime;"));
         assertTrue(source.contains("Float amount"));
         assertTrue(source.contains("Double ratio"));
-        assertTrue(source.contains("byte[] payload"));
+        assertTrue(source.contains("byte @org.jspecify.annotations.Nullable [] payload"));
         assertTrue(source.contains("LocalTime openedAt"));
         assertTrue(source.contains("resultSet.getObject(3, byte[].class)"));
 
@@ -1384,7 +1396,8 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "public FindDocumentResult findDocument("
-                    + "String metadata, String profile, String name, String bio)"
+                    + "@org.jspecify.annotations.Nullable String metadata, @org.jspecify.annotations.Nullable String profile,"
+                    + " @org.jspecify.annotations.Nullable String name, @org.jspecify.annotations.Nullable String bio)"
             )
         );
 
@@ -1465,8 +1478,9 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "public FindHostResult findHost("
-                    + "String handle, String address, String network, String mac, String mac8,"
-                    + " List<String> handles, String bio)"
+                    + "@org.jspecify.annotations.Nullable String handle, @org.jspecify.annotations.Nullable String address,"
+                    + " @org.jspecify.annotations.Nullable String network, @org.jspecify.annotations.Nullable String mac, @org.jspecify.annotations.Nullable String mac8,"
+                    + " @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> handles, @org.jspecify.annotations.Nullable String bio)"
             )
         );
 
@@ -1539,7 +1553,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "public FindDurationResult findDuration("
-                    + "SqlInterval age, List<SqlInterval> ages)"
+                    + "@org.jspecify.annotations.Nullable SqlInterval age, @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable SqlInterval> ages)"
             )
         );
 
@@ -1619,7 +1633,11 @@ class JavaCodeGeneratorTest {
 
         String source = file.content();
 
-        assertTrue(source.contains("String metadata, String profile"));
+        assertTrue(
+            source.contains(
+                "@org.jspecify.annotations.Nullable String metadata, @org.jspecify.annotations.Nullable String profile"
+            )
+        );
         assertTrue(source.contains("resultSet.getString(1)"));
 
         assertEquals(0, compile(file, "UsersRepository.java"));
@@ -1701,7 +1719,9 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                expectedJavaType + " value"
+                columnType == ColumnType.BYTEA
+                    ? "byte @org.jspecify.annotations.Nullable [] value"
+                    : "@org.jspecify.annotations.Nullable " + expectedJavaType + " value"
             )
         );
     }
@@ -1782,7 +1802,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "public List<FindUsersResult> findUsers(Long id1, Long id2)"
+                "public List<FindUsersResult> findUsers(@org.jspecify.annotations.Nullable Long id1, @org.jspecify.annotations.Nullable Long id2)"
             )
         );
     }
@@ -2192,7 +2212,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindUserResult findUser(Long id, Boolean active)"
+                "public FindUserResult findUser(@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable Boolean active)"
             )
         );
 
@@ -2233,7 +2253,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindUserResult findUser(Long id, String name)"
+                "public FindUserResult findUser(@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable String name)"
             )
         );
 
@@ -2269,7 +2289,7 @@ class JavaCodeGeneratorTest {
 
         String source = file.content();
 
-        assertTrue(source.contains("public Long findUser(Long id)"), source);
+        assertTrue(source.contains("public Long findUser(@org.jspecify.annotations.Nullable Long id)"), source);
         assertTrue(source.contains("java.util.Arrays.asList(id, id)"), source);
 
         assertCompiles(file);
@@ -2467,7 +2487,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public int insertUser(Long id, String name)"
+                "public int insertUser(@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable String name)"
             )
         );
 
@@ -2516,8 +2536,8 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         public record InsertUserParams(
-                            Long id,
-                            String name
+                            @org.jspecify.annotations.Nullable Long id,
+                            @org.jspecify.annotations.Nullable String name
                         ) {
                         }
                     """
@@ -2673,9 +2693,9 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         public record InsertUsersParams(
-                            Long id1,
-                            String name,
-                            Long id2
+                            @org.jspecify.annotations.Nullable Long id1,
+                            @org.jspecify.annotations.Nullable String name,
+                            @org.jspecify.annotations.Nullable Long id2
                         ) {
                         }
                     """
@@ -2734,10 +2754,10 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         public record InsertStagesParams(
-                            StageSetting setting,
-                            String payload,
-                            SqlInterval span,
-                            List<String> tags
+                            @org.jspecify.annotations.Nullable StageSetting setting,
+                            @org.jspecify.annotations.Nullable String payload,
+                            @org.jspecify.annotations.Nullable SqlInterval span,
+                            @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> tags
                         ) {
                         }
                     """
@@ -2794,7 +2814,7 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         public record InsertUserParams(
-                            String hashCode1
+                            @org.jspecify.annotations.Nullable String hashCode1
                         ) {
                         }
                     """
@@ -2985,10 +3005,12 @@ class JavaCodeGeneratorTest {
                 .count()
         );
 
-        assertTrue(source.contains("public CreateUserResult createUser(String name)"));
-        assertTrue(source.contains("public GetUserResult getUser(Long id)"));
+        assertTrue(
+            source.contains("public CreateUserResult createUser(@org.jspecify.annotations.Nullable String name)")
+        );
+        assertTrue(source.contains("public GetUserResult getUser(@org.jspecify.annotations.Nullable Long id)"));
         assertTrue(source.contains("public List<ListUsersResult> listUsers()"));
-        assertTrue(source.contains("public int deleteUser(Long id)"));
+        assertTrue(source.contains("public int deleteUser(@org.jspecify.annotations.Nullable Long id)"));
 
         assertTrue(source.contains("public record CreateUserResult("));
         assertTrue(source.contains("public record GetUserResult("));
@@ -3099,8 +3121,8 @@ class JavaCodeGeneratorTest {
 
         assertFalse(source.contains("Result"));
 
-        assertTrue(source.contains("public UsersRow createUser(String name)"));
-        assertTrue(source.contains("public UsersRow getUser(Long id)"));
+        assertTrue(source.contains("public UsersRow createUser(@org.jspecify.annotations.Nullable String name)"));
+        assertTrue(source.contains("public UsersRow getUser(@org.jspecify.annotations.Nullable Long id)"));
         assertTrue(source.contains("public List<UsersRow> listUsers()"));
 
         assertEquals(
@@ -3138,10 +3160,11 @@ class JavaCodeGeneratorTest {
                  *
                  * <p>Table: users
                  */
+                @org.jspecify.annotations.NullMarked
                 public record UsersRow(
                     Long id,
-                    String name,
-                    LocalDateTime createdAt
+                    @org.jspecify.annotations.Nullable String name,
+                    @org.jspecify.annotations.Nullable LocalDateTime createdAt
                 ) {
                 }
                 """,
@@ -3180,7 +3203,9 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains("private static final RowMapper<FindUserResult> findUserRowMapper =")
         );
-        assertTrue(source.contains("public Optional<FindUserResult> findUser(Long id)"));
+        assertTrue(
+            source.contains("public Optional<FindUserResult> findUser(@org.jspecify.annotations.Nullable Long id)")
+        );
         assertTrue(source.contains("return executor.queryOptional("));
         assertTrue(source.contains("java.util.Collections.singletonList(id)"));
         assertTrue(source.contains("Type: OPTIONAL"));
@@ -3238,8 +3263,8 @@ class JavaCodeGeneratorTest {
                 .count()
         );
 
-        assertTrue(source.contains("public UsersRow getUser(Long id)"));
-        assertTrue(source.contains("public Optional<UsersRow> findUser(Long id)"));
+        assertTrue(source.contains("public UsersRow getUser(@org.jspecify.annotations.Nullable Long id)"));
+        assertTrue(source.contains("public Optional<UsersRow> findUser(@org.jspecify.annotations.Nullable Long id)"));
 
         assertEquals(
             1,
@@ -3433,7 +3458,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 """
-                        public List<Long> listUsers(Long id) {
+                        public List<Long> listUsers(@org.jspecify.annotations.Nullable Long id) {
                             return executor.queryMany(
                                     "UsersRepository",
                                     "ListUsers",
@@ -3454,7 +3479,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 """
-                    public int deleteUser(Long id) {
+                    public int deleteUser(@org.jspecify.annotations.Nullable Long id) {
                         return executor.execute(
                                 "UsersRepository",
                                 "DeleteUser",
@@ -3522,6 +3547,7 @@ class JavaCodeGeneratorTest {
                      * <p>Repository: Users
                      */
                     @org.sqlcj.runtime.GeneratedRepository
+                    @org.jspecify.annotations.NullMarked
                     public final class UsersRepository {
                     """
             ),
@@ -3533,6 +3559,7 @@ class JavaCodeGeneratorTest {
                 """
                      * <p>Table: users
                      */
+                    @org.jspecify.annotations.NullMarked
                     public record UsersRow(
                     """
             ),
@@ -3544,6 +3571,7 @@ class JavaCodeGeneratorTest {
                 """
                      * <p>Enum: stage_setting
                      */
+                    @org.jspecify.annotations.NullMarked
                     public enum StageSetting {
                     """
             ),
@@ -3579,6 +3607,7 @@ class JavaCodeGeneratorTest {
                      * <p>Repository: Users
                      */
                     @org.sqlcj.runtime.GeneratedRepository
+                    @org.jspecify.annotations.NullMarked
                     public final class UsersRepository {
                     """
             ),
@@ -3603,9 +3632,225 @@ class JavaCodeGeneratorTest {
     }
 
     /**
-     * A generated repository compiles against only the runtime's classes and
-     * the JDK, as an application that depends on the runtime alone does, and
-     * the class it leaves carries the marker at run time.
+     * Every generated repository, row record, and generated enum states that
+     * its declarations are non-null unless annotated, with the mark written in
+     * full directly above the declaration and below the repository's own
+     * marker. A nested result or parameter record is marked by its repository
+     * and carries none of its own.
+     */
+    @Test
+    void shouldMarkEveryGeneratedTypeAsNullMarked() throws IOException {
+        GeneratedFile repository = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(getUsersRow("GetUser"), enumQuery("GetStage"), insertUsers()),
+                List.of(new EnumType("stage_setting", List.of("indoor")))
+            )
+        );
+
+        GeneratedFile row = codeGenerator.generateRows().get(0);
+        GeneratedFile generatedEnum = codeGenerator.generateEnums().get(0);
+
+        String source = repository.content();
+
+        assertTrue(
+            source.contains(
+                """
+                    @org.sqlcj.runtime.GeneratedRepository
+                    @org.jspecify.annotations.NullMarked
+                    public final class UsersRepository {
+                    """
+            ),
+            source
+        );
+
+        assertEquals(
+            1,
+            source.lines()
+                .filter(line -> line.contains("@org.jspecify.annotations.NullMarked"))
+                .count(),
+            source
+        );
+
+        assertTrue(
+            row.content().contains(
+                """
+                    @org.jspecify.annotations.NullMarked
+                    public record UsersRow(
+                    """
+            ),
+            row.content()
+        );
+
+        assertTrue(
+            generatedEnum.content().contains(
+                """
+                    @org.jspecify.annotations.NullMarked
+                    public enum StageSetting {
+                    """
+            ),
+            generatedEnum.content()
+        );
+
+        assertCompiles(repository, row, generatedEnum);
+    }
+
+    /**
+     * A nullable {@code BYTEA} states that the array itself may be null, with
+     * the annotation before its brackets rather than before its {@code byte}
+     * elements, while the non-null value one query returns stays unannotated.
+     */
+    @Test
+    void shouldAnnotateANullableByteArrayBeforeItsBrackets() throws IOException {
+        QueryModel listPayloads = new QueryModel(
+            "ListPayloads",
+            QueryType.MANY,
+            "files",
+            SQL,
+            List.of(1),
+            List.of(
+                new QueryColumn("payload", ColumnType.BYTEA, true),
+                new QueryColumn("checksum", ColumnType.BYTEA, false)
+            ),
+            List.of(new QueryParameter(1, "payload", ColumnType.BYTEA)),
+            null
+        );
+
+        QueryModel getChecksum = new QueryModel(
+            "GetChecksum",
+            QueryType.ONE,
+            "files",
+            SQL,
+            List.of(),
+            List.of(new QueryColumn("checksum", ColumnType.BYTEA, false)),
+            List.of(),
+            null
+        );
+
+        GeneratedFile file = codeGenerator.generate(
+            new QueryGroupModel(GROUP, List.of(listPayloads, getChecksum))
+        );
+
+        String source = file.content();
+
+        assertEquals(
+            List.of("byte @org.jspecify.annotations.Nullable [] payload", "byte[] checksum"),
+            recordComponents(source, "ListPayloadsResult")
+        );
+
+        assertTrue(
+            source.contains(
+                "public List<ListPayloadsResult> listPayloads("
+                    + "byte @org.jspecify.annotations.Nullable [] payload)"
+            ),
+            source
+        );
+
+        assertTrue(source.contains("public byte[] getChecksum()"), source);
+
+        assertCompiles(file);
+    }
+
+    /**
+     * The declarations that cannot hold a null stay unannotated: the executor
+     * field and the constructor that takes it, a batch method's list and its
+     * elements, an {@code Optional}, a {@code List}, an {@code int}, and an
+     * {@code int[]} return type, and a generated enum's constructor, label,
+     * and constants.
+     */
+    @Test
+    void shouldLeaveTheNonNullGeneratedDeclarationsUnannotated() throws IOException {
+        GeneratedFile repository = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(findUsersRow(), getUsersRow("GetUser"), insertUsers(), enumQuery("GetStage")),
+                List.of(new EnumType("stage_setting", List.of("indoor")))
+            )
+        );
+
+        GeneratedFile generatedEnum = codeGenerator.generateEnums().get(0);
+
+        String source = repository.content();
+
+        assertTrue(source.contains("private final QueryExecutor executor;"), source);
+        assertTrue(source.contains("public UsersRepository(QueryExecutor executor) {"), source);
+        assertTrue(source.contains("public int[] insertUsers(List<InsertUsersParams> batch) {"), source);
+        assertTrue(source.contains("public Optional<UsersRow> findUser("), source);
+        assertTrue(source.contains("public UsersRow getUser("), source);
+
+        String enumSource = generatedEnum.content();
+
+        assertTrue(enumSource.contains("StageSetting(String label) {"), enumSource);
+        assertTrue(enumSource.contains("public String label() {"), enumSource);
+        assertTrue(enumSource.contains("INDOOR(\"indoor\");"), enumSource);
+
+        assertCompiles(repository, codeGenerator.generateRows().get(0), generatedEnum);
+    }
+
+    /**
+     * A generated enum reads back a label that may be a SQL {@code NULL} and
+     * returns {@code null} for it, so both the parameter and the result of
+     * {@code fromLabel} state that they may be null.
+     */
+    @Test
+    void shouldAnnotateFromLabelOfAGeneratedEnum() throws IOException {
+        GeneratedFile repository = generate(
+            enumGroup(
+                GROUP,
+                enumQuery("GetStage"),
+                new EnumType("stage_setting", List.of("indoor", "outdoor"))
+            )
+        );
+
+        GeneratedFile generatedEnum = codeGenerator.generateEnums().get(0);
+
+        assertTrue(
+            generatedEnum.content().contains(
+                "public static @org.jspecify.annotations.Nullable StageSetting fromLabel("
+                    + "@org.jspecify.annotations.Nullable String label) {"
+            ),
+            generatedEnum.content()
+        );
+
+        assertCompiles(repository, generatedEnum);
+    }
+
+    /** A {@code :batchexec} query of one parameter. */
+    private QueryModel insertUsers() {
+        return new QueryModel(
+            "InsertUsers",
+            QueryType.BATCH_EXEC,
+            "users",
+            "INSERT INTO users (name) VALUES (?)",
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            null
+        );
+    }
+
+    /** An {@code :optional} query returning one complete row of a table. */
+    private QueryModel findUsersRow() {
+        return new QueryModel(
+            "FindUser",
+            QueryType.OPTIONAL,
+            "users",
+            "SELECT * FROM users WHERE id = ?",
+            List.of(1),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
+            ),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            "users"
+        );
+    }
+
+    /**
+     * A generated repository compiles against only the runtime's classes, the
+     * runtime's one JSpecify dependency, and the JDK, as an application that
+     * depends on the runtime alone does, and the class it leaves carries the
+     * marker at run time.
      */
     @Test
     void shouldCarryTheMarkerWhenCompiledAgainstTheRuntimeAlone() throws Exception {
@@ -3646,7 +3891,7 @@ class JavaCodeGeneratorTest {
                 null,
                 null,
                 "-classpath",
-                runtimeClasses(),
+                runtimeAloneClasspath(),
                 "-d",
                 outputDirectory.toString(),
                 sourceFile.toString()
@@ -3665,10 +3910,24 @@ class JavaCodeGeneratorTest {
         }
     }
 
-    /** The location the runtime's own compiled classes are read from. */
-    private String runtimeClasses() throws URISyntaxException {
+    /**
+     * The classpath an application that depends on the runtime alone compiles
+     * generated sources against: the runtime's own compiled classes and the
+     * JSpecify artifact the runtime depends on, whose annotations the
+     * generated sources name.
+     */
+    private String runtimeAloneClasspath() throws URISyntaxException {
+        return String.join(
+            File.pathSeparator,
+            codeSource(QueryExecutor.class),
+            codeSource(Nullable.class)
+        );
+    }
+
+    /** The location one class's own compiled classes are read from. */
+    private String codeSource(Class<?> type) throws URISyntaxException {
         return Path.of(
-            QueryExecutor.class.getProtectionDomain().getCodeSource().getLocation().toURI()
+            type.getProtectionDomain().getCodeSource().getLocation().toURI()
         )
             .toString();
     }
@@ -3712,8 +3971,8 @@ class JavaCodeGeneratorTest {
         assertFalse(source.contains("public record"));
         assertTrue(source.contains("private static final RowMapper<UsersRow> usersRowMapper"));
         assertTrue(source.contains("private static final RowMapper<OrdersRow> ordersRowMapper"));
-        assertTrue(source.contains("public UsersRow getUser(Long id)"));
-        assertTrue(source.contains("public OrdersRow getOrder(Long id)"));
+        assertTrue(source.contains("public UsersRow getUser(@org.jspecify.annotations.Nullable Long id)"));
+        assertTrue(source.contains("public OrdersRow getOrder(@org.jspecify.annotations.Nullable Long id)"));
 
         List<GeneratedFile> rows = codeGenerator.generateRows();
 
@@ -3778,7 +4037,7 @@ class JavaCodeGeneratorTest {
         assertTrue(source.contains("private static final RowMapper<AuthorsResult> authorsRowMapper ="));
         assertTrue(source.contains("private static final RowMapper<AuthorsRow> authorsRowMapper1 ="));
         assertTrue(source.contains("public List<AuthorsResult> authors()"));
-        assertTrue(source.contains("public AuthorsRow getAuthor(Long id)"));
+        assertTrue(source.contains("public AuthorsRow getAuthor(@org.jspecify.annotations.Nullable Long id)"));
 
         assertCompilesWithRows(file);
     }
@@ -3940,7 +4199,7 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertEquals(
-            List.of("UsersRow u", "ProfilesRow p"),
+            List.of("UsersRow u", "@org.jspecify.annotations.Nullable ProfilesRow p"),
             recordComponents(source, "ListUserProfilesResult")
         );
 
@@ -4012,7 +4271,7 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertEquals(
-            List.of("ProfilesRow p"),
+            List.of("@org.jspecify.annotations.Nullable ProfilesRow p"),
             recordComponents(source, "ListProfilesResult")
         );
 
@@ -4227,8 +4486,8 @@ class JavaCodeGeneratorTest {
         assertEquals(1, rows.size());
         assertEquals(Path.of("generated", "UsersRow.java"), rows.get(0).path());
 
-        assertTrue(users.content().contains("public UsersRow getUser(Long id)"));
-        assertTrue(admins.content().contains("public UsersRow getAdmin(Long id)"));
+        assertTrue(users.content().contains("public UsersRow getUser(@org.jspecify.annotations.Nullable Long id)"));
+        assertTrue(admins.content().contains("public UsersRow getAdmin(@org.jspecify.annotations.Nullable Long id)"));
 
         assertFalse(users.content().contains("public record"));
         assertFalse(admins.content().contains("public record"));
@@ -4405,7 +4664,9 @@ class JavaCodeGeneratorTest {
         String source = repository.content();
 
         assertTrue(
-            source.contains("public FindStageResult findStage(StageSetting setting, String handle)")
+            source.contains(
+                "public FindStageResult findStage(@org.jspecify.annotations.Nullable StageSetting setting, @org.jspecify.annotations.Nullable String handle)"
+            )
         );
 
         assertTrue(
@@ -4754,8 +5015,19 @@ class JavaCodeGeneratorTest {
 
         String source = generate(query).content();
 
-        assertTrue(source.contains("public FindStageResult findStage(List<%s> values)".formatted(javaType)));
-        assertTrue(source.contains("List<%s> values".formatted(javaType)));
+        assertTrue(
+            source.contains(
+                "public FindStageResult findStage(@org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable %s> values)"
+                    .formatted(javaType)
+            )
+        );
+        assertEquals(
+            List.of(
+                "@org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable %s> values"
+                    .formatted(javaType)
+            ),
+            recordComponents(source, "FindStageResult")
+        );
 
         assertTrue(
             source.contains(
@@ -4805,7 +5077,11 @@ class JavaCodeGeneratorTest {
 
         String source = generate(query).content();
 
-        assertTrue(source.contains("public FindStageResult findStage(List<String> marks)"));
+        assertTrue(
+            source.contains(
+                "public FindStageResult findStage(@org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> marks)"
+            )
+        );
 
         assertTrue(
             source.contains(
@@ -4858,7 +5134,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindStageResult findStage(List<StageSetting> pastSettings)"
+                "public FindStageResult findStage(@org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable StageSetting> pastSettings)"
             )
         );
 
@@ -4923,10 +5199,11 @@ class JavaCodeGeneratorTest {
                  *
                  * <p>Table: stages
                  */
+                @org.jspecify.annotations.NullMarked
                 public record StagesRow(
-                    LocalDate openedOn,
-                    List<String> tags,
-                    List<LocalDate> closedOn
+                    @org.jspecify.annotations.Nullable LocalDate openedOn,
+                    @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> tags,
+                    @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable LocalDate> closedOn
                 ) {
                 }
                 """,

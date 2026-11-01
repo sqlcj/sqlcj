@@ -74,7 +74,7 @@ class GenerateCommandTest {
             )
         );
         assertTrue(source.contains("public final class UsersRepository {"));
-        assertTrue(source.contains("public GetUserResult getUser(Long id)"));
+        assertTrue(source.contains("public GetUserResult getUser(@org.jspecify.annotations.Nullable Long id)"));
     }
 
     @Test
@@ -103,7 +103,8 @@ class GenerateCommandTest {
 
         assertTrue(Files.exists(generated), result.error());
         assertTrue(
-            Files.readString(generated).contains("public GetUserResult getUser(Long id)")
+            Files.readString(generated)
+                .contains("public GetUserResult getUser(@org.jspecify.annotations.Nullable Long id)")
         );
     }
 
@@ -220,7 +221,8 @@ class GenerateCommandTest {
 
         assertTrue(Files.exists(generated), result.error());
         assertTrue(
-            Files.readString(generated).contains("public GetUserResult getUser(Long id)")
+            Files.readString(generated)
+                .contains("public GetUserResult getUser(@org.jspecify.annotations.Nullable Long id)")
         );
 
         try (Stream<Path> entries = Files.list(elsewhere)) {
