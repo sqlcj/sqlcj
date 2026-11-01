@@ -66,6 +66,7 @@ import net.sf.jsqlparser.statement.select.WithItem;
 import net.sf.jsqlparser.statement.update.ParenthesedUpdate;
 import net.sf.jsqlparser.statement.update.Update;
 import net.sf.jsqlparser.statement.update.UpdateSet;
+import org.sqlcj.diagnostic.Suggestions;
 import org.sqlcj.parser.Query;
 import org.sqlcj.parser.QueryType;
 import org.sqlcj.schema.ColumnType;
@@ -4588,7 +4589,8 @@ public final class QueryAnalyzer {
     /**
      * The failure of a source that names no modeled table: the view rejection
      * when the schema records a view or a materialized view of the name, and
-     * the missing-table rejection otherwise.
+     * the missing-table rejection otherwise, which suggests the modeled table
+     * closest to the written name.
      */
     private IllegalArgumentException unmodeledSource(Schema schema, String tableName) {
         return schema.views().stream()
@@ -4606,7 +4608,9 @@ public final class QueryAnalyzer {
             )
             .orElseGet(
                 () -> new IllegalArgumentException(
-                    "Table not found in schema: " + tableName
+                    "Table not found in schema: "
+                        + tableName
+                        + suggestion(tableName, tableNames(schema))
                 )
             );
     }
@@ -6408,7 +6412,8 @@ public final class QueryAnalyzer {
      * that has the column and is ambiguous only within that level, so the same
      * column name in an enclosing level never makes a reference ambiguous. A
      * reference no level has names every visible source, from the innermost
-     * level outward.
+     * level outward, and suggests the column of them closest to the written
+     * name.
      *
      * <p>A name a join merged away from its source is exposed by the merged
      * source of that source's group alone, so an unqualified reference to it
@@ -6446,9 +6451,14 @@ public final class QueryAnalyzer {
             }
         }
 
+        List<Source> visible = scope.visibleSources();
+
         throw new IllegalArgumentException(
-            "Column not found in sources %s: %s"
-                .formatted(sourceNames(scope.visibleSources()), columnName)
+            "Column not found in sources %s: %s%s".formatted(
+                sourceNames(visible),
+                columnName,
+                suggestion(columnName, columnNames(visible))
+            )
         );
     }
 
@@ -6512,6 +6522,42 @@ public final class QueryAnalyzer {
         return sources.stream()
             .map(Source::name)
             .collect(Collectors.joining(", "));
+    }
+
+    /**
+     * The sentence a diagnostic that names an unknown table or column appends
+     * when one of the names in reach is close enough to the written one, and
+     * the empty text when none is.
+     */
+    private String suggestion(String written, List<String> candidates) {
+        return Suggestions.closest(written, candidates)
+            .map(closest -> ". Did you mean '" + closest + "'?")
+            .orElse("");
+    }
+
+    /** The modeled tables of the schema, in declaration order. */
+    private List<String> tableNames(Schema schema) {
+        return schema.tables().stream()
+            .map(org.sqlcj.schema.Table::name)
+            .toList();
+    }
+
+    /** The columns of one table, in column order. */
+    private List<String> columnNames(org.sqlcj.schema.Table table) {
+        return table.columns().stream()
+            .map(org.sqlcj.schema.Column::name)
+            .toList();
+    }
+
+    /**
+     * The columns of the given sources, in their order, each source's in column
+     * order. A source no column may be read through contributes none.
+     */
+    private List<String> columnNames(List<Source> sources) {
+        return sources.stream()
+            .filter(source -> source.table() != null)
+            .flatMap(source -> columnNames(source.table()).stream())
+            .toList();
     }
 
     /** The modeled table of one name, which names are matched case-insensitively. */
@@ -6623,6 +6669,7 @@ public final class QueryAnalyzer {
                         + table.name()
                         + ": "
                         + columnName
+                        + suggestion(columnName, columnNames(table))
                 )
             );
     }

@@ -14767,4 +14767,97 @@ class QueryAnalyzerTest {
             exception.getMessage()
         );
     }
+
+    /**
+     * A source that names no modeled table suggests the modeled table closest
+     * to the written name, compared in schema declaration order.
+     */
+    @Test
+    void shouldSuggestTheClosestModeledTable() {
+        String sql = "SELECT id FROM usrs";
+
+        Query query = new Query("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, joinSchema)
+        );
+
+        assertEquals(
+            "Table not found in schema: usrs. Did you mean 'users'?",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * An unqualified reference no source has suggests the closest column of the
+     * sources the diagnostic lists, whichever of them exposes it.
+     */
+    @Test
+    void shouldSuggestTheClosestColumnOfTheListedSources() {
+        String sql = """
+            SELECT u.id
+            FROM users u
+            JOIN profiles p ON p.user_id = u.id
+            WHERE nickame = :nickname
+            """;
+
+        Query query = new Query("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, joinSchema)
+        );
+
+        assertEquals(
+            "Column not found in sources u, p: nickame. Did you mean 'nickname'?",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A qualified reference its source does not have suggests the closest
+     * column of that source alone.
+     */
+    @Test
+    void shouldSuggestTheClosestColumnOfTheQualifiedSource() {
+        String sql = """
+            SELECT p.nickame
+            FROM profiles p
+            """;
+
+        Query query = new Query("ListNicknames", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, joinSchema)
+        );
+
+        assertEquals(
+            "Column not found in table profiles: nickame. Did you mean 'nickname'?",
+            exception.getMessage()
+        );
+    }
+
+    /** An {@code INSERT} column list suggests the closest column of its table. */
+    @Test
+    void shouldSuggestTheClosestColumnOfAnInsertTarget() {
+        String sql = "INSERT INTO profiles (user_id, nickame) VALUES (:userId, :nickname)";
+
+        Query query = new Query("CreateProfile", QueryType.EXEC, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, joinSchema)
+        );
+
+        assertEquals(
+            "Column not found in table profiles: nickame. Did you mean 'nickname'?",
+            exception.getMessage()
+        );
+    }
 }

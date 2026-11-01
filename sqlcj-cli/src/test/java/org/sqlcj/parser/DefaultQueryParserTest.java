@@ -106,7 +106,93 @@ class DefaultQueryParserTest {
         );
 
         assertEquals(
-            "Unknown query type: :invalid",
+            "Unknown query annotation ':invalid' at line 1."
+                + " Use one of :one, :optional, :many, :exec, :batchexec",
+            exception.getMessage()
+        );
+    }
+
+    @Test
+    void suggestsClosestAnnotationAtItsHeaderLine() {
+        String source = """
+            -- name: GetUser :one
+            SELECT *
+            FROM users
+            WHERE id = $1;
+
+            -- name: ListUsers :mnay
+            SELECT *
+            FROM users;
+            """;
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> parser.parse(source)
+        );
+
+        assertEquals(
+            "Unknown query annotation ':mnay' at line 6; did you mean ':many'?"
+                + " Use one of :one, :optional, :many, :exec, :batchexec",
+            exception.getMessage()
+        );
+    }
+
+    @Test
+    void suggestsAnnotationForDifferentlyCasedAnnotation() {
+        String source = """
+            -- name: ListUsers :MANY
+            SELECT *
+            FROM users;
+            """;
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> parser.parse(source)
+        );
+
+        assertEquals(
+            "Unknown query annotation ':MANY' at line 1; did you mean ':many'?"
+                + " Use one of :one, :optional, :many, :exec, :batchexec",
+            exception.getMessage()
+        );
+    }
+
+    @Test
+    void suggestsAnnotationForAnnotationWithoutColon() {
+        String source = """
+            -- name: ListUsers many
+            SELECT *
+            FROM users;
+            """;
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> parser.parse(source)
+        );
+
+        assertEquals(
+            "Unknown query annotation 'many' at line 1; did you mean ':many'?"
+                + " Use one of :one, :optional, :many, :exec, :batchexec",
+            exception.getMessage()
+        );
+    }
+
+    @Test
+    void suggestsNoAnnotationForFarAnnotation() {
+        String source = """
+            -- name: ListUsers :stream
+            SELECT *
+            FROM users;
+            """;
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> parser.parse(source)
+        );
+
+        assertEquals(
+            "Unknown query annotation ':stream' at line 1."
+                + " Use one of :one, :optional, :many, :exec, :batchexec",
             exception.getMessage()
         );
     }
