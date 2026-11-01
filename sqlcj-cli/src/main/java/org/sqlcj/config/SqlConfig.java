@@ -13,8 +13,7 @@ import java.util.List;
  */
 public record SqlConfig(
     String name,
-    @JsonFormat(with = JsonFormat.Feature.ACCEPT_SINGLE_VALUE_AS_ARRAY)
-    List<String> schema,
+    @JsonFormat(with = JsonFormat.Feature.ACCEPT_SINGLE_VALUE_AS_ARRAY) List<String> schema,
     String queries
 ) {
 

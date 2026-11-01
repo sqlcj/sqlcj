@@ -504,8 +504,7 @@ class SqlcjAutoConfigurationTest {
         @Bean(defaultCandidate = false)
         @Qualifier("second")
         QueryExecutor secondQueryExecutor(
-            @Qualifier("second")
-            DataSource dataSource
+            @Qualifier("second") DataSource dataSource
         ) {
             return new JdbcQueryExecutor(new TransactionAwareDataSourceProxy(dataSource));
         }
@@ -513,16 +512,14 @@ class SqlcjAutoConfigurationTest {
         @Bean(defaultCandidate = false)
         @Qualifier("second")
         JdbcTransactionManager secondTransactionManager(
-            @Qualifier("second")
-            DataSource dataSource
+            @Qualifier("second") DataSource dataSource
         ) {
             return new JdbcTransactionManager(dataSource);
         }
 
         @Bean
         OutsideRepository secondOutsideRepository(
-            @Qualifier("second")
-            QueryExecutor executor
+            @Qualifier("second") QueryExecutor executor
         ) {
             return new OutsideRepository(executor);
         }
