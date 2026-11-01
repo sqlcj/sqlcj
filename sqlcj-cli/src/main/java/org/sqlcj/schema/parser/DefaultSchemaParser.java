@@ -25,6 +25,7 @@ import net.sf.jsqlparser.statement.create.table.TableElement;
 import net.sf.jsqlparser.statement.create.type.CreateType;
 import net.sf.jsqlparser.statement.create.type.EnumTypeDefinition;
 import net.sf.jsqlparser.statement.drop.Drop;
+import org.sqlcj.diagnostic.Suggestions;
 import org.sqlcj.schema.Column;
 import org.sqlcj.schema.Constraint;
 import org.sqlcj.schema.ConstraintType;
@@ -1450,7 +1451,7 @@ public class DefaultSchemaParser implements SchemaParser {
                     continue;
                 }
 
-                throw tableNotFound(tableName);
+                throw tableNotFound(tableName, tables);
             }
 
             names.add(tableName);
@@ -1511,7 +1512,7 @@ public class DefaultSchemaParser implements SchemaParser {
                 return;
             }
 
-            throw tableNotFound(tableName);
+            throw tableNotFound(tableName, tables);
         }
 
         String schemaName = soleSetSchemaAction(alter);
@@ -2256,8 +2257,26 @@ public class DefaultSchemaParser implements SchemaParser {
         return list != null && !list.isEmpty();
     }
 
-    private IllegalArgumentException tableNotFound(String tableName) {
-        return new IllegalArgumentException("Table not found in schema: " + tableName);
+    /**
+     * The rejection of a statement that names a table sqlcj does not model,
+     * which suggests the modeled table closest to the written name, compared
+     * with the tables modeled so far in declaration order.
+     */
+    private IllegalArgumentException tableNotFound(String tableName, List<Table> tables) {
+        String suggestion = Suggestions.closest(tableName, tableNames(tables))
+            .map(closest -> ". Did you mean '" + closest + "'?")
+            .orElse("");
+
+        return new IllegalArgumentException(
+            "Table not found in schema: " + tableName + suggestion
+        );
+    }
+
+    /** The modeled tables, in declaration order. */
+    private List<String> tableNames(List<Table> tables) {
+        return tables.stream()
+            .map(Table::name)
+            .toList();
     }
 
     private IllegalArgumentException tableAlreadyExists(String tableName) {
@@ -2417,6 +2436,9 @@ public class DefaultSchemaParser implements SchemaParser {
      * The modeled table a {@code LIKE} or {@code PARTITION OF} names as the
      * source of its columns. A source sqlcj does not model fails as a missing
      * table, because the created table's columns would otherwise be unknown.
+     *
+     * <p>A source qualified with a schema sqlcj does not model is compared with
+     * no candidate, because what fails is its schema and not its spelling.
      */
     private Table referencedTable(
         List<Table> tables,
@@ -2425,7 +2447,12 @@ public class DefaultSchemaParser implements SchemaParser {
         int index = indexOfReferencedTable(tables, referenced);
 
         if (index < 0) {
-            throw tableNotFound(SchemaNamespace.declaredName(referenced));
+            throw tableNotFound(
+                SchemaNamespace.declaredName(referenced),
+                SchemaNamespace.isModeled(referenced)
+                    ? tables
+                    : List.of()
+            );
         }
 
         return tables.get(index);

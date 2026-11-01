@@ -4587,4 +4587,75 @@ class DefaultSchemaParserTest {
             () -> parser.parse(sql)
         );
     }
+
+    /**
+     * A statement that names a table sqlcj does not model suggests the modeled
+     * table closest to the written name, wherever that name is resolved.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "ALTER TABLE usrs ADD COLUMN note TEXT;",
+            "DROP TABLE usrs;",
+            "CREATE TABLE copies (LIKE usrs);"
+        }
+    )
+    void shouldSuggestTheClosestModeledTable(String statement) {
+        assertEquals(
+            "Table not found in schema: usrs. Did you mean 'users'?",
+            failureMessage(statement)
+        );
+    }
+
+    /** A name no modeled table is close to keeps the rejection unchanged. */
+    @Test
+    void shouldSuggestNoTableForAFarName() {
+        assertEquals(
+            "Table not found in schema: payments",
+            failureMessage("DROP TABLE payments;")
+        );
+    }
+
+    /**
+     * A source qualified with a schema sqlcj does not model gets no suggestion,
+     * because what fails is its schema and not its spelling.
+     */
+    @Test
+    void shouldSuggestNoTableForASourceOfAnotherSchema() {
+        Schema schema = parser.parse("CREATE TABLE authors (id BIGINT NOT NULL);");
+
+        assertEquals(
+            "Table not found in schema: x.authors",
+            assertThrows(
+                IllegalArgumentException.class,
+                () -> parser.parse(schema, "CREATE TABLE copies (LIKE x.authors);")
+            )
+                .getMessage()
+        );
+    }
+
+    /**
+     * Two equally close tables are a tie, which declaration order decides, so
+     * the suggestion is deterministic.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "CREATE TABLE notes (id BIGINT); CREATE TABLE nodes (id BIGINT);|notes",
+            "CREATE TABLE nodes (id BIGINT); CREATE TABLE notes (id BIGINT);|nodes"
+        }
+    )
+    void shouldDecideATieBetweenTablesByDeclarationOrder(String declarations, String suggested) {
+        Schema schema = parser.parse(declarations);
+
+        assertEquals(
+            "Table not found in schema: nores. Did you mean '%s'?".formatted(suggested),
+            assertThrows(
+                IllegalArgumentException.class,
+                () -> parser.parse(schema, "DROP TABLE nores;")
+            )
+                .getMessage()
+        );
+    }
 }
