@@ -26,9 +26,21 @@ public final class DefaultQueryParser implements QueryParser {
         ":batchexec"
     );
 
+    /**
+     * Parses every query of one source, accepting the ones it states correctly
+     * and rejecting the others, so that a run reports them all.
+     *
+     * <p>A header line always delimits its query, whether or not the name and
+     * the annotation it writes parse, so a rejected query ends at the next
+     * header and the lines up to it are skipped. A query is rejected by an
+     * unreadable header, an annotation sqlcj does not parse, a header without
+     * SQL, and a header that repeats the name of an earlier accepted query.
+     */
     @Override
-    public List<Query> parse(String source) {
+    public ParsedQueries parse(String source) {
         List<Query> queries = new ArrayList<>();
+        List<QueryRejection> rejections = new ArrayList<>();
+        Set<String> names = new HashSet<>();
 
         String currentName = null;
         QueryType currentType = null;
@@ -41,15 +53,34 @@ public final class DefaultQueryParser implements QueryParser {
 
             if (line.startsWith(HEADER_PREFIX)) {
                 if (currentName != null) {
-                    queries.add(buildQuery(builder, currentName, currentType, currentLine));
+                    complete(
+                        queries,
+                        rejections,
+                        names,
+                        builder,
+                        currentName,
+                        currentType,
+                        currentLine
+                    );
                 }
 
-                QueryHeader header = parseHeader(line, lineNumber);
-                currentName = header.name();
-                currentType = header.type();
+                builder.setLength(0);
+
+                ParsedHeader parsed = parseHeader(line);
+
+                if (parsed.rejection() != null) {
+                    rejections.add(new QueryRejection(lineNumber, parsed.rejection()));
+
+                    currentName = null;
+                    currentType = null;
+
+                    continue;
+                }
+
+                currentName = parsed.header().name();
+                currentType = parsed.header().type();
                 currentLine = lineNumber;
 
-                builder.setLength(0);
                 continue;
             }
 
@@ -61,22 +92,20 @@ public final class DefaultQueryParser implements QueryParser {
         }
 
         if (currentName != null) {
-            queries.add(buildQuery(builder, currentName, currentType, currentLine));
+            complete(queries, rejections, names, builder, currentName, currentType, currentLine);
         }
 
-        Set<String> names = new HashSet<>();
-        for (Query query : queries) {
-            if (!names.add(query.name())) {
-                throw new IllegalArgumentException(
-                    "Duplicate query: " + query.name()
-                );
-            }
-        }
-
-        return queries;
+        return new ParsedQueries(queries, rejections);
     }
 
-    private Query buildQuery(
+    /**
+     * Accepts the query one read header states, or rejects it because it writes
+     * no SQL or repeats the name of an earlier accepted query.
+     */
+    private void complete(
+        List<Query> queries,
+        List<QueryRejection> rejections,
+        Set<String> names,
         StringBuilder builder,
         String currentName,
         QueryType currentType,
@@ -85,54 +114,67 @@ public final class DefaultQueryParser implements QueryParser {
         String sql = builder.toString().trim();
 
         if (sql.isBlank()) {
-            throw new IllegalArgumentException(
-                "Query '" + currentName + "' has no SQL"
+            rejections.add(
+                new QueryRejection(currentLine, "Query '" + currentName + "' has no SQL")
             );
+
+            return;
         }
 
-        return new Query(
-            currentName,
-            currentType,
-            sql,
-            currentLine
+        if (!names.add(currentName)) {
+            rejections.add(new QueryRejection(currentLine, "Duplicate query: " + currentName));
+
+            return;
+        }
+
+        queries.add(
+            new Query(
+                currentName,
+                currentType,
+                sql,
+                currentLine
+            )
         );
     }
 
-    private QueryHeader parseHeader(String line, int lineNumber) {
+    private ParsedHeader parseHeader(String line) {
         String header = line.substring(HEADER_PREFIX.length()).trim();
         String[] parts = header.split("\\s+");
 
         if (parts.length != 2) {
-            throw new IllegalArgumentException(
-                "Invalid query header: " + line
-            );
+            return new ParsedHeader(null, "Invalid query header: " + line);
         }
 
         String name = parts[0];
         String annotation = parts[1];
-        QueryType type = QueryType.from(annotation)
-            .orElseThrow(() -> unknownAnnotation(annotation, lineNumber));
 
-        return new QueryHeader(name, type);
+        return QueryType.from(annotation)
+            .map(type -> new ParsedHeader(new QueryHeader(name, type), null))
+            .orElseGet(() -> new ParsedHeader(null, unknownAnnotation(annotation)));
     }
 
     /**
      * The rejection of an annotation sqlcj does not parse: the annotation as it
-     * is written, the line of the header that writes it, the accepted
-     * annotations, and the one closest to the written text when there is one.
+     * is written, the accepted annotations, and the one closest to the written
+     * text when there is one. The header's line is stated by the location of
+     * the diagnostic the compiler builds from this reason.
      */
-    private IllegalArgumentException unknownAnnotation(String annotation, int lineNumber) {
+    private String unknownAnnotation(String annotation) {
         String suggestion = Suggestions.closest(annotation, ACCEPTED_ANNOTATIONS)
             .map(closest -> "; did you mean '" + closest + "'?")
             .orElse(".");
 
-        return new IllegalArgumentException(
-            "Unknown query annotation '%s' at line %d%s Use one of %s".formatted(
-                annotation,
-                lineNumber,
-                suggestion,
-                String.join(", ", ACCEPTED_ANNOTATIONS)
-            )
+        return "Unknown query annotation '%s'%s Use one of %s".formatted(
+            annotation,
+            suggestion,
+            String.join(", ", ACCEPTED_ANNOTATIONS)
         );
+    }
+
+    /**
+     * One read header line: the header it states, or the reason sqlcj rejected
+     * it. Exactly one of the two is present.
+     */
+    private record ParsedHeader(QueryHeader header, String rejection) {
     }
 }

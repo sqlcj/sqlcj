@@ -11,6 +11,7 @@ import org.sqlcj.generator.JavaCodeGenerator;
 import org.sqlcj.io.GeneratedFileWriter;
 import org.sqlcj.io.GeneratedOutputManifest;
 import org.sqlcj.parser.Query;
+import org.sqlcj.parser.QueryRejection;
 import org.sqlcj.schema.Schema;
 import org.sqlcj.schema.parser.DefaultSchemaParser;
 import org.sqlcj.schema.parser.SchemaParseException;
@@ -22,6 +23,7 @@ import org.sqlcj.sql.SqlParser;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -118,23 +120,51 @@ public final class SqlcjCompiler {
     /**
      * Generates one repository per configured query group, followed by the row
      * records and the enum types those groups share.
+     *
+     * <p>Every entry is analyzed before any is generated, so that one run
+     * reports every rejected query of every entry, in configuration order and
+     * then header-line order, and generates nothing when any query was
+     * rejected. A schema failure ends the run where it stands, because the
+     * queries of its own entry cannot be analyzed without its schema; the
+     * rejections of the entries analyzed before it are reported first.
      */
     private List<GeneratedFile> generate(
         List<Source> sources,
         CodeGenerator codeGenerator,
         String packageName
     ) {
+        List<String> diagnostics = new ArrayList<>();
+        List<QueryGroupModel> groups = new ArrayList<>(sources.size());
+
+        for (Source source : sources) {
+            Schema schema;
+
+            try {
+                schema = parseSchema(source);
+            } catch (CompilationException e) {
+                if (diagnostics.isEmpty()) {
+                    throw e;
+                }
+
+                diagnostics.addAll(e.diagnostics());
+
+                throw new CompilationException(diagnostics);
+            }
+
+            groups.add(analyze(source, schema, diagnostics));
+        }
+
+        if (!diagnostics.isEmpty()) {
+            throw new CompilationException(diagnostics);
+        }
+
         List<GeneratedFile> files = new ArrayList<>();
         Map<String, GeneratedRepository> generatedRepositories = new HashMap<>();
 
-        for (Source source : sources) {
-            Schema schema = parseSchema(source);
+        for (int index = 0; index < sources.size(); index++) {
+            Source source = sources.get(index);
 
-            GeneratedFile file = generateRepository(
-                source,
-                analyze(source, schema),
-                codeGenerator
-            );
+            GeneratedFile file = generateRepository(source, groups.get(index), codeGenerator);
 
             checkGeneratedPath(source, file, generatedRepositories);
 
@@ -197,51 +227,96 @@ public final class SqlcjCompiler {
                 );
             }
 
+            int line = e instanceof SchemaParseException failure
+                ? failure.line()
+                : 0;
+
+            if (line == 0) {
+                throw new CompilationException(
+                    "Invalid schema source %s: %s".formatted(schemaFile.path(), reason(e)),
+                    e
+                );
+            }
+
             throw new CompilationException(
-                "Invalid schema source %s: %s".formatted(schemaFile.path(), reason(e)),
+                located(schemaFile.path(), line, "Invalid schema source: " + reason(e)),
                 e
             );
         }
     }
 
-    /** Analyzes every query of one group against that group's schema. */
-    private QueryGroupModel analyze(Source source, Schema schema) {
+    /**
+     * Analyzes every query of one group against that group's schema, collecting
+     * the diagnostic of every query the parser or the analyzer rejected in
+     * header-line order, so the rejections of a header and of an analyzed query
+     * interleave as the source states them.
+     *
+     * <p>The returned group holds the queries that compiled, and is generated
+     * only when no query of any entry was rejected.
+     */
+    private QueryGroupModel analyze(Source source, Schema schema, List<String> diagnostics) {
         List<QueryModel> queries = new ArrayList<>(source.queries().size());
+        List<Rejection> rejections = new ArrayList<>();
+
+        for (QueryRejection rejection : source.rejections()) {
+            rejections.add(
+                new Rejection(
+                    rejection.line(),
+                    located(
+                        source.queriesPath(),
+                        rejection.line(),
+                        "Invalid query source: " + rejection.reason()
+                    )
+                )
+            );
+        }
 
         for (Query query : source.queries()) {
-            queries.add(analyzeQuery(source, query, schema));
+            try {
+                queries.add(queryAnalysis.apply(query, schema));
+            } catch (RuntimeException e) {
+                rejections.add(new Rejection(query.line(), analysisRejection(source, query, e)));
+            }
+        }
+
+        rejections.sort(Comparator.comparingInt(Rejection::line));
+
+        for (Rejection rejection : rejections) {
+            diagnostics.add(rejection.diagnostic());
         }
 
         return new QueryGroupModel(source.name(), List.copyOf(queries), schema.enums());
     }
 
     /**
-     * Analyzes one query, reporting a parse or analysis failure with the
-     * source, query, and header line it belongs to.
+     * The diagnostic of one rejected query, located at its header line, which
+     * reports a parse or analysis failure in SQL terms and a failure sqlcj did
+     * not foresee as that query's internal error.
      */
-    private QueryModel analyzeQuery(Source source, Query query, Schema schema) {
-        try {
-            return queryAnalysis.apply(query, schema);
-        } catch (RuntimeException e) {
-            if (!isDiagnostic(e)) {
-                throw internalError(
-                    "Internal error while analyzing query '%s' in %s at line %d"
-                        .formatted(query.name(), source.queriesPath(), query.line()),
-                    e
-                );
-            }
-
-            throw new CompilationException(
-                "Invalid query '%s' in %s at line %d: %s"
-                    .formatted(
-                        query.name(),
-                        source.queriesPath(),
-                        query.line(),
-                        reason(e)
-                    ),
-                e
+    private String analysisRejection(Source source, Query query, RuntimeException e) {
+        if (!isDiagnostic(e)) {
+            return located(
+                source.queriesPath(),
+                query.line(),
+                "Internal error while analyzing query '%s'%s"
+                    .formatted(query.name(), INTERNAL_ERROR_SUFFIX)
             );
         }
+
+        return located(
+            source.queriesPath(),
+            query.line(),
+            "Invalid query '%s': %s".formatted(query.name(), reason(e))
+        );
+    }
+
+    /**
+     * One diagnostic of a source line, which begins with the absolute path of
+     * the source and the line, the form IDE terminals and CI log viewers turn
+     * into a link to the file.
+     */
+    private String located(Path path, int line, String diagnostic) {
+        return "%s:%d: %s".formatted(path.toAbsolutePath(), line, diagnostic);
     }
 
     /**
@@ -404,5 +479,9 @@ public final class SqlcjCompiler {
     }
 
     private record GeneratedRepository(String groupName, Path path) {
+    }
+
+    /** One rejected query of one entry: its header line and its diagnostic. */
+    private record Rejection(int line, String diagnostic) {
     }
 }

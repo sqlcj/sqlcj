@@ -5,12 +5,19 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DefaultQueryParserTest {
 
     private final QueryParser parser = new DefaultQueryParser();
+
+    /** The names of the accepted queries, in order. */
+    private static List<String> names(ParsedQueries parsed) {
+        return parsed.queries()
+            .stream()
+            .map(Query::name)
+            .toList();
+    }
 
     @Test
     void parsesSingleQuery() {
@@ -21,7 +28,7 @@ class DefaultQueryParserTest {
             WHERE id = $1;
             """;
 
-        List<Query> queries = parser.parse(source);
+        List<Query> queries = parser.parse(source).queries();
 
         assertEquals(1, queries.size());
 
@@ -49,7 +56,7 @@ class DefaultQueryParserTest {
             FROM users;
             """;
 
-        List<Query> queries = parser.parse(source);
+        List<Query> queries = parser.parse(source).queries();
 
         assertEquals(2, queries.size());
 
@@ -71,7 +78,7 @@ class DefaultQueryParserTest {
             WHERE id = $1;
             """;
 
-        List<Query> queries = parser.parse(source);
+        List<Query> queries = parser.parse(source).queries();
 
         assertEquals(1, queries.size());
         assertEquals("FindUser", queries.get(0).name());
@@ -86,7 +93,7 @@ class DefaultQueryParserTest {
             WHERE id = $1;
             """;
 
-        List<Query> queries = parser.parse(source);
+        List<Query> queries = parser.parse(source).queries();
 
         assertEquals(1, queries.size());
         assertEquals(QueryType.EXEC, queries.get(0).type());
@@ -100,15 +107,18 @@ class DefaultQueryParserTest {
             FROM users;
             """;
 
-        IllegalArgumentException exception = assertThrows(
-            IllegalArgumentException.class,
-            () -> parser.parse(source)
-        );
+        ParsedQueries parsed = parser.parse(source);
 
+        assertEquals(List.of(), parsed.queries());
         assertEquals(
-            "Unknown query annotation ':invalid' at line 1."
-                + " Use one of :one, :optional, :many, :exec, :batchexec",
-            exception.getMessage()
+            List.of(
+                new QueryRejection(
+                    1,
+                    "Unknown query annotation ':invalid'."
+                        + " Use one of :one, :optional, :many, :exec, :batchexec"
+                )
+            ),
+            parsed.rejections()
         );
     }
 
@@ -125,15 +135,18 @@ class DefaultQueryParserTest {
             FROM users;
             """;
 
-        IllegalArgumentException exception = assertThrows(
-            IllegalArgumentException.class,
-            () -> parser.parse(source)
-        );
+        ParsedQueries parsed = parser.parse(source);
 
+        assertEquals(List.of("GetUser"), names(parsed));
         assertEquals(
-            "Unknown query annotation ':mnay' at line 6; did you mean ':many'?"
-                + " Use one of :one, :optional, :many, :exec, :batchexec",
-            exception.getMessage()
+            List.of(
+                new QueryRejection(
+                    6,
+                    "Unknown query annotation ':mnay'; did you mean ':many'?"
+                        + " Use one of :one, :optional, :many, :exec, :batchexec"
+                )
+            ),
+            parsed.rejections()
         );
     }
 
@@ -145,15 +158,15 @@ class DefaultQueryParserTest {
             FROM users;
             """;
 
-        IllegalArgumentException exception = assertThrows(
-            IllegalArgumentException.class,
-            () -> parser.parse(source)
-        );
-
         assertEquals(
-            "Unknown query annotation ':MANY' at line 1; did you mean ':many'?"
-                + " Use one of :one, :optional, :many, :exec, :batchexec",
-            exception.getMessage()
+            List.of(
+                new QueryRejection(
+                    1,
+                    "Unknown query annotation ':MANY'; did you mean ':many'?"
+                        + " Use one of :one, :optional, :many, :exec, :batchexec"
+                )
+            ),
+            parser.parse(source).rejections()
         );
     }
 
@@ -165,15 +178,15 @@ class DefaultQueryParserTest {
             FROM users;
             """;
 
-        IllegalArgumentException exception = assertThrows(
-            IllegalArgumentException.class,
-            () -> parser.parse(source)
-        );
-
         assertEquals(
-            "Unknown query annotation 'many' at line 1; did you mean ':many'?"
-                + " Use one of :one, :optional, :many, :exec, :batchexec",
-            exception.getMessage()
+            List.of(
+                new QueryRejection(
+                    1,
+                    "Unknown query annotation 'many'; did you mean ':many'?"
+                        + " Use one of :one, :optional, :many, :exec, :batchexec"
+                )
+            ),
+            parser.parse(source).rejections()
         );
     }
 
@@ -185,18 +198,22 @@ class DefaultQueryParserTest {
             FROM users;
             """;
 
-        IllegalArgumentException exception = assertThrows(
-            IllegalArgumentException.class,
-            () -> parser.parse(source)
-        );
-
         assertEquals(
-            "Unknown query annotation ':stream' at line 1."
-                + " Use one of :one, :optional, :many, :exec, :batchexec",
-            exception.getMessage()
+            List.of(
+                new QueryRejection(
+                    1,
+                    "Unknown query annotation ':stream'."
+                        + " Use one of :one, :optional, :many, :exec, :batchexec"
+                )
+            ),
+            parser.parse(source).rejections()
         );
     }
 
+    /**
+     * A header that repeats the name of an earlier accepted query is rejected
+     * at its own line, and the query it repeats is kept.
+     */
     @Test
     void rejectsDuplicateQueryNames() {
         String source = """
@@ -210,14 +227,13 @@ class DefaultQueryParserTest {
             FROM users;
             """;
 
-        IllegalArgumentException exception = assertThrows(
-            IllegalArgumentException.class,
-            () -> parser.parse(source)
-        );
+        ParsedQueries parsed = parser.parse(source);
 
+        assertEquals(List.of("GetUser"), names(parsed));
+        assertEquals(QueryType.ONE, parsed.queries().get(0).type());
         assertEquals(
-            "Duplicate query: GetUser",
-            exception.getMessage()
+            List.of(new QueryRejection(6, "Duplicate query: GetUser")),
+            parsed.rejections()
         );
     }
 
@@ -227,14 +243,79 @@ class DefaultQueryParserTest {
             -- name: GetUser :one
             """;
 
-        IllegalArgumentException exception = assertThrows(
-            IllegalArgumentException.class,
-            () -> parser.parse(source)
+        ParsedQueries parsed = parser.parse(source);
+
+        assertEquals(List.of(), parsed.queries());
+        assertEquals(
+            List.of(new QueryRejection(1, "Query 'GetUser' has no SQL")),
+            parsed.rejections()
         );
+    }
+
+    /**
+     * A header without SQL is rejected at its own line and the query that
+     * follows it is still parsed, because the next header ends it.
+     */
+    @Test
+    void rejectsQueryWithoutSqlBesideALaterQuery() {
+        String source = """
+            -- name: GetUser :one
+
+            -- name: ListUsers :many
+            SELECT *
+            FROM users;
+            """;
+
+        ParsedQueries parsed = parser.parse(source);
+
+        assertEquals(List.of("ListUsers"), names(parsed));
+        assertEquals(
+            List.of(new QueryRejection(1, "Query 'GetUser' has no SQL")),
+            parsed.rejections()
+        );
+    }
+
+    /**
+     * Each rejected header ends at the next header, so two rejected headers are
+     * both reported, in the order the source writes them, the accepted query
+     * between them is parsed, and the SQL of a rejected header is skipped
+     * rather than attached to another query.
+     */
+    @Test
+    void rejectsEveryHeaderItCannotReadBesideAnAcceptedQuery() {
+        String source = """
+            -- name: ListUsers :mnay
+            SELECT *
+            FROM users;
+
+            -- name: GetUser :one
+            SELECT *
+            FROM users
+            WHERE id = $1;
+
+            -- name:
+            SELECT 1;
+            """;
+
+        ParsedQueries parsed = parser.parse(source);
+
+        assertEquals(List.of("GetUser"), names(parsed));
+        assertEquals("""
+            SELECT *
+            FROM users
+            WHERE id = $1;
+            """.trim(), parsed.queries().get(0).sql());
 
         assertEquals(
-            "Query 'GetUser' has no SQL",
-            exception.getMessage()
+            List.of(
+                new QueryRejection(
+                    1,
+                    "Unknown query annotation ':mnay'; did you mean ':many'?"
+                        + " Use one of :one, :optional, :many, :exec, :batchexec"
+                ),
+                new QueryRejection(10, "Invalid query header: -- name:")
+            ),
+            parsed.rejections()
         );
     }
 
@@ -245,7 +326,7 @@ class DefaultQueryParserTest {
             FROM users;
             """;
 
-        List<Query> queries = parser.parse(source);
+        List<Query> queries = parser.parse(source).queries();
 
         assertTrue(queries.isEmpty());
     }
@@ -258,14 +339,12 @@ class DefaultQueryParserTest {
             FROM users;
             """;
 
-        IllegalArgumentException exception = assertThrows(
-            IllegalArgumentException.class,
-            () -> parser.parse(source)
-        );
+        ParsedQueries parsed = parser.parse(source);
 
+        assertEquals(List.of(), parsed.queries());
         assertEquals(
-            "Invalid query header: -- name:",
-            exception.getMessage()
+            List.of(new QueryRejection(1, "Invalid query header: -- name:")),
+            parsed.rejections()
         );
     }
 
@@ -282,7 +361,7 @@ class DefaultQueryParserTest {
             SELECT 3;
             """;
 
-        List<Query> queries = parser.parse(source);
+        List<Query> queries = parser.parse(source).queries();
 
         assertEquals(3, queries.size());
 
@@ -306,7 +385,7 @@ class DefaultQueryParserTest {
             FROM users;
             """;
 
-        List<Query> queries = parser.parse(source);
+        List<Query> queries = parser.parse(source).queries();
 
         assertEquals(3, queries.get(0).line());
         assertEquals(8, queries.get(1).line());

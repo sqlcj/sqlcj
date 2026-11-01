@@ -26,6 +26,7 @@ import org.sqlcj.sql.SqlParser;
 
 import javax.tools.JavaCompiler;
 import javax.tools.ToolProvider;
+import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
@@ -1960,7 +1961,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            "Invalid query 'GetOrder' in %s at line 5: "
+            "%s:5: Invalid query 'GetOrder': "
                 .formatted(ordersQueries)
                 + "Placeholder indexes must start at $1 without gaps, but were [2]",
             exception.getMessage()
@@ -2923,7 +2924,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            "Invalid query 'ListUsers' in %s at line 1: "
+            "%s:1: Invalid query 'ListUsers': "
                 .formatted(tempDir.resolve("queries.sql"))
                 + "Anonymous '?' parameters are not supported; "
                 + "use an indexed placeholder such as $1",
@@ -2953,7 +2954,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            "Invalid query 'Q' in %s at line 1: ".formatted(tempDir.resolve("queries.sql")) + reason,
+            "%s:1: Invalid query 'Q': ".formatted(tempDir.resolve("queries.sql")) + reason,
             exception.getMessage()
         );
 
@@ -3133,7 +3134,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertInternalError(
-            "Internal error while analyzing query 'GetUser' in %s at line 1"
+            "%s:1: Internal error while analyzing query 'GetUser'"
                 .formatted(tempDir.resolve("queries.sql")),
             failure.getClass().getSimpleName(),
             exception,
@@ -3297,7 +3298,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            "Invalid query 'ListUsers' in %s at line 1: "
+            "%s:1: Invalid query 'ListUsers': "
                 .formatted(tempDir.resolve("queries.sql"))
                 + "Cannot infer the type of :name in lower(name) = :name; "
                 + "state it with a cast, such as :name::text",
@@ -4425,7 +4426,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            "Invalid query 'ListActiveUsers' in %s at line 1: ".formatted(queriesFile)
+            "%s:1: Invalid query 'ListActiveUsers': ".formatted(queriesFile)
                 + "active_users is a view, which sqlcj does not model; "
                 + "write its query in a WITH clause instead.",
             exception.getMessage()
@@ -4490,8 +4491,8 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            "Invalid schema source %s: ".formatted(unsupported)
-                + "Unsupported schema statement: ALTER FOREIGN TABLE at line 7",
+            "%s:7: Invalid schema source: ".formatted(unsupported)
+                + "Unsupported schema statement: ALTER FOREIGN TABLE",
             exception.getMessage()
         );
 
@@ -4548,9 +4549,9 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            "Invalid schema source %s: ".formatted(broken)
+            "%s:4: Invalid schema source: ".formatted(broken)
                 + "Encountered unexpected token: \";\" "
-                + "at line 4, column 1",
+                + "at column 1",
             exception.getMessage()
         );
 
@@ -4604,12 +4605,411 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            "Invalid query 'ListTags' in %s at line 5: ".formatted(queriesFile)
+            "%s:5: Invalid query 'ListTags': ".formatted(queriesFile)
                 + "Column 'tags' has unsupported type JSONB[]",
             exception.getMessage()
         );
 
         assertFalse(Files.exists(generatedDirectory));
+    }
+
+    /**
+     * Every rejected query of one source is reported in one run, in the order
+     * the source writes its headers, so a rejected header stands between the
+     * analysis rejections around it, and nothing is written.
+     */
+    @Test
+    void shouldReportEveryRejectedQueryOfOneSourceInHeaderOrder() {
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> compileUsersQueries(
+                """
+                    -- name: ListUsers :many
+                    SELECT id
+                    FROM users
+                    WHERE id = $2;
+
+                    -- name: ListNames :mnay
+                    SELECT name
+                    FROM users;
+
+                    -- name: GetUser :one
+                    SELECT id
+                    FROM users
+                    WHERE id = $3;
+                    """,
+                generatedDirectory
+            )
+        );
+
+        assertEquals(
+            List.of(
+                "%s:1: Invalid query 'ListUsers': ".formatted(queriesFile)
+                    + "Placeholder indexes must start at $1 without gaps, but were [2]",
+                "%s:6: Invalid query source: ".formatted(queriesFile)
+                    + "Unknown query annotation ':mnay'; did you mean ':many'?"
+                    + " Use one of :one, :optional, :many, :exec, :batchexec",
+                "%s:10: Invalid query 'GetUser': ".formatted(queriesFile)
+                    + "Placeholder indexes must start at $1 without gaps, but were [3]"
+            ),
+            exception.diagnostics()
+        );
+
+        assertEquals(
+            String.join(System.lineSeparator(), exception.diagnostics()),
+            exception.getMessage()
+        );
+
+        assertFalse(Files.exists(generatedDirectory));
+    }
+
+    /**
+     * The rejected queries of every configured entry are reported in one run,
+     * in configuration order, and the output of an earlier run is left
+     * untouched.
+     */
+    @Test
+    void shouldReportTheRejectedQueriesOfEveryEntry() throws IOException {
+        Path generatedDirectory = tempDir.resolve("generated");
+
+        Path usersQueries = tempDir.resolve("users-queries.sql");
+        Path ordersQueries = tempDir.resolve("orders-queries.sql");
+
+        Files.writeString(
+            usersQueries,
+            """
+                -- name: ListUsers :many
+                SELECT id
+                FROM users
+                WHERE id = $2;
+                """
+        );
+
+        Files.writeString(
+            ordersQueries,
+            """
+                -- name: ListOrders :many
+                SELECT id
+                FROM orders;
+
+                -- name: GetOrder :one
+                SELECT id
+                FROM orders
+                WHERE id = $2;
+                """
+        );
+
+        Path existing = Files.createDirectories(generatedDirectory.resolve("generated"))
+            .resolve("UsersRepository.java");
+
+        Files.writeString(existing, "// from an earlier run\n");
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> new SqlcjCompiler().compile(
+                twoEntryConfig(usersQueries, ordersQueries, generatedDirectory)
+            )
+        );
+
+        assertEquals(
+            List.of(
+                "%s:1: Invalid query 'ListUsers': ".formatted(usersQueries)
+                    + "Placeholder indexes must start at $1 without gaps, but were [2]",
+                "%s:5: Invalid query 'GetOrder': ".formatted(ordersQueries)
+                    + "Placeholder indexes must start at $1 without gaps, but were [2]"
+            ),
+            exception.diagnostics()
+        );
+
+        assertEquals("// from an earlier run\n", Files.readString(existing));
+        assertFalse(Files.exists(generatedDirectory.resolve("sqlcj-manifest.txt")));
+    }
+
+    /**
+     * A schema failure ends the run where it stands, reporting the rejected
+     * queries of the entries analyzed before it and then itself, and none of
+     * its own entry's queries, which cannot be analyzed without its schema.
+     */
+    @Test
+    void shouldReportAnEarlierEntrysRejectionsBeforeASchemaFailure() throws IOException {
+        Path generatedDirectory = tempDir.resolve("generated");
+
+        Path usersQueries = tempDir.resolve("users-queries.sql");
+        Path ordersQueries = tempDir.resolve("orders-queries.sql");
+        Path ordersSchema = tempDir.resolve("orders-schema.sql");
+
+        Files.writeString(
+            usersQueries,
+            """
+                -- name: ListUsers :many
+                SELECT id
+                FROM users
+                WHERE id = $2;
+                """
+        );
+
+        Files.writeString(
+            ordersSchema,
+            """
+                CREATE TABLE orders
+                (
+                    id BIGINT NOT NULL
+                );
+
+                ALTER FOREIGN TABLE orders ADD COLUMN total DECIMAL(10, 2);
+                """
+        );
+
+        Files.writeString(
+            ordersQueries,
+            """
+                -- name: GetOrder :one
+                SELECT id
+                FROM orders
+                WHERE id = $2;
+                """
+        );
+
+        Config config = new Config(
+            List.of(
+                new SqlConfig("Users", usersSchema().toString(), usersQueries.toString()),
+                new SqlConfig("Orders", ordersSchema.toString(), ordersQueries.toString())
+            ),
+            new JavaConfig(generatedDirectory.toString(), "generated")
+        );
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> new SqlcjCompiler().compile(config)
+        );
+
+        assertEquals(
+            List.of(
+                "%s:1: Invalid query 'ListUsers': ".formatted(usersQueries)
+                    + "Placeholder indexes must start at $1 without gaps, but were [2]",
+                "%s:6: Invalid schema source: ".formatted(ordersSchema)
+                    + "Unsupported schema statement: ALTER FOREIGN TABLE"
+            ),
+            exception.diagnostics()
+        );
+
+        assertFalse(Files.exists(generatedDirectory));
+    }
+
+    /**
+     * The checks that follow analysis run only when every query compiled, so a
+     * run that rejected a query reports its rejected queries alone and not the
+     * repeated repository method its other queries would generate.
+     */
+    @Test
+    void shouldNotReportAGenerationCollisionWhileAQueryIsRejected() {
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> compileUsersQueries(
+                """
+                    -- name: Get.User :one
+                    SELECT id
+                    FROM users
+                    WHERE id = $1;
+
+                    -- name: Get-User :one
+                    SELECT name
+                    FROM users
+                    WHERE id = $1;
+
+                    -- name: ListUsers :many
+                    SELECT id
+                    FROM users
+                    WHERE id = $2;
+                    """,
+                generatedDirectory
+            )
+        );
+
+        assertEquals(
+            List.of(
+                "%s:11: Invalid query 'ListUsers': ".formatted(queriesFile)
+                    + "Placeholder indexes must start at $1 without gaps, but were [2]"
+            ),
+            exception.diagnostics()
+        );
+
+        assertFalse(Files.exists(generatedDirectory));
+    }
+
+    /**
+     * An unforeseen failure while analyzing one query is that query's
+     * rejection, so the run continues and reports it beside the rejection of
+     * another query, in header order.
+     */
+    @Test
+    void shouldReportAnUnexpectedAnalysisFailureBesideARejectedQuery() throws IOException {
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: ListUsers :many
+                SELECT id
+                FROM users;
+
+                -- name: GetUser :one
+                SELECT id
+                FROM users
+                WHERE id = $2;
+                """
+        );
+
+        BiFunction<Query, Schema, QueryModel> analysis = defaultQueryAnalysis();
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> new SqlcjCompiler(
+                new DefaultSchemaParser(),
+                (query, schema) -> {
+                    if (query.name().equals("ListUsers")) {
+                        throw new NullPointerException("secret");
+                    }
+
+                    return analysis.apply(query, schema);
+                },
+                JavaCodeGenerator::new
+            ).compile(
+                new Config(
+                    List.of(
+                        new SqlConfig(
+                            "Users",
+                            usersSchema().toString(),
+                            queriesFile.toString()
+                        )
+                    ),
+                    new JavaConfig(generatedDirectory.toString(), "generated")
+                )
+            )
+        );
+
+        assertEquals(
+            List.of(
+                "%s:1: Internal error while analyzing query 'ListUsers'".formatted(queriesFile)
+                    + "; please report this sqlcj defect",
+                "%s:5: Invalid query 'GetUser': ".formatted(queriesFile)
+                    + "Placeholder indexes must start at $1 without gaps, but were [2]"
+            ),
+            exception.diagnostics()
+        );
+
+        assertFalse(exception.getMessage().contains("secret"));
+        assertFalse(Files.exists(generatedDirectory));
+    }
+
+    /**
+     * A located diagnostic states the absolute path of its source even when the
+     * entry configures it relatively, because the location is only a link when
+     * it does not depend on the directory the run started in.
+     */
+    @Test
+    void shouldLocateASchemaDiagnosticOfARelativePathAbsolutely() throws IOException {
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path schemaFile = tempDir.resolve("schema.sql");
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        Files.writeString(
+            schemaFile,
+            """
+                CREATE TABLE users
+                (
+                    id BIGINT NOT NULL
+                );
+
+                ALTER FOREIGN TABLE users ADD COLUMN name TEXT;
+                """
+        );
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: ListUsers :many
+                SELECT id
+                FROM users;
+                """
+        );
+
+        Path relativeSchema = Path.of("").toAbsolutePath().relativize(schemaFile);
+
+        assertFalse(relativeSchema.isAbsolute());
+
+        Config config = new Config(
+            List.of(
+                new SqlConfig("Users", relativeSchema.toString(), queriesFile.toString())
+            ),
+            new JavaConfig(generatedDirectory.toString(), "generated")
+        );
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> new SqlcjCompiler().compile(config)
+        );
+
+        assertEquals(
+            "%s:6: Invalid schema source: ".formatted(relativeSchema.toAbsolutePath())
+                + "Unsupported schema statement: ALTER FOREIGN TABLE",
+            exception.getMessage()
+        );
+
+        assertTrue(exception.getMessage().startsWith(File.separator));
+        assertFalse(Files.exists(generatedDirectory));
+    }
+
+    /** The users schema both two-entry fixtures are compiled against. */
+    private Path usersSchema() throws IOException {
+        Path schemaFile = tempDir.resolve("users-schema.sql");
+
+        Files.writeString(
+            schemaFile,
+            """
+                CREATE TABLE users
+                (
+                    id   BIGINT NOT NULL,
+                    name VARCHAR(255)
+                );
+                """
+        );
+
+        return schemaFile;
+    }
+
+    /** One {@code Users} and one {@code Orders} entry of one package. */
+    private Config twoEntryConfig(
+        Path usersQueries,
+        Path ordersQueries,
+        Path generatedDirectory
+    ) throws IOException {
+        Path ordersSchema = tempDir.resolve("orders-schema.sql");
+
+        Files.writeString(
+            ordersSchema,
+            """
+                CREATE TABLE orders
+                (
+                    id BIGINT NOT NULL
+                );
+                """
+        );
+
+        return new Config(
+            List.of(
+                new SqlConfig("Users", usersSchema().toString(), usersQueries.toString()),
+                new SqlConfig("Orders", ordersSchema.toString(), ordersQueries.toString())
+            ),
+            new JavaConfig(generatedDirectory.toString(), "generated")
+        );
     }
 
     /**

@@ -128,7 +128,11 @@ final class SchemaSourceSplitter {
                 }
             }
         } catch (TokenMgrException e) {
-            throw new SchemaParseException(SqlParseReason.of(e, true), e);
+            throw new SchemaParseException(
+                SqlParseReason.of(e, true),
+                SqlParseReason.lineOf(e),
+                e
+            );
         }
 
         if (start >= 0) {
@@ -158,7 +162,11 @@ final class SchemaSourceSplitter {
                 tokens.add(token.image);
             }
         } catch (TokenMgrException e) {
-            throw new SchemaParseException(SqlParseReason.of(e, true), e);
+            throw new SchemaParseException(
+                SqlParseReason.of(e, true),
+                SqlParseReason.lineOf(e),
+                e
+            );
         }
 
         return tokens;
@@ -215,8 +223,8 @@ final class SchemaSourceSplitter {
 
         if (closing < 0) {
             throw new SchemaParseException(
-                "Unterminated dollar-quoted string at line %d, column %d"
-                    .formatted(opening.beginLine, opening.beginColumn),
+                "Unterminated dollar-quoted string at column %d".formatted(opening.beginColumn),
+                opening.beginLine,
                 null
             );
         }

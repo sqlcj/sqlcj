@@ -850,15 +850,13 @@ class DefaultSchemaParserTest {
             ALTER FOREIGN TABLE users ADD COLUMN name TEXT;
             """;
 
-        UnsupportedOperationException exception = assertThrows(
-            UnsupportedOperationException.class,
+        SchemaParseException exception = assertThrows(
+            SchemaParseException.class,
             () -> parser.parse(sql)
         );
 
-        assertEquals(
-            "Unsupported schema statement: ALTER FOREIGN TABLE at line 5",
-            exception.getMessage()
-        );
+        assertEquals("Unsupported schema statement: ALTER FOREIGN TABLE", exception.getMessage());
+        assertEquals(5, exception.line());
     }
 
     /**
@@ -1441,30 +1439,31 @@ class DefaultSchemaParserTest {
         quoteCharacter = '"',
         value = {
             "ALTER TABLE users ADD COLUMN x int, SET SCHEMA archive;"
-                + "|Unsupported ALTER TABLE action: SET SCHEMA archive at line 1",
+                + "|Unsupported ALTER TABLE action: SET SCHEMA archive",
             "ALTER TABLE users OWNER TO app, ADD COLUMN x int;"
-                + "|Unsupported ALTER TABLE action: ADD COLUMN x int at line 1",
+                + "|Unsupported ALTER TABLE action: ADD COLUMN x int",
             "ALTER TABLE users ALTER COLUMN name SET VISIBLE;"
-                + "|Unsupported ALTER TABLE action: ALTER COLUMN name SET VISIBLE at line 1",
+                + "|Unsupported ALTER TABLE action: ALTER COLUMN name SET VISIBLE",
             "ALTER TABLE users ALTER COLUMN name SET FOO 1;"
-                + "|Unsupported ALTER TABLE action: ALTER COLUMN name SET FOO 1 at line 1",
+                + "|Unsupported ALTER TABLE action: ALTER COLUMN name SET FOO 1",
             "ALTER TABLE users ALTER COLUMN name text;"
-                + "|Unsupported ALTER TABLE action: ALTER COLUMN name text at line 1",
+                + "|Unsupported ALTER TABLE action: ALTER COLUMN name text",
             "ALTER FOREIGN TABLE ft ADD COLUMN x integer;"
-                + "|Unsupported schema statement: ALTER FOREIGN TABLE at line 1",
+                + "|Unsupported schema statement: ALTER FOREIGN TABLE",
             "alter foreign table ft add column x integer;"
-                + "|Unsupported schema statement: ALTER FOREIGN TABLE at line 1"
+                + "|Unsupported schema statement: ALTER FOREIGN TABLE"
         }
     )
     void shouldRejectUnsupportedStatementsInSqlTerms(String statement, String message) {
         Schema schema = parser.parse(BASE_SCHEMA);
 
-        UnsupportedOperationException exception = assertThrows(
-            UnsupportedOperationException.class,
+        SchemaParseException exception = assertThrows(
+            SchemaParseException.class,
             () -> parser.parse(schema, statement)
         );
 
         assertEquals(message, exception.getMessage());
+        assertEquals(1, exception.line());
     }
 
     /**
@@ -1475,8 +1474,8 @@ class DefaultSchemaParserTest {
     void shouldReportTheLineOfARejectedAlterTableAction() {
         Schema schema = parser.parse(BASE_SCHEMA);
 
-        UnsupportedOperationException exception = assertThrows(
-            UnsupportedOperationException.class,
+        SchemaParseException exception = assertThrows(
+            SchemaParseException.class,
             () -> parser.parse(schema, """
                 ALTER TABLE users OWNER TO app;
 
@@ -1485,9 +1484,10 @@ class DefaultSchemaParserTest {
         );
 
         assertEquals(
-            "Unsupported ALTER TABLE action: ALTER COLUMN name SET VISIBLE at line 3",
+            "Unsupported ALTER TABLE action: ALTER COLUMN name SET VISIBLE",
             exception.getMessage()
         );
+        assertEquals(3, exception.line());
     }
 
     /**
@@ -1534,15 +1534,13 @@ class DefaultSchemaParserTest {
             ALTER FOREIGN TABLE tags ADD COLUMN label TEXT;
             """;
 
-        UnsupportedOperationException exception = assertThrows(
-            UnsupportedOperationException.class,
+        SchemaParseException exception = assertThrows(
+            SchemaParseException.class,
             () -> parser.parse(sql)
         );
 
-        assertEquals(
-            "Unsupported schema statement: ALTER FOREIGN TABLE at line 15",
-            exception.getMessage()
-        );
+        assertEquals("Unsupported schema statement: ALTER FOREIGN TABLE", exception.getMessage());
+        assertEquals(15, exception.line());
     }
 
     /**
@@ -1564,9 +1562,10 @@ class DefaultSchemaParserTest {
         );
 
         assertEquals(
-            "Encountered unexpected token: \"DATA\" at line 3, column 41",
+            "Encountered unexpected token: \"DATA\" at column 41",
             exception.getMessage()
         );
+        assertEquals(3, exception.line());
     }
 
     /**
@@ -1589,9 +1588,10 @@ class DefaultSchemaParserTest {
         );
 
         assertEquals(
-            "Encountered unexpected token: \"DATA\" at line 1, column 88",
+            "Encountered unexpected token: \"DATA\" at column 88",
             exception.getMessage()
         );
+        assertEquals(1, exception.line());
     }
 
     /** An unreadable {@code CREATE TYPE} is rejected at its file position too. */
@@ -1607,9 +1607,10 @@ class DefaultSchemaParserTest {
         );
 
         assertEquals(
-            "Encountered unexpected token: \")\" at line 3, column 30",
+            "Encountered unexpected token: \")\" at column 30",
             exception.getMessage()
         );
+        assertEquals(3, exception.line());
     }
 
     /**
@@ -1663,15 +1664,13 @@ class DefaultSchemaParserTest {
             ALTER FOREIGN TABLE users ADD COLUMN label TEXT;
             """;
 
-        UnsupportedOperationException exception = assertThrows(
-            UnsupportedOperationException.class,
+        SchemaParseException exception = assertThrows(
+            SchemaParseException.class,
             () -> parser.parse(sql)
         );
 
-        assertEquals(
-            "Unsupported schema statement: ALTER FOREIGN TABLE at line 11",
-            exception.getMessage()
-        );
+        assertEquals("Unsupported schema statement: ALTER FOREIGN TABLE", exception.getMessage());
+        assertEquals(11, exception.line());
     }
 
     /**
@@ -1825,15 +1824,13 @@ class DefaultSchemaParserTest {
             DROP TABLE shelves;
             """;
 
-        UnsupportedOperationException exception = assertThrows(
-            UnsupportedOperationException.class,
+        SchemaParseException exception = assertThrows(
+            SchemaParseException.class,
             () -> parser.parse(sql)
         );
 
-        assertEquals(
-            "Unsupported schema statement: ALTER FOREIGN TABLE at line 2",
-            exception.getMessage()
-        );
+        assertEquals("Unsupported schema statement: ALTER FOREIGN TABLE", exception.getMessage());
+        assertEquals(2, exception.line());
     }
 
     /**
@@ -1933,9 +1930,10 @@ class DefaultSchemaParserTest {
         );
 
         assertEquals(
-            "Unterminated dollar-quoted string at line 2, column 43",
+            "Unterminated dollar-quoted string at column 43",
             exception.getMessage()
         );
+        assertEquals(2, exception.line());
     }
 
     /**
@@ -2340,9 +2338,10 @@ class DefaultSchemaParserTest {
         );
 
         assertEquals(
-            "Encountered unexpected token: \";\" at line 4, column 1",
+            "Encountered unexpected token: \";\" at column 1",
             exception.getMessage()
         );
+        assertEquals(4, exception.line());
     }
 
     /**
@@ -2363,9 +2362,10 @@ class DefaultSchemaParserTest {
         );
 
         assertEquals(
-            "Encountered unexpected end of input at line 3, column 19",
+            "Encountered unexpected end of input at column 19",
             exception.getMessage()
         );
+        assertEquals(3, exception.line());
     }
 
     /**
@@ -3048,8 +3048,8 @@ class DefaultSchemaParserTest {
     void shouldRejectSetSchemaOfAModeledEnum() {
         Schema schema = enumSchema();
 
-        UnsupportedOperationException exception = assertThrows(
-            UnsupportedOperationException.class,
+        SchemaParseException exception = assertThrows(
+            SchemaParseException.class,
             () -> parser.parse(schema, """
                 ALTER TYPE stage_setting OWNER TO app;
 
@@ -3057,10 +3057,8 @@ class DefaultSchemaParserTest {
                 """)
         );
 
-        assertEquals(
-            "Unsupported ALTER TYPE action: SET SCHEMA archive at line 3",
-            exception.getMessage()
-        );
+        assertEquals("Unsupported ALTER TYPE action: SET SCHEMA archive", exception.getMessage());
+        assertEquals(3, exception.line());
     }
 
     /**
@@ -3601,14 +3599,13 @@ class DefaultSchemaParserTest {
     void shouldRejectADropDomainItsWordsDoNotState(String statement) {
         Schema schema = domainSchema();
 
-        assertEquals(
-            "Unsupported schema statement: DROP DOMAIN at line 1",
-            assertThrows(
-                UnsupportedOperationException.class,
-                () -> parser.parse(schema, statement)
-            )
-                .getMessage()
+        SchemaParseException exception = assertThrows(
+            SchemaParseException.class,
+            () -> parser.parse(schema, statement)
         );
+
+        assertEquals("Unsupported schema statement: DROP DOMAIN", exception.getMessage());
+        assertEquals(1, exception.line());
     }
 
     /**
@@ -3859,17 +3856,17 @@ class DefaultSchemaParserTest {
         delimiter = '|',
         value = {
             "CREATE TABLE summary AS SELECT id FROM events;"
-                + "|Unsupported CREATE TABLE clause: AS SELECT at line 3",
+                + "|Unsupported CREATE TABLE clause: AS SELECT",
             "CREATE TABLE typed OF event_type;"
-                + "|Unsupported CREATE TABLE clause: OF event_type at line 3",
+                + "|Unsupported CREATE TABLE clause: OF event_type",
             "CREATE TABLE typed OF public.event_type;"
-                + "|Unsupported CREATE TABLE clause: OF public.event_type at line 3",
+                + "|Unsupported CREATE TABLE clause: OF public.event_type",
             "CREATE TABLE child (id BIGINT) INHERITS (events);"
-                + "|Unsupported CREATE TABLE clause: INHERITS at line 3",
+                + "|Unsupported CREATE TABLE clause: INHERITS",
             "create table child (id bigint) inherits (events);"
-                + "|Unsupported CREATE TABLE clause: INHERITS at line 3",
+                + "|Unsupported CREATE TABLE clause: INHERITS",
             "CREATE TABLE events_copy LIKE events;"
-                + "|Unsupported schema statement: CREATE TABLE at line 3"
+                + "|Unsupported schema statement: CREATE TABLE"
         }
     )
     void shouldRejectTheCreateTableClausesWhoseColumnsItCannotDetermine(
@@ -3878,17 +3875,16 @@ class DefaultSchemaParserTest {
     ) {
         Schema schema = parser.parse(SOURCE_SCHEMA);
 
-        assertEquals(
-            message,
-            assertThrows(
-                UnsupportedOperationException.class,
-                () -> parser.parse(
-                    schema,
-                    "CREATE INDEX events_tenant_idx ON events (tenant);\n\n" + statement + "\n"
-                )
+        SchemaParseException exception = assertThrows(
+            SchemaParseException.class,
+            () -> parser.parse(
+                schema,
+                "CREATE INDEX events_tenant_idx ON events (tenant);\n\n" + statement + "\n"
             )
-                .getMessage()
         );
+
+        assertEquals(message, exception.getMessage());
+        assertEquals(3, exception.line());
     }
 
     /**
@@ -4333,18 +4329,17 @@ class DefaultSchemaParserTest {
     void shouldRejectSetSchemaOfATableWithModeledPartitions() {
         Schema schema = partitionedSchema();
 
-        assertEquals(
-            "Unsupported ALTER TABLE action: SET SCHEMA archive at line 3",
-            assertThrows(
-                UnsupportedOperationException.class,
-                () -> parser.parse(schema, """
-                    ALTER TABLE events OWNER TO app;
+        SchemaParseException exception = assertThrows(
+            SchemaParseException.class,
+            () -> parser.parse(schema, """
+                ALTER TABLE events OWNER TO app;
 
-                    ALTER TABLE events SET SCHEMA archive;
-                    """)
-            )
-                .getMessage()
+                ALTER TABLE events SET SCHEMA archive;
+                """)
         );
+
+        assertEquals("Unsupported ALTER TABLE action: SET SCHEMA archive", exception.getMessage());
+        assertEquals(3, exception.line());
     }
 
     /**

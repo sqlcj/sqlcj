@@ -181,8 +181,8 @@ public class DefaultSchemaParser implements SchemaParser {
      * statement at a time and therefore reports positions within it, so a
      * rejected statement alone is parsed a second time preceded by the line
      * breaks and spaces that stand before it in the file. A second parse that
-     * unexpectedly succeeds leaves the first reason, which names a position
-     * within the statement.
+     * unexpectedly succeeds leaves the first reason, whose column names a
+     * position within the statement, at the statement's own line.
      */
     private SchemaParseException unreadableStatement(
         SchemaSourceSplitter.SourceStatement statement,
@@ -200,7 +200,13 @@ public class DefaultSchemaParser implements SchemaParser {
             located = e;
         }
 
-        return new SchemaParseException(SqlParseReason.of(located, true), located);
+        int line = SqlParseReason.lineOf(located);
+
+        return new SchemaParseException(
+            SqlParseReason.of(located, true),
+            line > 0 ? line : statement.line(),
+            located
+        );
     }
 
     /**
@@ -2316,7 +2322,7 @@ public class DefaultSchemaParser implements SchemaParser {
      * as the parser writes it back, with its whitespace runs collapsed to single
      * spaces.
      */
-    private UnsupportedOperationException unsupportedAlterTableAction(
+    private SchemaParseException unsupportedAlterTableAction(
         int line,
         AlterExpression expression
     ) {
@@ -2326,22 +2332,28 @@ public class DefaultSchemaParser implements SchemaParser {
         );
     }
 
-    private UnsupportedOperationException unsupportedAlterTableAction(int line, String action) {
-        return new UnsupportedOperationException(
-            "Unsupported ALTER TABLE action: %s at line %d".formatted(action, line)
+    private SchemaParseException unsupportedAlterTableAction(int line, String action) {
+        return new SchemaParseException(
+            "Unsupported ALTER TABLE action: " + action,
+            line,
+            null
         );
     }
 
     /** The failure of one rejected {@code ALTER TYPE} action, naming the action. */
-    private UnsupportedOperationException unsupportedAlterTypeAction(String action, int line) {
-        return new UnsupportedOperationException(
-            "Unsupported ALTER TYPE action: %s at line %d".formatted(action, line)
+    private SchemaParseException unsupportedAlterTypeAction(String action, int line) {
+        return new SchemaParseException(
+            "Unsupported ALTER TYPE action: " + action,
+            line,
+            null
         );
     }
 
-    private UnsupportedOperationException unsupportedOpening(String opening, int line) {
-        return new UnsupportedOperationException(
-            "Unsupported schema statement: %s at line %d".formatted(opening, line)
+    private SchemaParseException unsupportedOpening(String opening, int line) {
+        return new SchemaParseException(
+            "Unsupported schema statement: " + opening,
+            line,
+            null
         );
     }
 
@@ -2349,9 +2361,11 @@ public class DefaultSchemaParser implements SchemaParser {
      * The failure of one rejected {@code CREATE TABLE} clause, naming the
      * clause.
      */
-    private UnsupportedOperationException unsupportedCreateTableClause(String clause, int line) {
-        return new UnsupportedOperationException(
-            "Unsupported CREATE TABLE clause: %s at line %d".formatted(clause, line)
+    private SchemaParseException unsupportedCreateTableClause(String clause, int line) {
+        return new SchemaParseException(
+            "Unsupported CREATE TABLE clause: " + clause,
+            line,
+            null
         );
     }
 

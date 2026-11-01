@@ -2272,9 +2272,9 @@ class ReferenceServiceIntegrationTest {
         );
 
         assertEquals(
-            "Invalid query '%s' in %s at line 2: %s".formatted(
-                entry.queryName(),
+            "%s:2: Invalid query '%s': %s".formatted(
                 queriesFile,
+                entry.queryName(),
                 entry.reason()
             ),
             exception.getMessage()
@@ -2324,8 +2324,8 @@ class ReferenceServiceIntegrationTest {
         );
 
         assertEquals(
-            "Invalid schema source %s: ".formatted(unsupported)
-                + "Encountered unexpected token: \"DATA\" at line 2, column 51",
+            "%s:2: Invalid schema source: ".formatted(unsupported)
+                + "Encountered unexpected token: \"DATA\" at column 51",
             exception.getMessage()
         );
 
@@ -2363,7 +2363,7 @@ class ReferenceServiceIntegrationTest {
         );
 
         assertEquals(
-            "Invalid query 'ListExportedProjects' in %s at line 1: ".formatted(queriesFile)
+            "%s:1: Invalid query 'ListExportedProjects': ".formatted(queriesFile)
                 + "reporting.projects belongs to schema reporting, which sqlcj does not model; "
                 + "sqlcj models only the public schema.",
             exception.getMessage()

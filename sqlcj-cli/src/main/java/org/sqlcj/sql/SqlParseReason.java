@@ -4,6 +4,9 @@ import net.sf.jsqlparser.parser.CCJSqlParserConstants;
 import net.sf.jsqlparser.parser.ParseException;
 import net.sf.jsqlparser.parser.Token;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * The corrective fact of a SQL syntax failure, such as {@code Encountered
  * unexpected token: ";"}.
@@ -18,17 +21,25 @@ import net.sf.jsqlparser.parser.Token;
  */
 public final class SqlParseReason {
 
+    /**
+     * The line a failure that states its own position names, such as the
+     * lexical sentence {@code Lexical error at line 4, column 0. ...}, which
+     * exposes its position no other way.
+     */
+    private static final Pattern STATED_LINE = Pattern.compile("at line (\\d+)");
+
     private SqlParseReason() {
     }
 
     /**
      * The corrective fact of one SQL syntax failure, optionally followed by the
-     * line and column of the unexpected token.
+     * column of the unexpected token.
      *
-     * <p>A caller that already names a location, such as the header line of the
-     * failing query, asks for the reason without one.
+     * <p>The line is not part of the reason: a caller that reports a position
+     * states it as the location of its diagnostic, taken from
+     * {@link #lineOf(Throwable)}.
      */
-    public static String of(Throwable failure, boolean withLocation) {
+    public static String of(Throwable failure, boolean withColumn) {
         ParseException parseFailure = parseFailure(failure);
 
         if (parseFailure == null) {
@@ -45,12 +56,42 @@ public final class SqlParseReason {
 
         String reason = unexpected(token);
 
-        if (!withLocation) {
+        if (!withColumn) {
             return reason;
         }
 
-        return "%s at line %d, column %d"
-            .formatted(reason, token.beginLine, token.beginColumn);
+        return "%s at column %d".formatted(reason, token.beginColumn);
+    }
+
+    /**
+     * The line of one SQL syntax failure in the source it was parsed from, or
+     * {@code 0} when the failure states none: the line of the unexpected token,
+     * or the line the innermost cause's own sentence states, as a lexical
+     * failure does.
+     */
+    public static int lineOf(Throwable failure) {
+        ParseException parseFailure = parseFailure(failure);
+
+        if (parseFailure != null) {
+            Token token = parseFailure.currentToken == null
+                ? null
+                : parseFailure.currentToken.next;
+
+            if (token != null) {
+                return token.beginLine;
+            }
+        }
+
+        return statedLine(firstLine(innermostCause(failure)));
+    }
+
+    /** The line one failure's own sentence states, or {@code 0}. */
+    private static int statedLine(String sentence) {
+        Matcher matcher = STATED_LINE.matcher(sentence);
+
+        return matcher.find()
+            ? Integer.parseInt(matcher.group(1))
+            : 0;
     }
 
     /**

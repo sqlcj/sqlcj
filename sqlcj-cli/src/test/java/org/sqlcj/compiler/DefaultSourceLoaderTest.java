@@ -6,6 +6,7 @@ import org.sqlcj.config.Config;
 import org.sqlcj.config.JavaConfig;
 import org.sqlcj.config.SqlConfig;
 import org.sqlcj.parser.Query;
+import org.sqlcj.parser.QueryRejection;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -180,8 +181,13 @@ class DefaultSourceLoaderTest {
         );
     }
 
+    /**
+     * A rejected query no longer ends the loading of its source: the entry
+     * carries the queries the source states correctly and the rejections of
+     * the others, so the compiler reports them all.
+     */
     @Test
-    void shouldReportInvalidQuerySourceWithItsPath() throws IOException {
+    void shouldCarryTheRejectedQueriesOfItsSource() throws IOException {
         Path schema = write("schema.sql", """
             CREATE TABLE users
             (
@@ -200,24 +206,22 @@ class DefaultSourceLoaderTest {
             FROM users;
             """);
 
-        CompilationException exception = assertThrows(
-            CompilationException.class,
-            () -> sourceLoader.load(
-                config(
-                    new SqlConfig(
-                        "Users",
-                        schema.toString(),
-                        queries.toString()
-                    )
+        List<Source> sources = sourceLoader.load(
+            config(
+                new SqlConfig(
+                    "Users",
+                    schema.toString(),
+                    queries.toString()
                 )
             )
         );
 
-        assertTrue(
-            exception.getMessage().startsWith(
-                "Invalid query source " + queries + ":"
-            ),
-            exception.getMessage()
+        Source source = sources.get(0);
+
+        assertEquals(List.of("GetUser"), names(source));
+        assertEquals(
+            List.of(new QueryRejection(6, "Duplicate query: GetUser")),
+            source.rejections()
         );
     }
 
