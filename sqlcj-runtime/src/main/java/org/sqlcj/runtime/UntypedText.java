@@ -1,5 +1,7 @@
 package org.sqlcj.runtime;
 
+import org.jspecify.annotations.Nullable;
+
 /**
  * A text argument that carries no declared SQL type.
  *
@@ -14,6 +16,6 @@ package org.sqlcj.runtime;
  * {@code NULL}. The text itself is never inspected, parsed, or normalized.
  */
 public record UntypedText(
-    String value
+    @Nullable String value
 ) {
 }

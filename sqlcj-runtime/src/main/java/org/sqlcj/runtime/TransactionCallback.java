@@ -1,5 +1,7 @@
 package org.sqlcj.runtime;
 
+import org.jspecify.annotations.Nullable;
+
 import java.sql.Connection;
 
 /**
@@ -22,7 +24,7 @@ import java.sql.Connection;
  *            {@link RuntimeException} when it throws none
  */
 @FunctionalInterface
-public interface TransactionCallback<T, X extends Exception> {
+public interface TransactionCallback<T extends @Nullable Object, X extends Exception> {
 
     T run(Connection connection) throws X;
 }

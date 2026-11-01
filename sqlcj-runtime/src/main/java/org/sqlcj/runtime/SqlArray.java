@@ -1,5 +1,7 @@
 package org.sqlcj.runtime;
 
+import org.jspecify.annotations.Nullable;
+
 import java.sql.Array;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -27,7 +29,7 @@ import java.util.function.Function;
  */
 public record SqlArray(
     String elementType,
-    List<?> elements
+    @Nullable List<? extends @Nullable Object> elements
 ) {
 
     /**
@@ -38,14 +40,14 @@ public record SqlArray(
      */
     public static <T> SqlArray of(
         String elementType,
-        List<T> elements,
-        Function<? super T, ?> converter
+        @Nullable List<? extends @Nullable T> elements,
+        Function<? super T, ? extends @Nullable Object> converter
     ) {
         if (elements == null) {
             return new SqlArray(elementType, null);
         }
 
-        List<Object> converted = new ArrayList<>(elements.size());
+        List<@Nullable Object> converted = new ArrayList<>(elements.size());
 
         for (T element : elements) {
             converted.add(
@@ -64,7 +66,7 @@ public record SqlArray(
      * column is SQL {@code NULL}. A {@code NULL} element is read as
      * {@code null}.
      */
-    public static <T> List<T> getList(
+    public static <T> @Nullable List<@Nullable T> getList(
         ResultSet resultSet,
         int position,
         Class<T> elementType
@@ -77,11 +79,11 @@ public record SqlArray(
      * converts each element that is not {@code null} with {@code converter},
      * such as a label back into a generated enum constant.
      */
-    public static <E, T> List<T> getList(
+    public static <E, T> @Nullable List<@Nullable T> getList(
         ResultSet resultSet,
         int position,
         Class<E> elementType,
-        Function<? super E, ? extends T> converter
+        Function<? super E, ? extends @Nullable T> converter
     ) throws SQLException {
         Array array = resultSet.getArray(position);
 
@@ -90,7 +92,7 @@ public record SqlArray(
         }
 
         try {
-            List<T> elements = new ArrayList<>();
+            List<@Nullable T> elements = new ArrayList<>();
 
             try (ResultSet rows = array.getResultSet()) {
                 while (rows.next()) {
@@ -121,7 +123,7 @@ public record SqlArray(
      * is the same for the character and enum elements that are read as
      * {@code String} too.
      */
-    private static <E> E readElement(
+    private static <E> @Nullable E readElement(
         ResultSet rows,
         Class<E> elementType
     ) throws SQLException {

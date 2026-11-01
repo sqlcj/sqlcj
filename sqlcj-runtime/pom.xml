@@ -18,4 +18,16 @@
     <properties>
         <spotless.java.config>${project.basedir}/../config/eclipse-java-formatter.xml</spotless.java.config>
     </properties>
+
+    <dependencies>
+        <!--
+            The runtime's one dependency, which carries the nullness
+            annotations its API and the generated sources state. It is
+            annotation-only and depends on nothing itself.
+        -->
+        <dependency>
+            <groupId>org.jspecify</groupId>
+            <artifactId>jspecify</artifactId>
+        </dependency>
+    </dependencies>
 </project>

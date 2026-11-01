@@ -27,6 +27,12 @@
 # parameter filter, the 'now()' rename, the grouped book count, the upsert, and
 # the id-list read.
 #
+# The staged runtime's own dependencies are verified before the samples, from a
+# scratch project outside the repository that depends on the staged runtime
+# alone: its resolved compile classpath must hold exactly the staged runtime JAR
+# and one JSpecify JAR, the annotation-only artifact whose annotations the
+# generated sources name.
+#
 # The second external project, examples/spring-boot-postgresql, consumes the
 # staged Spring Boot starter. It is verified once per supported Spring Boot
 # version, each time from a fresh copy outside the repository: the staged CLI
@@ -127,6 +133,57 @@ reported_version=$(java -jar "${cli_jar}" version | tr -d '[:space:]')
 
 [ "${reported_version}" = "${version}" ] \
     || fail "the packaged CLI reports '${reported_version}' instead of '${version}'"
+
+log "Verifying the staged runtime's dependencies"
+
+runtime_consumer_dir="${workspace}/runtime-consumer"
+mkdir -p "${runtime_consumer_dir}"
+
+cat > "${runtime_consumer_dir}/pom.xml" <<POM
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>sqlcj-runtime-consumer</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.sqlcj</groupId>
+            <artifactId>sqlcj-runtime</artifactId>
+            <version>${version}</version>
+        </dependency>
+    </dependencies>
+</project>
+POM
+
+runtime_classpath_file="${workspace}/runtime-consumer-classpath.txt"
+
+mvn --batch-mode --no-transfer-progress \
+    -f "${runtime_consumer_dir}/pom.xml" \
+    -Dmaven.repo.local="${local_repo}" \
+    org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
+    "-Dmdep.outputFile=${runtime_classpath_file}"
+
+runtime_dependencies=$(tr ':' '\n' < "${runtime_classpath_file}" | sed '/^[[:space:]]*$/d')
+
+tr ':' '\n' < "${runtime_classpath_file}"
+
+runtime_dependency_count=$(printf '%s\n' "${runtime_dependencies}" | wc -l)
+
+[ "${runtime_dependency_count}" -eq 2 ] \
+    || fail "a consumer of the staged runtime resolves ${runtime_dependency_count} artifacts instead of 2: ${runtime_dependencies}"
+
+printf '%s\n' "${runtime_dependencies}" | grep -q "/sqlcj-runtime-${version}\.jar$" \
+    || fail "a consumer of the staged runtime does not resolve it: ${runtime_dependencies}"
+
+jspecify_count=$(printf '%s\n' "${runtime_dependencies}" | grep -c '/org/jspecify/jspecify/' || true)
+
+[ "${jspecify_count}" -eq 1 ] \
+    || fail "a consumer of the staged runtime resolves ${jspecify_count} JSpecify artifacts instead of 1: ${runtime_dependencies}"
 
 log "Verifying the handled configuration failure"
 

@@ -24,6 +24,7 @@
         <spotless.plugin.version>3.10.2</spotless.plugin.version>
         <spotless.eclipse.version>4.40</spotless.eclipse.version>
         <spotless.java.config>${project.basedir}/config/eclipse-java-formatter.xml</spotless.java.config>
+        <jspecify.version>1.0.1</jspecify.version>
         <picocli.version>4.7.7</picocli.version>
         <jackson.version>3.2.4</jackson.version>
         <jsqlparser.version>5.4</jsqlparser.version>
@@ -40,6 +41,11 @@
                 <groupId>org.sqlcj</groupId>
                 <artifactId>sqlcj-runtime</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jspecify</groupId>
+                <artifactId>jspecify</artifactId>
+                <version>${jspecify.version}</version>
             </dependency>
             <dependency>
                 <groupId>info.picocli</groupId>
