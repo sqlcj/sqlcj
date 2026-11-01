@@ -195,7 +195,11 @@ class JavaCodeGeneratorNamingTest {
 
         assertTrue(
             source.contains(
-                "public List<FindUsersResult> findUsers(@org.jspecify.annotations.Nullable Long executor1, @org.jspecify.annotations.Nullable String userId1, @org.jspecify.annotations.Nullable String userId2)"
+                "    public List<FindUsersResult> findUsers(\n"
+                    + "        @org.jspecify.annotations.Nullable Long executor1,\n"
+                    + "        @org.jspecify.annotations.Nullable String userId1,\n"
+                    + "        @org.jspecify.annotations.Nullable String userId2\n"
+                    + "    ) {"
             )
         );
 

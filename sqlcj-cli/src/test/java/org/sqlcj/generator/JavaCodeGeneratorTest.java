@@ -144,7 +144,8 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable String name"
+                "        @org.jspecify.annotations.Nullable Long id,\n"
+                    + "        @org.jspecify.annotations.Nullable String name\n"
             )
         );
     }
@@ -411,7 +412,10 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "public List<ListUsersByIdAndNameResult> listUsersByIdAndName(@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable String name)"
+                "    public List<ListUsersByIdAndNameResult> listUsersByIdAndName(\n"
+                    + "        @org.jspecify.annotations.Nullable Long id,\n"
+                    + "        @org.jspecify.annotations.Nullable String name\n"
+                    + "    ) {"
             )
         );
     }
@@ -481,7 +485,8 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "@org.jspecify.annotations.Nullable Long userId, @org.jspecify.annotations.Nullable Boolean enabled"
+                "        @org.jspecify.annotations.Nullable Long userId,\n"
+                    + "        @org.jspecify.annotations.Nullable Boolean enabled\n"
             )
         );
     }
@@ -767,8 +772,8 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "private static final RowMapper<StageSetting> getStageSettingRowMapper = "
-                    + "resultSet -> StageSetting.fromLabel(resultSet.getString(1));"
+                "private static final RowMapper<StageSetting> getStageSettingRowMapper =\n"
+                    + "            resultSet -> StageSetting.fromLabel(resultSet.getString(1));"
             ),
             source
         );
@@ -806,8 +811,8 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "private static final RowMapper<List<@org.jspecify.annotations.Nullable String>> getUserTagsRowMapper = "
-                    + "resultSet -> org.sqlcj.runtime.SqlArray.getList(resultSet, 1, String.class);"
+                "private static final RowMapper<List<@org.jspecify.annotations.Nullable String>> getUserTagsRowMapper =\n"
+                    + "            resultSet -> org.sqlcj.runtime.SqlArray.getList(resultSet, 1, String.class);"
             ),
             source
         );
@@ -1074,7 +1079,10 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public GetUserResult getUser(@org.jspecify.annotations.Nullable UUID externalId, @org.jspecify.annotations.Nullable OffsetDateTime createdAt)"
+                "    public GetUserResult getUser(\n"
+                    + "        @org.jspecify.annotations.Nullable UUID externalId,\n"
+                    + "        @org.jspecify.annotations.Nullable OffsetDateTime createdAt\n"
+                    + "    ) {"
             )
         );
 
@@ -1395,20 +1403,24 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindDocumentResult findDocument("
-                    + "@org.jspecify.annotations.Nullable String metadata, @org.jspecify.annotations.Nullable String profile,"
-                    + " @org.jspecify.annotations.Nullable String name, @org.jspecify.annotations.Nullable String bio)"
+                "    public FindDocumentResult findDocument(\n"
+                    + "        @org.jspecify.annotations.Nullable String metadata,\n"
+                    + "        @org.jspecify.annotations.Nullable String profile,\n"
+                    + "        @org.jspecify.annotations.Nullable String name,\n"
+                    + "        @org.jspecify.annotations.Nullable String bio\n"
+                    + "    ) {"
             )
         );
 
         assertTrue(
             source.contains(
-                "java.util.Arrays.asList("
-                    + "name, "
-                    + "new org.sqlcj.runtime.UntypedText(metadata), "
-                    + "new org.sqlcj.runtime.UntypedText(metadata), "
-                    + "bio, "
-                    + "new org.sqlcj.runtime.UntypedText(profile))"
+                "                java.util.Arrays.asList(\n"
+                    + "                        name,\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
+                    + "                        bio,\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(profile)\n"
+                    + "                ),"
             )
         );
 
@@ -1477,23 +1489,29 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindHostResult findHost("
-                    + "@org.jspecify.annotations.Nullable String handle, @org.jspecify.annotations.Nullable String address,"
-                    + " @org.jspecify.annotations.Nullable String network, @org.jspecify.annotations.Nullable String mac, @org.jspecify.annotations.Nullable String mac8,"
-                    + " @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> handles, @org.jspecify.annotations.Nullable String bio)"
+                "    public FindHostResult findHost(\n"
+                    + "        @org.jspecify.annotations.Nullable String handle,\n"
+                    + "        @org.jspecify.annotations.Nullable String address,\n"
+                    + "        @org.jspecify.annotations.Nullable String network,\n"
+                    + "        @org.jspecify.annotations.Nullable String mac,\n"
+                    + "        @org.jspecify.annotations.Nullable String mac8,\n"
+                    + "        @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> handles,\n"
+                    + "        @org.jspecify.annotations.Nullable String bio\n"
+                    + "    ) {"
             )
         );
 
         assertTrue(
             source.contains(
-                "java.util.Arrays.asList("
-                    + "new org.sqlcj.runtime.UntypedText(handle), "
-                    + "new org.sqlcj.runtime.UntypedText(address), "
-                    + "new org.sqlcj.runtime.UntypedText(network), "
-                    + "new org.sqlcj.runtime.UntypedText(mac), "
-                    + "new org.sqlcj.runtime.UntypedText(mac8), "
-                    + "new org.sqlcj.runtime.SqlArray(\"citext\", handles), "
-                    + "bio)"
+                "                java.util.Arrays.asList(\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(handle),\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(address),\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(network),\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(mac),\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(mac8),\n"
+                    + "                        new org.sqlcj.runtime.SqlArray(\"citext\", handles),\n"
+                    + "                        bio\n"
+                    + "                ),"
             )
         );
 
@@ -1552,17 +1570,20 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindDurationResult findDuration("
-                    + "@org.jspecify.annotations.Nullable SqlInterval age, @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable SqlInterval> ages)"
+                "    public FindDurationResult findDuration(\n"
+                    + "        @org.jspecify.annotations.Nullable SqlInterval age,\n"
+                    + "        @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable SqlInterval> ages\n"
+                    + "    ) {"
             )
         );
 
         assertTrue(
             source.contains(
-                "java.util.Arrays.asList("
-                    + "new org.sqlcj.runtime.UntypedText(age == null ? null : age.format()), "
-                    + "org.sqlcj.runtime.SqlArray.of("
-                    + "\"interval\", ages, org.sqlcj.runtime.SqlInterval::format))"
+                "                java.util.Arrays.asList(\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(age == null ? null : age.format()),\n"
+                    + "                        org.sqlcj.runtime.SqlArray.of("
+                    + "\"interval\", ages, org.sqlcj.runtime.SqlInterval::format)\n"
+                    + "                ),"
             )
         );
 
@@ -1635,7 +1656,8 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "@org.jspecify.annotations.Nullable String metadata, @org.jspecify.annotations.Nullable String profile"
+                "        @org.jspecify.annotations.Nullable String metadata,\n"
+                    + "        @org.jspecify.annotations.Nullable String profile\n"
             )
         );
         assertTrue(source.contains("resultSet.getString(1)"));
@@ -1802,7 +1824,10 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "public List<FindUsersResult> findUsers(@org.jspecify.annotations.Nullable Long id1, @org.jspecify.annotations.Nullable Long id2)"
+                "    public List<FindUsersResult> findUsers(\n"
+                    + "        @org.jspecify.annotations.Nullable Long id1,\n"
+                    + "        @org.jspecify.annotations.Nullable Long id2\n"
+                    + "    ) {"
             )
         );
     }
@@ -2212,7 +2237,10 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindUserResult findUser(@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable Boolean active)"
+                "    public FindUserResult findUser(\n"
+                    + "        @org.jspecify.annotations.Nullable Long id,\n"
+                    + "        @org.jspecify.annotations.Nullable Boolean active\n"
+                    + "    ) {"
             )
         );
 
@@ -2253,7 +2281,10 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindUserResult findUser(@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable String name)"
+                "    public FindUserResult findUser(\n"
+                    + "        @org.jspecify.annotations.Nullable Long id,\n"
+                    + "        @org.jspecify.annotations.Nullable String name\n"
+                    + "    ) {"
             )
         );
 
@@ -2705,8 +2736,12 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "batch.stream().map(params -> java.util.Arrays.asList("
-                    + "params.id1(), params.name(), params.id2(), params.name())).toList()"
+                "                batch.stream().map(params -> java.util.Arrays.asList(\n"
+                    + "                        params.id1(),\n"
+                    + "                        params.name(),\n"
+                    + "                        params.id2(),\n"
+                    + "                        params.name()\n"
+                    + "                )).toList()"
             )
         );
 
@@ -2767,13 +2802,14 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "batch.stream().map(params -> java.util.Arrays.asList("
-                    + "new org.sqlcj.runtime.UntypedText("
-                    + "params.setting() == null ? null : params.setting().label()), "
-                    + "new org.sqlcj.runtime.UntypedText(params.payload()), "
-                    + "new org.sqlcj.runtime.UntypedText("
-                    + "params.span() == null ? null : params.span().format()), "
-                    + "new org.sqlcj.runtime.SqlArray(\"varchar\", params.tags()))).toList()"
+                "                batch.stream().map(params -> java.util.Arrays.asList(\n"
+                    + "                        new org.sqlcj.runtime.UntypedText("
+                    + "params.setting() == null ? null : params.setting().label()),\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(params.payload()),\n"
+                    + "                        new org.sqlcj.runtime.UntypedText("
+                    + "params.span() == null ? null : params.span().format()),\n"
+                    + "                        new org.sqlcj.runtime.SqlArray(\"varchar\", params.tags())\n"
+                    + "                )).toList()"
             )
         );
 
@@ -2783,6 +2819,363 @@ class JavaCodeGeneratorTest {
         files.addAll(codeGenerator.generateEnums());
 
         assertCompiles(files.toArray(new GeneratedFile[0]));
+    }
+
+    /**
+     * A method declaration that ends at exactly column 120, its member
+     * indentation and its trailing brace counted, stays on one line.
+     */
+    @Test
+    void shouldKeepAMethodDeclarationOfExactlyTheColumnLimitOnOneLine() throws IOException {
+        GeneratedFile file = generate(noteQuery("note"));
+
+        String declaration = "    public int updateNotes("
+            + "@org.jspecify.annotations.Nullable Long id, "
+            + "@org.jspecify.annotations.Nullable String note) {";
+
+        assertEquals(120, declaration.length());
+
+        String source = file.content();
+
+        assertTrue(source.contains(declaration + "\n"), source);
+
+        assertCompiles(file);
+    }
+
+    /**
+     * One column further the declaration writes each parameter, with its
+     * annotation, on a line of its own, indented one level past the method,
+     * and closes with {@code ) {} at the method's column.
+     */
+    @Test
+    void shouldWrapAMethodDeclarationOneColumnPastTheLimit() throws IOException {
+        GeneratedFile file = generate(noteQuery("notes"));
+
+        String oneLine = "    public int updateNotes("
+            + "@org.jspecify.annotations.Nullable Long id, "
+            + "@org.jspecify.annotations.Nullable String notes) {";
+
+        assertEquals(121, oneLine.length());
+
+        String source = file.content();
+
+        assertFalse(source.contains(oneLine), source);
+
+        assertTrue(
+            source.contains(
+                "    public int updateNotes(\n"
+                    + "        @org.jspecify.annotations.Nullable Long id,\n"
+                    + "        @org.jspecify.annotations.Nullable String notes\n"
+                    + "    ) {"
+            ),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * The one {@code UpdateNotes} query of the two declaration tests, whose
+     * declaration reaches exactly the limit with a parameter named
+     * {@code note} and passes it by one column with one named {@code notes}.
+     */
+    private QueryModel noteQuery(String parameterName) {
+        return new QueryModel(
+            "UpdateNotes",
+            QueryType.EXEC,
+            "tasks",
+            """
+                UPDATE tasks SET note = ?
+                WHERE id = ?
+                """,
+            List.of(2, 1),
+            List.of(),
+            List.of(
+                new QueryParameter(1, "id", ColumnType.BIGINT),
+                new QueryParameter(2, parameterName, ColumnType.VARCHAR)
+            ),
+            null
+        );
+    }
+
+    /**
+     * An {@code :exec} whose bound-argument list passes the limit writes each
+     * argument on a line of its own, continued one call level past the line
+     * that opens the list, with the closing parenthesis at that line's column.
+     */
+    @Test
+    void shouldWrapTheArgumentListOfALongExec() throws IOException {
+        GeneratedFile file = generate(
+            new QueryModel(
+                "InsertTask",
+                QueryType.EXEC,
+                "tasks",
+                """
+                    INSERT INTO tasks (project_id, title, metadata, tags)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                List.of(1, 2, 3, 4),
+                List.of(),
+                taskParameters(),
+                null
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                "    public int insertTask(\n"
+                    + "        @org.jspecify.annotations.Nullable Long projectId,\n"
+                    + "        @org.jspecify.annotations.Nullable String title,\n"
+                    + "        @org.jspecify.annotations.Nullable String metadata,\n"
+                    + "        @org.jspecify.annotations.Nullable List<"
+                    + "@org.jspecify.annotations.Nullable String> tags\n"
+                    + "    ) {\n"
+                    + "        return executor.execute(\n"
+                    + "                \"UsersRepository\",\n"
+                    + "                \"InsertTask\",\n"
+                    + "                \"\"\"\n"
+                    + "                INSERT INTO tasks (project_id, title, metadata, tags)\n"
+                    + "                VALUES (?, ?, ?, ?)\n"
+                    + "                \"\"\",\n"
+                    + "                java.util.Arrays.asList(\n"
+                    + "                        projectId,\n"
+                    + "                        title,\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
+                    + "                        new org.sqlcj.runtime.SqlArray(\"varchar\", tags)\n"
+                    + "                )\n"
+                    + "        );\n"
+                    + "    }"
+            ),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /** A read's wrapped list keeps the row mapper on the argument after it. */
+    @Test
+    void shouldWrapTheArgumentListOfALongReadBeforeItsRowMapper() throws IOException {
+        GeneratedFile file = generate(
+            new QueryModel(
+                "FindTask",
+                QueryType.ONE,
+                "tasks",
+                """
+                    SELECT id, title
+                    FROM tasks
+                    WHERE project_id = ?
+                      AND title = ?
+                      AND metadata = ?
+                      AND tags = ?
+                    """,
+                List.of(1, 2, 3, 4),
+                List.of(
+                    new QueryColumn("id", ColumnType.BIGINT, false),
+                    new QueryColumn("title", ColumnType.VARCHAR, true)
+                ),
+                taskParameters(),
+                null
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                "    public FindTaskResult findTask(\n"
+                    + "        @org.jspecify.annotations.Nullable Long projectId,\n"
+                    + "        @org.jspecify.annotations.Nullable String title,\n"
+                    + "        @org.jspecify.annotations.Nullable String metadata,\n"
+                    + "        @org.jspecify.annotations.Nullable List<"
+                    + "@org.jspecify.annotations.Nullable String> tags\n"
+                    + "    ) {\n"
+                    + "        return executor.queryOne(\n"
+                    + "                \"UsersRepository\",\n"
+                    + "                \"FindTask\",\n"
+                    + "                \"\"\"\n"
+                    + "                SELECT id, title\n"
+                    + "                FROM tasks\n"
+                    + "                WHERE project_id = ?\n"
+                    + "                  AND title = ?\n"
+                    + "                  AND metadata = ?\n"
+                    + "                  AND tags = ?\n"
+                    + "                \"\"\",\n"
+                    + "                java.util.Arrays.asList(\n"
+                    + "                        projectId,\n"
+                    + "                        title,\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
+                    + "                        new org.sqlcj.runtime.SqlArray(\"varchar\", tags)\n"
+                    + "                ),\n"
+                    + "                findTaskRowMapper\n"
+                    + "        );\n"
+                    + "    }"
+            ),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /** The parameters both long single executions bind, in logical order. */
+    private List<QueryParameter> taskParameters() {
+        return List.of(
+            new QueryParameter(1, "projectId", ColumnType.BIGINT),
+            new QueryParameter(2, "title", ColumnType.VARCHAR),
+            new QueryParameter(3, "metadata", ColumnType.JSONB),
+            new QueryParameter(4, "tags", ColumnType.VARCHAR, null, true)
+        );
+    }
+
+    /**
+     * A batch method wraps its declaration like a single execution and keeps
+     * the pipeline of a wrapped row on the lines that open and close its list.
+     */
+    @Test
+    void shouldWrapALongBatchDeclarationAndItsRow() throws IOException {
+        GeneratedFile file = generate(
+            new QueryModel(
+                "InsertScheduledMaintenanceWindowAssignments",
+                QueryType.BATCH_EXEC,
+                "assignments",
+                """
+                    INSERT INTO assignments (window_id, assignee_id, starts_at)
+                    VALUES (?, ?, ?)
+                    """,
+                List.of(1, 2, 3),
+                List.of(),
+                List.of(
+                    new QueryParameter(1, "windowId", ColumnType.BIGINT),
+                    new QueryParameter(2, "assigneeId", ColumnType.BIGINT),
+                    new QueryParameter(3, "startsAt", ColumnType.DATE)
+                ),
+                null
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                "    public int[] insertScheduledMaintenanceWindowAssignments(\n"
+                    + "        List<InsertScheduledMaintenanceWindowAssignmentsParams> batch\n"
+                    + "    ) {\n"
+                    + "        return executor.executeBatch(\n"
+                    + "                \"UsersRepository\",\n"
+                    + "                \"InsertScheduledMaintenanceWindowAssignments\",\n"
+                    + "                \"\"\"\n"
+                    + "                INSERT INTO assignments (window_id, assignee_id, starts_at)\n"
+                    + "                VALUES (?, ?, ?)\n"
+                    + "                \"\"\",\n"
+                    + "                batch.stream().map(params -> java.util.Arrays.asList(\n"
+                    + "                        params.windowId(),\n"
+                    + "                        params.assigneeId(),\n"
+                    + "                        params.startsAt()\n"
+                    + "                )).toList()\n"
+                    + "        );\n"
+                    + "    }"
+            ),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A {@code singletonList} wraps like an {@code Arrays.asList}, and the one
+     * argument that alone passes the limit stays on its line, as the one
+     * parameter of the declaration does.
+     */
+    @Test
+    void shouldWrapASingletonListPastTheLimit() throws IOException {
+        GeneratedFile file = generate(
+            new QueryModel(
+                "DeleteTasksScheduledAt",
+                QueryType.EXEC,
+                "tasks",
+                """
+                    DELETE FROM tasks
+                    WHERE scheduled_at = ANY(?)
+                    """,
+                List.of(1),
+                List.of(),
+                List.of(
+                    new QueryParameter(
+                        1,
+                        "scheduledCompletionTimestamps",
+                        ColumnType.TIMESTAMP_WITH_TIME_ZONE,
+                        null,
+                        true
+                    )
+                ),
+                null
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                "    public int deleteTasksScheduledAt(\n"
+                    + "        @org.jspecify.annotations.Nullable List<"
+                    + "@org.jspecify.annotations.Nullable OffsetDateTime> "
+                    + "scheduledCompletionTimestamps\n"
+                    + "    ) {\n"
+                    + "        return executor.execute(\n"
+                    + "                \"UsersRepository\",\n"
+                    + "                \"DeleteTasksScheduledAt\",\n"
+                    + "                \"\"\"\n"
+                    + "                DELETE FROM tasks\n"
+                    + "                WHERE scheduled_at = ANY(?)\n"
+                    + "                \"\"\",\n"
+                    + "                java.util.Collections.singletonList(\n"
+                    + "                        new org.sqlcj.runtime.SqlArray("
+                    + "\"timestamptz\", scheduledCompletionTimestamps)\n"
+                    + "                )\n"
+                    + "        );\n"
+                    + "    }"
+            ),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A value row mapper whose line passes the limit continues its mapping on
+     * the next line, one call level past its field.
+     */
+    @Test
+    void shouldWrapAValueRowMapperPastTheLimit() throws IOException {
+        GeneratedFile file = generate(
+            new QueryModel(
+                "ListEveryProjectAndTaskTitle",
+                QueryType.MANY,
+                "tasks",
+                """
+                    SELECT title
+                    FROM tasks
+                    """,
+                List.of(),
+                List.of(new QueryColumn("title", ColumnType.VARCHAR, false)),
+                List.of(),
+                null
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                "    private static final RowMapper<String> "
+                    + "listEveryProjectAndTaskTitleRowMapper =\n"
+                    + "            resultSet -> resultSet.getObject(1, String.class);"
+            ),
+            source
+        );
+
+        assertCompiles(file);
     }
 
     /**
@@ -3806,8 +4199,9 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             generatedEnum.content().contains(
-                "public static @org.jspecify.annotations.Nullable StageSetting fromLabel("
-                    + "@org.jspecify.annotations.Nullable String label) {"
+                "    public static @org.jspecify.annotations.Nullable StageSetting fromLabel(\n"
+                    + "        @org.jspecify.annotations.Nullable String label\n"
+                    + "    ) {"
             ),
             generatedEnum.content()
         );
@@ -4665,16 +5059,20 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindStageResult findStage(@org.jspecify.annotations.Nullable StageSetting setting, @org.jspecify.annotations.Nullable String handle)"
+                "    public FindStageResult findStage(\n"
+                    + "        @org.jspecify.annotations.Nullable StageSetting setting,\n"
+                    + "        @org.jspecify.annotations.Nullable String handle\n"
+                    + "    ) {"
             )
         );
 
         assertTrue(
             source.contains(
-                "java.util.Arrays.asList("
-                    + "handle, "
-                    + "new org.sqlcj.runtime.UntypedText(setting == null ? null : setting.label()), "
-                    + "new org.sqlcj.runtime.UntypedText(setting == null ? null : setting.label()))"
+                "                java.util.Arrays.asList(\n"
+                    + "                        handle,\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(setting == null ? null : setting.label()),\n"
+                    + "                        new org.sqlcj.runtime.UntypedText(setting == null ? null : setting.label())\n"
+                    + "                ),"
             )
         );
 
@@ -5017,7 +5415,9 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindStageResult findStage(@org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable %s> values)"
+                ("    public FindStageResult findStage(\n"
+                    + "        @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable %s> values\n"
+                    + "    ) {")
                     .formatted(javaType)
             )
         );
@@ -5079,7 +5479,9 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindStageResult findStage(@org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> marks)"
+                "    public FindStageResult findStage(\n"
+                    + "        @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> marks\n"
+                    + "    ) {"
             )
         );
 
@@ -5134,15 +5536,18 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public FindStageResult findStage(@org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable StageSetting> pastSettings)"
+                "    public FindStageResult findStage(\n"
+                    + "        @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable StageSetting> pastSettings\n"
+                    + "    ) {"
             )
         );
 
         assertTrue(
             source.contains(
-                "java.util.Arrays.asList("
-                    + "org.sqlcj.runtime.SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label), "
-                    + "org.sqlcj.runtime.SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label))"
+                "                java.util.Arrays.asList(\n"
+                    + "                        org.sqlcj.runtime.SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label),\n"
+                    + "                        org.sqlcj.runtime.SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label)\n"
+                    + "                ),"
             )
         );
 

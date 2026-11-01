@@ -1588,7 +1588,10 @@ in its `SET` clause, so the generated method takes `(id, bio)` and binds
 `(bio, id)`:
 
 ```java
-public int updateAuthorBio(@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable String bio) {
+public int updateAuthorBio(
+    @org.jspecify.annotations.Nullable Long id,
+    @org.jspecify.annotations.Nullable String bio
+) {
     return executor.execute(
             "AuthorRepository",
             "UpdateAuthorBio",
@@ -1906,6 +1909,23 @@ included.
   `org.sqlcj.runtime.SqlInterval.parse`, each of which is nullable, so a build
   that runs a null checker over its own sources excludes the generated ones, as
   is usual for generated code.
+- A method declaration that has parameters, a bound-argument list built with
+  `java.util.Collections.singletonList` or `java.util.Arrays.asList`, and a
+  value row mapper are written wrapped when one line would pass 120 columns,
+  the repository's own formatter limit and an IDE's default right margin,
+  counted with the member indentation and the trailing punctuation: the
+  declaration puts each parameter, with its annotation, on a line of its own
+  and closes with `) {` at the method's column, as a row, result, and
+  `<QueryName>Params` record already does; the argument list puts each
+  argument on a line of its own, one call continuation past the line that
+  opens the list, with its closing parenthesis at that line's column, a batch
+  row keeping `batch.stream().map(params -> ...` and `)).toList()` on those
+  two lines; and a value row mapper continues `resultSet -> ...` on the next
+  line. A declaration without parameters has nothing to wrap and stays on one
+  line; a line inside a SQL text block stays as written, because it is the SQL
+  the query source states; and a single parameter or argument that alone
+  passes 120 stays on its line. The limit is fixed: sqlcj writes one output
+  style and has no formatting setting.
 - Generated repository source imports only `org.sqlcj.runtime.QueryExecutor`,
   `org.sqlcj.runtime.RowMapper`, `java.util.List`, `java.util.Optional` when the
   entry declares an `:optional` query, and the JDK types of the mapped columns,
@@ -1982,7 +2002,10 @@ public final class AuthorRepository {
      * Table: authors
      * Type: ONE
      */
-    public AuthorsRow createAuthor(@org.jspecify.annotations.Nullable String name, @org.jspecify.annotations.Nullable String bio) {
+    public AuthorsRow createAuthor(
+        @org.jspecify.annotations.Nullable String name,
+        @org.jspecify.annotations.Nullable String bio
+    ) {
         return executor.queryOne(
                 "AuthorRepository",
                 "CreateAuthor",
