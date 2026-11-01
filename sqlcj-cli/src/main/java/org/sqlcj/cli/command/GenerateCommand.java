@@ -35,7 +35,7 @@ public class GenerateCommand implements Callable<Integer> {
             resolved against the current directory, while relative paths \
             inside the file are resolved against its own directory. \
             Without this option, sqlcj.yaml or sqlcj.yml in the current \
-            directory is used, and holding both is an error.
+            directory is used, and holding both is an error.\
             """
     )
     Path configFile;

@@ -1,7 +1,8 @@
 package org.sqlcj.cli.command;
 
-import org.sqlcj.Main;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Model.CommandSpec;
+import picocli.CommandLine.Spec;
 
 @Command(
     name = "version",
@@ -9,9 +10,13 @@ import picocli.CommandLine.Command;
 )
 public class VersionCommand implements Runnable {
 
+    @Spec
+    CommandSpec spec;
+
     @Override
     public void run() {
-        String version = Main.class.getPackage().getImplementationVersion();
-        System.out.println(version);
+        spec.root()
+            .commandLine()
+            .printVersionHelp(spec.commandLine().getOut());
     }
 }
