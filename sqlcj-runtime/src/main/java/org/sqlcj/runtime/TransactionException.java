@@ -6,6 +6,13 @@ package org.sqlcj.runtime;
  * not release its connection. The {@code SQLException} the JDBC driver raised is
  * always the cause.
  *
+ * <p>A commit failure whose SQLSTATE names a database-neutral type is the
+ * exception of that type instead, a {@link TransactionConflictException} for
+ * the serialization failure or deadlock PostgreSQL reports at the
+ * {@code COMMIT} included, so the same catch covers a conflict wherever the
+ * database reported it. Every other commit failure, and every failure to
+ * begin, to roll back, and to release, is this type.
+ *
  * <p>A failure of the callback's own work is never reported this way. A
  * callback's exception or error is rethrown unchanged, and a failing generated
  * operation still raises {@link QueryExecutionException}, which names the query.

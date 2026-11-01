@@ -19,6 +19,7 @@ import org.sqlcj.config.JavaConfig;
 import org.sqlcj.config.SqlConfig;
 import org.sqlcj.runtime.QueryExecutionException;
 import org.sqlcj.runtime.QueryExecutor;
+import org.sqlcj.runtime.UniqueViolationException;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -34,6 +35,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
@@ -303,6 +305,39 @@ public abstract class PostgresApplicationScenarios {
 
         assertEquals(List.of(), authorNames(authors()));
         assertEquals(List.of(), bookTitles(books()));
+    }
+
+    /**
+     * A duplicate key a generated write hits inside a Spring-managed
+     * transaction reaches the caller as the runtime's own
+     * {@link UniqueViolationException}, with PostgreSQL's SQLSTATE and the
+     * driver's exception as its cause: the starter converts no exception of
+     * the runtime into Spring's {@code DataAccessException} family. The
+     * transaction it failed in is rolled back, so only the row written before
+     * it remains.
+     */
+    @Test
+    void raisesTheRuntimeUniqueViolationInsideATransaction() {
+        assertEquals(1, insertAuthor(authors(), 1L, "Alice"));
+
+        UniqueViolationException failure = assertThrows(
+            UniqueViolationException.class,
+            () -> run(() -> {
+                assertEquals(1, insertAuthor(authors(), 2L, "Bob"));
+
+                insertAuthor(authors(), 1L, "Duplicate");
+            })
+        );
+
+        assertEquals(
+            "Failed to execute query 'InsertAuthor' in AuthorsRepository",
+            failure.getMessage()
+        );
+
+        assertEquals("23505", failure.sqlState());
+        assertInstanceOf(SQLException.class, failure.getCause());
+
+        assertEquals(List.of("Alice"), storedAuthorNames());
     }
 
     @Test

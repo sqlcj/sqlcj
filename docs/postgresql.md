@@ -82,9 +82,14 @@ Each call manages the transaction by these rules:
 - Any exception or error the callback throws rolls the transaction back and is
   rethrown as the same instance, unchanged, including a
   `QueryCardinalityException` a generated operation raised.
-- A failure to begin or to commit raises
-  `org.sqlcj.runtime.TransactionException` with the `SQLException` as its cause.
-  If the transaction fails to begin, the callback does not run.
+- A failure to begin raises `org.sqlcj.runtime.TransactionException` with the
+  `SQLException` as its cause, and the callback does not run.
+- A failure to commit raises the exception its SQLSTATE names in the mapping
+  below, such as `TransactionConflictException` for the `40001` PostgreSQL
+  reports at the `COMMIT` of a `SERIALIZABLE` transaction, and
+  `TransactionException` for every other commit failure. Either way the
+  message is `Failed to commit the transaction` and the `SQLException` is the
+  cause.
 - A failure to roll back is attached to the callback's failure as a suppressed
   `TransactionException`.
 - Auto-commit is restored to `true` only when the call disabled it, and only
@@ -103,6 +108,17 @@ Failed to begin a transaction
 Failed to commit the transaction
 Failed to roll back the transaction
 Failed to release the transaction's connection
+```
+
+Where PostgreSQL reports a conflict depends on the isolation level and on
+constraint deferral, which the application chooses, and not on what went
+wrong, so a mapped commit failure carries the same type a mapped statement
+failure does. A retry loop around `inTransaction` therefore needs one `catch`:
+
+```java
+catch (TransactionConflictException conflict) {
+    // The whole transaction was rolled back and may be run again.
+}
 ```
 
 Each call uses its own connection, so a call made inside another call's callback
@@ -135,9 +151,78 @@ the message `Failed to execute query '<query>' in <repository>` and the
 Failed to execute query 'GetAuthor' in AuthorRepository
 ```
 
+A failure the database names precisely raises a subclass of
+`QueryExecutionException` named by what went wrong rather than by the database
+that reported it, so an application reacts to the failure it expects without
+unwrapping the `SQLException`:
+
+```text
+QueryExecutionException                  any failure of a generated operation
+├── QueryCardinalityException            a row count an annotation forbids
+├── ConstraintViolationException         any constraint violation
+│   ├── UniqueViolationException         a duplicate key
+│   ├── ForeignKeyViolationException     a reference that is not satisfied
+│   ├── NotNullViolationException        a NULL in a NOT NULL column
+│   └── CheckViolationException          a row a CHECK rejects
+├── TransactionConflictException         the transaction was rolled back
+└── QueryTimeoutException                the statement was cancelled
+```
+
+Every one of them is a `QueryExecutionException`, so code that catches that
+type keeps catching every failure. The type is chosen by the SQLSTATE the
+driver reported:
+
+| SQLSTATE | PostgreSQL condition | Exception |
+| --- | --- | --- |
+| `23505` | `unique_violation` | `UniqueViolationException` |
+| `23503` | `foreign_key_violation` | `ForeignKeyViolationException` |
+| `23502` | `not_null_violation` | `NotNullViolationException` |
+| `23514` | `check_violation` | `CheckViolationException` |
+| any other code of class `23` | integrity constraint violation, such as `23P01` | `ConstraintViolationException` |
+| `40001` | `serialization_failure` | `TransactionConflictException` |
+| `40P01` | `deadlock_detected` | `TransactionConflictException` |
+| `57014` | `query_canceled` | `QueryTimeoutException` |
+| any other code, or none | any other failure | `QueryExecutionException` |
+
+`QueryExecutionException.sqlState()` returns the SQLSTATE of the underlying
+`SQLException`, so a code no row above covers stays reachable all the same,
+and `null` when the cause is no `SQLException`, as for a cardinality failure,
+or when the driver reported no code.
+
+The exceptions carry no constraint name: the JDBC API does not expose one, and
+the runtime depends on no driver. The name PostgreSQL reported is in the
+message of the `SQLException` that is the cause.
+
+What the mapping covers and what it does not:
+
+- A failed statement of every operation and of both construction paths is
+  mapped.
+- A batch is mapped by the SQLSTATE of the exception it raised. The PostgreSQL
+  driver puts the failed statement's SQLSTATE on the `BatchUpdateException`
+  itself, in auto-commit mode and outside it, so a batch raises the same type
+  the same statement raises alone.
+- The commit of a transaction the runtime owns is mapped: the commit of a
+  batch that is its own transaction, and the commit of `JdbcTransactions`,
+  because PostgreSQL reports a `SERIALIZABLE` conflict and a deferred
+  constraint there rather than at the statement.
+- The connection steps around a statement stay a plain
+  `QueryExecutionException`, whatever code they carry, because the mapped
+  types name what a statement did: obtaining a connection, closing an acquired
+  one, reading, disabling, and restoring a batch's auto-commit, and rolling a
+  failed batch back. `sqlState()` still reports their code.
+- `57014` is a `QueryTimeoutException` whatever cancelled the statement.
+  PostgreSQL gives that code to a `statement_timeout`, to
+  `Statement.setQueryTimeout`, and to a cancel request alike, including a
+  statement that was waiting for a row lock. A `lock_timeout`, on the other
+  hand, reports `55P03`, which stays a plain `QueryExecutionException`.
+- Nothing is retried. A `TransactionConflictException` reports that the
+  database rolled the transaction back, and the application decides whether to
+  run the work again.
+
 A row count an annotation does not allow raises
 `org.sqlcj.runtime.QueryCardinalityException`, a subclass of
-`QueryExecutionException` that carries only a message:
+`QueryExecutionException` that carries only a message, so its `sqlState()` is
+`null`:
 
 ```text
 Query 'GetAuthor' in AuthorRepository returned no row; expected exactly one
@@ -175,10 +260,10 @@ an empty array. Its transaction handling follows the connection it runs on:
   `JdbcTransactions`.
 
 Every `SQLException` a batch raises, a `java.sql.BatchUpdateException`
-included, is translated into the same `QueryExecutionException` as every other
-operation's, and a failure to roll back, to restore auto-commit, or to close
-the obtained connection that follows it is attached to that failure as a
-suppressed `QueryExecutionException`. An unchecked failure of a batch on a
+included, is translated exactly as every other operation's is, by the SQLSTATE
+of that exception itself, and a failure to roll back, to restore auto-commit,
+or to close the obtained connection that follows it is attached to that
+failure as a suppressed `QueryExecutionException`. An unchecked failure of a batch on a
 connection obtained from a `DataSource` is rethrown unchanged, as the same
 instance, after the batch is rolled back, when auto-commit was disabled for it,
 and the connection is closed, with a rollback, restore, or close failure
@@ -1933,3 +2018,51 @@ Connection ownership and transactions:
   `JpaTransactionManager` transaction; and
   `shouldSeeAPendingJpaWriteOnlyAfterAFlush` covers the deferred `persist` a
   generated read finds only after `EntityManager.flush()`.
+
+The exception a failure raises:
+
+- `JdbcQueryExecutorTest.shouldRaiseTheMappedExceptionOfEverySqlStateOnADataSourceOperation`
+  and
+  `JdbcQueryExecutorTest.shouldRaiseTheMappedExceptionOfEverySqlStateOnACallerOwnedConnection`
+  drive `23505`, `23503`, `23502`, `23514`, `23P01`, `40001`, `40P01`,
+  `57014`, an unmapped `42P01`, and a failure reporting no code at all through
+  `queryOne`, `queryOptional`, `queryMany`, `execute`, and `executeBatch` on
+  both construction paths, asserting the exact type, the message naming the
+  query, the same cause instance, and `sqlState()`.
+- `JdbcQueryExecutorTest.shouldKeepAConnectionFailureCarryingAMappedSqlStatePlain`
+  keeps a `40P01` on obtaining and on closing a connection a plain
+  `QueryExecutionException`,
+  `JdbcQueryExecutorTest.shouldMapTheFailedCommitOfABatchOnAnAcquiredConnection`
+  maps the `40001` of the commit of a batch that is its own transaction, and
+  `JdbcQueryExecutorTest.shouldReportNoSqlStateForACardinalityFailure` covers
+  the `null` `sqlState()` of a cardinality failure.
+- `JdbcTransactionsTest.shouldRaiseTheMappedExceptionOfACommitFailure` maps a
+  commit failing with `40001`, `40P01`, and `23503`, with the unchanged
+  message, cause, auto-commit handling, closing, and suppressed release
+  failure, and
+  `JdbcTransactionsTest.shouldKeepABeginOrRollbackFailureCarryingAMappedSqlStateATransactionException`
+  keeps a begin and a rollback failure a `TransactionException`.
+- `NullnessAnnotationsTest.shouldAllowAFailureWithoutASqlState` reads
+  `sqlState()` back as `@Nullable`.
+- `PostgresIntegrationTest.shouldRaiseTheMappedConstraintViolationsOfGeneratedWritesAgainstPostgres`
+  raises a unique, foreign-key, not-null, and check violation against
+  PostgreSQL 16 through a generated `:exec` method and through a generated
+  `:batchexec` method of the same statement;
+  `PostgresIntegrationTest.shouldRaiseTheMappedSerializationFailureOfGeneratedWritesAgainstPostgres`
+  raises `40001` in both forms from a `REPEATABLE READ` transaction whose row
+  another connection changed and committed; and
+  `PostgresIntegrationTest.shouldRaiseTheMappedStatementTimeoutOfGeneratedWritesAgainstPostgres`
+  raises `57014` in both forms from a write that waits for a locked row until
+  `statement_timeout` cancels it. Each asserts the type, `sqlState()`, and the
+  driver's own exception as the cause, the `BatchUpdateException` of a batch
+  included.
+- `PostgresIntegrationTest.shouldRaiseTheMappedSerializationFailureOfACommittedTransactionAgainstPostgres`
+  makes two `SERIALIZABLE` transactions of generated reads and writes conflict
+  so that PostgreSQL reports `40001` at the second `COMMIT`, which
+  `JdbcTransactions` raises as a `TransactionConflictException` with the
+  commit message.
+- `PostgresApplicationScenarios.raisesTheRuntimeUniqueViolationInsideATransaction`
+  proves that a duplicate key inside a Spring-managed transaction reaches the
+  caller as the runtime's `UniqueViolationException` with `sqlState()`
+  `23505`, in the JDBC and in the JPA application, so the starter converts
+  none of these exceptions.

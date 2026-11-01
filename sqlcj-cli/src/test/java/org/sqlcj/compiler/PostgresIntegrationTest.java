@@ -5,17 +5,25 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
+import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.api.io.TempDir;
 import org.postgresql.ds.PGSimpleDataSource;
+import org.postgresql.util.PSQLException;
 import org.sqlcj.config.Config;
 import org.sqlcj.config.JavaConfig;
 import org.sqlcj.config.SqlConfig;
+import org.sqlcj.runtime.CheckViolationException;
+import org.sqlcj.runtime.ForeignKeyViolationException;
 import org.sqlcj.runtime.JdbcQueryExecutor;
 import org.sqlcj.runtime.JdbcTransactions;
+import org.sqlcj.runtime.NotNullViolationException;
 import org.sqlcj.runtime.QueryCardinalityException;
 import org.sqlcj.runtime.QueryExecutionException;
 import org.sqlcj.runtime.QueryExecutor;
+import org.sqlcj.runtime.QueryTimeoutException;
 import org.sqlcj.runtime.SqlInterval;
+import org.sqlcj.runtime.TransactionConflictException;
+import org.sqlcj.runtime.UniqueViolationException;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -649,6 +657,61 @@ class PostgresIntegrationTest {
         -- name: DeleteUsers :batchexec
         DELETE
         FROM users
+        WHERE id = $1;
+        """;
+
+    /**
+     * Writes used by the constraint tests, each declared once as a single
+     * operation and once as a batch of the same statement, over the tables
+     * whose unique, foreign-key, not-null, and check constraints they break.
+     */
+    private static final String CONSTRAINT_WRITE_QUERIES = """
+        -- name: InsertCustomer :exec
+        INSERT INTO customers (id, name)
+        VALUES ($1, $2);
+
+        -- name: InsertCustomers :batchexec
+        INSERT INTO customers (id, name)
+        VALUES ($1, $2);
+
+        -- name: InsertOrder :exec
+        INSERT INTO customer_orders (id, customer_id, quantity)
+        VALUES ($1, $2, $3);
+
+        -- name: InsertOrders :batchexec
+        INSERT INTO customer_orders (id, customer_id, quantity)
+        VALUES ($1, $2, $3);
+
+        -- name: RenameCustomer :exec
+        UPDATE customers
+        SET name = $2
+        WHERE id = $1;
+
+        -- name: RenameCustomers :batchexec
+        UPDATE customers
+        SET name = $2
+        WHERE id = $1;
+        """;
+
+    /**
+     * Queries used by the conflict and timeout tests: one read that takes the
+     * transaction's snapshot and the same write as a single operation and as a
+     * batch.
+     */
+    private static final String CONFLICT_QUERIES = """
+        -- name: ListUserNames :many
+        SELECT name
+        FROM users
+        ORDER BY id;
+
+        -- name: RenameUser :exec
+        UPDATE users
+        SET name = $2
+        WHERE id = $1;
+
+        -- name: RenameUsers :batchexec
+        UPDATE users
+        SET name = $2
         WHERE id = $1;
         """;
 
@@ -6314,6 +6377,394 @@ class PostgresIntegrationTest {
             assertInstanceOf(NullPointerException.class, thrown.getCause());
             assertEquals(0L, userCount());
         }
+    }
+
+    /**
+     * Each constraint PostgreSQL names raises its own runtime type through a
+     * generated {@code :exec} method and through a generated
+     * {@code :batchexec} method of the same statement: a duplicate key, a
+     * missing referenced row, a {@code NULL} in a {@code NOT NULL} column, and
+     * a row a {@code CHECK} rejects.
+     */
+    @Test
+    void shouldRaiseTheMappedConstraintViolationsOfGeneratedWritesAgainstPostgres() throws Exception {
+        execute(CONSTRAINT_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(CONSTRAINT_SCHEMA, CONSTRAINT_WRITE_QUERIES);
+
+        execute("INSERT INTO customers (id, name) VALUES (1, 'Alice')");
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Method insertCustomer = repository
+                .getClass()
+                .getMethod("insertCustomer", Long.class, String.class);
+
+            Method insertOrder = repository
+                .getClass()
+                .getMethod("insertOrder", Long.class, Long.class, Integer.class);
+
+            Method renameCustomer = repository
+                .getClass()
+                .getMethod("renameCustomer", Long.class, String.class);
+
+            assertMappedFailure(
+                UniqueViolationException.class,
+                "23505",
+                "InsertCustomer",
+                PSQLException.class,
+                () -> insertCustomer.invoke(repository, 1L, "Duplicate")
+            );
+
+            assertMappedFailure(
+                ForeignKeyViolationException.class,
+                "23503",
+                "InsertOrder",
+                PSQLException.class,
+                () -> insertOrder.invoke(repository, 10L, 404L, 1)
+            );
+
+            assertMappedFailure(
+                NotNullViolationException.class,
+                "23502",
+                "RenameCustomer",
+                PSQLException.class,
+                () -> renameCustomer.invoke(repository, 1L, null)
+            );
+
+            assertMappedFailure(
+                CheckViolationException.class,
+                "23514",
+                "InsertOrder",
+                PSQLException.class,
+                () -> insertOrder.invoke(repository, 11L, 1L, 0)
+            );
+
+            Class<?> insertCustomers = paramsType(repository, "InsertCustomersParams");
+            Class<?> insertOrders = paramsType(repository, "InsertOrdersParams");
+            Class<?> renameCustomers = paramsType(repository, "RenameCustomersParams");
+
+            assertMappedFailure(
+                UniqueViolationException.class,
+                "23505",
+                "InsertCustomers",
+                BatchUpdateException.class,
+                () -> batch(
+                    repository,
+                    "insertCustomers",
+                    List.of(params(insertCustomers, 1L, "Duplicate"))
+                )
+            );
+
+            assertMappedFailure(
+                ForeignKeyViolationException.class,
+                "23503",
+                "InsertOrders",
+                BatchUpdateException.class,
+                () -> batch(
+                    repository,
+                    "insertOrders",
+                    List.of(params(insertOrders, 10L, 404L, 1))
+                )
+            );
+
+            assertMappedFailure(
+                NotNullViolationException.class,
+                "23502",
+                "RenameCustomers",
+                BatchUpdateException.class,
+                () -> batch(
+                    repository,
+                    "renameCustomers",
+                    List.of(params(renameCustomers, 1L, null))
+                )
+            );
+
+            assertMappedFailure(
+                CheckViolationException.class,
+                "23514",
+                "InsertOrders",
+                BatchUpdateException.class,
+                () -> batch(
+                    repository,
+                    "insertOrders",
+                    List.of(params(insertOrders, 11L, 1L, 0))
+                )
+            );
+
+            assertEquals(List.of("Alice"), customerNames());
+        }
+    }
+
+    /**
+     * A generated write of a {@code REPEATABLE READ} transaction whose row
+     * another connection changed and committed after that transaction's
+     * snapshot raises a {@link TransactionConflictException} at once, as a
+     * single operation and as a batch.
+     */
+    @Test
+    void shouldRaiseTheMappedSerializationFailureOfGeneratedWritesAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile(CONFLICT_QUERIES);
+
+        execute("INSERT INTO users (id, code, name) VALUES (1, 1, 'Alice'), (2, 2, 'Bob')");
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            try (Connection conflicting = snapshotConnection()) {
+                Object repository = newRepository(
+                    classLoader,
+                    new JdbcQueryExecutor(conflicting)
+                );
+
+                // The read takes the transaction's snapshot, which the write
+                // another connection commits next leaves behind.
+                assertEquals(List.of("Alice", "Bob"), userNames(repository));
+
+                execute("UPDATE users SET name = 'Changed' WHERE id = 1");
+
+                Method renameUser = repository
+                    .getClass()
+                    .getMethod("renameUser", Long.class, String.class);
+
+                assertMappedFailure(
+                    TransactionConflictException.class,
+                    "40001",
+                    "RenameUser",
+                    PSQLException.class,
+                    () -> renameUser.invoke(repository, 1L, "Mine")
+                );
+
+                conflicting.rollback();
+            }
+
+            try (Connection conflicting = snapshotConnection()) {
+                Object repository = newRepository(
+                    classLoader,
+                    new JdbcQueryExecutor(conflicting)
+                );
+
+                assertEquals(List.of("Changed", "Bob"), userNames(repository));
+
+                execute("UPDATE users SET name = 'Changed again' WHERE id = 2");
+
+                Class<?> renameUsers = paramsType(repository, "RenameUsersParams");
+
+                assertMappedFailure(
+                    TransactionConflictException.class,
+                    "40001",
+                    "RenameUsers",
+                    BatchUpdateException.class,
+                    () -> batch(
+                        repository,
+                        "renameUsers",
+                        List.of(params(renameUsers, 2L, "Mine"))
+                    )
+                );
+
+                conflicting.rollback();
+            }
+        }
+    }
+
+    /**
+     * A generated write that waits for a row another transaction locked until
+     * the session's {@code statement_timeout} cancels it raises a
+     * {@link QueryTimeoutException}, as a single operation and as a batch.
+     */
+    @Test
+    void shouldRaiseTheMappedStatementTimeoutOfGeneratedWritesAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile(CONFLICT_QUERIES);
+
+        execute("INSERT INTO users (id, code, name) VALUES (1, 1, 'Alice'), (2, 2, 'Bob')");
+
+        try (
+            URLClassLoader classLoader = classLoader(classesDirectory);
+            Connection locking = dataSource.getConnection();
+            Connection waiting = dataSource.getConnection()
+        ) {
+            locking.setAutoCommit(false);
+
+            // The lock the write below waits for, held by an open transaction.
+            try (
+                PreparedStatement lock = locking.prepareStatement(
+                    "SELECT id FROM users WHERE id IN (1, 2) FOR UPDATE"
+                )
+            ) {
+                lock.executeQuery().close();
+            }
+
+            try (Statement timeout = waiting.createStatement()) {
+                timeout.execute("SET statement_timeout = '200ms'");
+            }
+
+            Object repository = newRepository(classLoader, new JdbcQueryExecutor(waiting));
+
+            Method renameUser = repository
+                .getClass()
+                .getMethod("renameUser", Long.class, String.class);
+
+            assertMappedFailure(
+                QueryTimeoutException.class,
+                "57014",
+                "RenameUser",
+                PSQLException.class,
+                () -> renameUser.invoke(repository, 1L, "Mine")
+            );
+
+            Class<?> renameUsers = paramsType(repository, "RenameUsersParams");
+
+            assertMappedFailure(
+                QueryTimeoutException.class,
+                "57014",
+                "RenameUsers",
+                BatchUpdateException.class,
+                () -> batch(repository, "renameUsers", List.of(params(renameUsers, 2L, "Mine")))
+            );
+
+            locking.rollback();
+        }
+    }
+
+    /**
+     * Two {@code SERIALIZABLE} transactions whose generated writes each
+     * invalidate the other's generated read make PostgreSQL report the
+     * conflict at the second {@code COMMIT}, which the transaction helper
+     * raises as a {@link TransactionConflictException} rather than a
+     * {@code TransactionException}, so one catch covers a conflict wherever
+     * PostgreSQL reported it.
+     */
+    @Test
+    void shouldRaiseTheMappedSerializationFailureOfACommittedTransactionAgainstPostgres()
+        throws Exception {
+        Path classesDirectory = generateAndCompile(TRANSACTION_QUERIES + CARDINALITY_QUERIES);
+
+        PGSimpleDataSource serializable = new PGSimpleDataSource();
+
+        serializable.setUrl(postgres.getJdbcUrl());
+        serializable.setUser(postgres.getUsername());
+        serializable.setPassword(postgres.getPassword());
+        serializable.setOptions("-c default_transaction_isolation=serializable");
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            JdbcTransactions transactions = new JdbcTransactions(serializable);
+
+            TransactionConflictException failure = assertThrows(
+                TransactionConflictException.class,
+                () -> transactions.useTransaction(second -> {
+                    QueryExecutor secondExecutor = new JdbcQueryExecutor(second);
+
+                    assertEquals(List.of(), usersByCode(classLoader, secondExecutor, 2));
+
+                    try (Connection first = serializable.getConnection()) {
+                        first.setAutoCommit(false);
+
+                        QueryExecutor firstExecutor = new JdbcQueryExecutor(first);
+
+                        assertEquals(List.of(), usersByCode(classLoader, firstExecutor, 1));
+
+                        insertUser(classLoader, firstExecutor, 20L, 2, "Rival");
+                        insertUser(classLoader, secondExecutor, 10L, 1, "Mine");
+
+                        first.commit();
+                    }
+                })
+            );
+
+            assertEquals("Failed to commit the transaction", failure.getMessage());
+            assertEquals("40001", failure.sqlState());
+
+            SQLException cause = assertInstanceOf(SQLException.class, failure.getCause());
+
+            assertEquals("40001", cause.getSQLState());
+
+            // Only the transaction that committed first survives.
+            assertEquals(List.of("Rival"), listUserNames(classLoader));
+        }
+    }
+
+    /**
+     * Asserts that one generated write raised exactly the given runtime type,
+     * with the message naming its query, the given SQLSTATE, and the driver's
+     * own exception as its cause.
+     */
+    private void assertMappedFailure(
+        Class<? extends QueryExecutionException> type,
+        String sqlState,
+        String query,
+        Class<? extends SQLException> causeType,
+        Executable write
+    ) {
+        InvocationTargetException thrown = assertThrows(InvocationTargetException.class, write);
+
+        QueryExecutionException failure = assertInstanceOf(
+            QueryExecutionException.class,
+            thrown.getCause()
+        );
+
+        assertEquals(type, failure.getClass());
+
+        assertEquals(
+            "Failed to execute query '%s' in UsersRepository".formatted(query),
+            failure.getMessage()
+        );
+
+        assertEquals(sqlState, failure.sqlState());
+
+        SQLException cause = assertInstanceOf(causeType, failure.getCause());
+
+        assertEquals(sqlState, cause.getSQLState());
+    }
+
+    /**
+     * A connection whose {@code REPEATABLE READ} transaction keeps the
+     * snapshot of its first statement, so a row another connection changes
+     * afterwards conflicts with its own write.
+     */
+    private Connection snapshotConnection() throws Exception {
+        Connection connection = dataSource.getConnection();
+
+        connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+        connection.setAutoCommit(false);
+
+        return connection;
+    }
+
+    /** The names the generated read returns on the given repository. */
+    private List<Object> userNames(Object repository) throws Exception {
+        return names(repository.getClass().getMethod("listUserNames").invoke(repository));
+    }
+
+    /** The ids a generated read of one {@code code} returns. */
+    private List<Object> usersByCode(
+        URLClassLoader classLoader,
+        QueryExecutor executor,
+        int code
+    ) throws Exception {
+        Object repository = newRepository(classLoader, executor);
+
+        return ids(
+            repository
+                .getClass()
+                .getMethod("listUsersByCode", Integer.class)
+                .invoke(repository, code)
+        );
+    }
+
+    /** The names the {@code customers} table holds, read on its own connection. */
+    private List<Object> customerNames() throws Exception {
+        List<Object> rows = new ArrayList<>();
+
+        try (
+            Connection connection = dataSource.getConnection();
+            Statement statement = connection.createStatement();
+            ResultSet resultSet = statement.executeQuery("SELECT name FROM customers ORDER BY id")
+        ) {
+            while (resultSet.next()) {
+                rows.add(resultSet.getString("name"));
+            }
+        }
+
+        return rows;
     }
 
     /** The nested parameter record of one generated batch method. */

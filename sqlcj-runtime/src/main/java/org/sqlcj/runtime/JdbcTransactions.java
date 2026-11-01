@@ -36,9 +36,16 @@ import java.sql.SQLException;
  * {@link #inTransaction} returns the callback's value.</li>
  * <li>Any exception or error the callback throws rolls the transaction back and
  * is rethrown unchanged, as the same instance.</li>
- * <li>A failure to begin or to commit raises
- * {@link TransactionException} carrying the {@code SQLException} as its
- * cause; if the transaction fails to begin, the callback does not run.</li>
+ * <li>A failure to begin raises {@link TransactionException} carrying the
+ * {@code SQLException} as its cause, and the callback does not run.</li>
+ * <li>A failure to commit raises the database-neutral type its SQLSTATE
+ * names, such as {@link TransactionConflictException} for the serialization
+ * failure or deadlock PostgreSQL reports at the {@code COMMIT}, and
+ * {@link TransactionException} for every other failure. Either way the
+ * message is {@code "Failed to commit the transaction"} and the
+ * {@code SQLException} is the cause, so a retry loop around
+ * {@link #inTransaction} catches a conflict of a statement and a conflict of
+ * the commit as one type.</li>
  * <li>A failure to roll back is attached to the callback's failure as a
  * suppressed {@link TransactionException}.</li>
  * <li>Auto-commit is restored to {@code true} only when this helper disabled it,
@@ -154,16 +161,17 @@ public final class JdbcTransactions {
 
     /**
      * Commits the transaction and releases its connection. A commit failure
-     * raises a {@link TransactionException} and leaves auto-commit untouched,
-     * so a transaction the commit left open is not committed by the restore.
+     * raises the exception its own SQLSTATE names and leaves auto-commit
+     * untouched, so a transaction the commit left open is not committed by the
+     * restore.
      */
     private void commit(Transaction transaction) {
-        TransactionException commitFailure = null;
+        RuntimeException commitFailure = null;
 
         try {
             transaction.connection().commit();
         } catch (SQLException e) {
-            commitFailure = new TransactionException(COMMIT_FAILURE, e);
+            commitFailure = commitFailure(e);
         }
 
         TransactionException releaseFailure = release(
@@ -180,6 +188,22 @@ public final class JdbcTransactions {
         if (releaseFailure != null) {
             throw releaseFailure;
         }
+    }
+
+    /**
+     * The exception a failed commit raises: the database-neutral type its
+     * SQLSTATE names, such as a {@link TransactionConflictException} for a
+     * serialization failure or a deadlock, and a {@link TransactionException}
+     * for every other failure.
+     *
+     * <p>The mapping is {@link JdbcQueryExecutor}'s own, so where PostgreSQL
+     * reports a conflict, at the statement or at the {@code COMMIT}, does not
+     * change the type the application catches.
+     */
+    private static RuntimeException commitFailure(SQLException e) {
+        QueryExecutionException mapped = JdbcQueryExecutor.mapped(COMMIT_FAILURE, e);
+
+        return mapped != null ? mapped : new TransactionException(COMMIT_FAILURE, e);
     }
 
     /**

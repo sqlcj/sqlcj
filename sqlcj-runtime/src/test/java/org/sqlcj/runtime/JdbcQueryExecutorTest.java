@@ -3,6 +3,7 @@ package org.sqlcj.runtime;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.function.Executable;
 
 import javax.sql.DataSource;
 import java.lang.reflect.InvocationTargetException;
@@ -20,7 +21,9 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -29,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -36,6 +40,27 @@ class JdbcQueryExecutorTest {
 
     /** The generated repository every operation of these tests reports. */
     private static final String REPOSITORY = "UsersRepository";
+
+    /** The read the single-row operations of the mapping tests execute. */
+    private static final String SELECT_USER = "SELECT id, name FROM users WHERE id = ?";
+
+    /**
+     * Every SQLSTATE the executor maps to a type of its own, one further code
+     * of class {@code 23}, an unmapped code, and a driver failure that reports
+     * no code at all, each with the exception the executor must raise for it.
+     */
+    private static final List<MappedState> MAPPED_STATES = List.of(
+        new MappedState("23505", UniqueViolationException.class),
+        new MappedState("23503", ForeignKeyViolationException.class),
+        new MappedState("23502", NotNullViolationException.class),
+        new MappedState("23514", CheckViolationException.class),
+        new MappedState("23P01", ConstraintViolationException.class),
+        new MappedState("40001", TransactionConflictException.class),
+        new MappedState("40P01", TransactionConflictException.class),
+        new MappedState("57014", QueryTimeoutException.class),
+        new MappedState("42P01", QueryExecutionException.class),
+        new MappedState(null, QueryExecutionException.class)
+    );
 
     private JdbcDataSource dataSource;
     private JdbcQueryExecutor executor;
@@ -1489,6 +1514,242 @@ class JdbcQueryExecutorTest {
         tracker.assertAllStatementsAndResultSetsClosed();
     }
 
+    /**
+     * Every SQLSTATE a failed statement may carry raises its own
+     * database-neutral type on a connection the executor obtains per
+     * operation, and every operation reports the same type, the same message
+     * naming its query, the driver's exception as its cause, and that
+     * SQLSTATE.
+     */
+    @Test
+    void shouldRaiseTheMappedExceptionOfEverySqlStateOnADataSourceOperation() {
+        for (MappedState state : MAPPED_STATES) {
+            SQLException cause = state.failure();
+
+            assertEveryOperationRaises(
+                new JdbcQueryExecutor(new FailingStatements(cause).dataSource(dataSource)),
+                cause,
+                state.type()
+            );
+        }
+    }
+
+    /** The caller-owned connection path maps the same codes the same way. */
+    @Test
+    void shouldRaiseTheMappedExceptionOfEverySqlStateOnACallerOwnedConnection() throws SQLException {
+        for (MappedState state : MAPPED_STATES) {
+            SQLException cause = state.failure();
+
+            try (Connection connection = dataSource.getConnection()) {
+                assertEveryOperationRaises(
+                    new JdbcQueryExecutor(new FailingStatements(cause).connection(connection)),
+                    cause,
+                    state.type()
+                );
+
+                assertFalse(connection.isClosed());
+            }
+        }
+    }
+
+    /**
+     * A mapped SQLSTATE carried by a failure to obtain or to close a
+     * connection stays a plain {@link QueryExecutionException}: the mapped
+     * types name what a statement did, and no statement ran. The code itself
+     * stays reachable through {@code sqlState()}.
+     */
+    @Test
+    void shouldKeepAConnectionFailureCarryingAMappedSqlStatePlain() throws SQLException {
+        SQLException cause = new SQLException("deadlock detected", "40P01");
+
+        FailingConnections failingToAcquire = new FailingConnections(
+            dataSource,
+            "getConnection",
+            cause
+        );
+
+        QueryExecutionException acquireFailure = assertThrows(
+            QueryExecutionException.class,
+            () -> new JdbcQueryExecutor(failingToAcquire.dataSource()).execute(
+                REPOSITORY,
+                "DeleteUsers",
+                "DELETE FROM users WHERE id = ?",
+                List.of(1L)
+            )
+        );
+
+        assertEquals(QueryExecutionException.class, acquireFailure.getClass());
+
+        assertEquals(
+            "Failed to execute query 'DeleteUsers' in UsersRepository",
+            acquireFailure.getMessage()
+        );
+
+        assertSame(cause, acquireFailure.getCause());
+        assertEquals("40P01", acquireFailure.sqlState());
+
+        FailingConnections failingToClose = new FailingConnections(dataSource, "close", cause);
+
+        QueryExecutionException closeFailure = assertThrows(
+            QueryExecutionException.class,
+            () -> new JdbcQueryExecutor(failingToClose.dataSource()).execute(
+                REPOSITORY,
+                "DeleteUsers",
+                "DELETE FROM users WHERE id = ?",
+                List.of(1L)
+            )
+        );
+
+        assertEquals(QueryExecutionException.class, closeFailure.getClass());
+
+        assertEquals(
+            "Failed to execute query 'DeleteUsers' in UsersRepository",
+            closeFailure.getMessage()
+        );
+
+        assertSame(cause, closeFailure.getCause());
+        assertEquals("40P01", closeFailure.sqlState());
+
+        failingToClose.closeDelegates();
+    }
+
+    /**
+     * The commit of a batch that is its own transaction is mapped like a
+     * statement, because PostgreSQL reports a serialization conflict there,
+     * and the connection is still closed, which discards the batch.
+     */
+    @Test
+    void shouldMapTheFailedCommitOfABatchOnAnAcquiredConnection() throws SQLException {
+        SQLException cause = new SQLException("could not serialize access", "40001");
+
+        FailingConnections failingToCommit = new FailingConnections(dataSource, "commit", cause);
+
+        JdbcQueryExecutor batchExecutor = new JdbcQueryExecutor(failingToCommit.dataSource());
+
+        TransactionConflictException failure = assertThrows(
+            TransactionConflictException.class,
+            () -> batchExecutor.executeBatch(
+                REPOSITORY,
+                "InsertUsers",
+                "INSERT INTO users (id, name) VALUES (?, ?)",
+                List.of(List.of(4L, "Dora"), List.of(5L, "Eve"))
+            )
+        );
+
+        assertEquals(
+            "Failed to execute query 'InsertUsers' in UsersRepository",
+            failure.getMessage()
+        );
+
+        assertSame(cause, failure.getCause());
+        assertEquals("40001", failure.sqlState());
+        assertEquals(0, failure.getSuppressed().length);
+
+        assertTrue(
+            executor.queryMany(
+                REPOSITORY,
+                "ListUsers",
+                "SELECT id, name FROM users WHERE id > ? ORDER BY id",
+                List.of(3L),
+                userMapper()
+            ).isEmpty()
+        );
+    }
+
+    /**
+     * A cardinality failure reports no SQLSTATE, because the statement itself
+     * succeeded and the failure carries no {@code SQLException}.
+     */
+    @Test
+    void shouldReportNoSqlStateForACardinalityFailure() {
+        QueryCardinalityException failure = assertThrows(
+            QueryCardinalityException.class,
+            () -> executor.queryOne(
+                REPOSITORY,
+                "GetUser",
+                "SELECT id, name FROM users WHERE id = ?",
+                List.of(999L),
+                userMapper()
+            )
+        );
+
+        assertNull(failure.sqlState());
+        assertNull(failure.getCause());
+    }
+
+    /**
+     * Runs every executor operation on an executor whose statements fail, and
+     * asserts that each one raises the expected type with its own query's
+     * message, the same cause instance, and the SQLSTATE of that cause.
+     */
+    private void assertEveryOperationRaises(
+        JdbcQueryExecutor failing,
+        SQLException cause,
+        Class<? extends QueryExecutionException> type
+    ) {
+        Map<String, Executable> operations = new LinkedHashMap<>();
+
+        operations.put(
+            "GetUser",
+            () -> failing.queryOne(REPOSITORY, "GetUser", SELECT_USER, List.of(1L), userMapper())
+        );
+        operations.put(
+            "FindUser",
+            () -> failing.queryOptional(
+                REPOSITORY,
+                "FindUser",
+                SELECT_USER,
+                List.of(1L),
+                userMapper()
+            )
+        );
+        operations.put(
+            "ListUsers",
+            () -> failing.queryMany(
+                REPOSITORY,
+                "ListUsers",
+                "SELECT id, name FROM users ORDER BY id",
+                List.of(),
+                userMapper()
+            )
+        );
+        operations.put(
+            "DeleteUser",
+            () -> failing.execute(
+                REPOSITORY,
+                "DeleteUser",
+                "DELETE FROM users WHERE id = ?",
+                List.of(1L)
+            )
+        );
+        operations.put(
+            "InsertUsers",
+            () -> failing.executeBatch(
+                REPOSITORY,
+                "InsertUsers",
+                "INSERT INTO users (id, name) VALUES (?, ?)",
+                List.of(List.of(4L, "Dora"))
+            )
+        );
+
+        operations.forEach((query, operation) -> {
+            QueryExecutionException failure = assertThrows(
+                QueryExecutionException.class,
+                operation
+            );
+
+            assertEquals(type, failure.getClass(), query);
+
+            assertEquals(
+                "Failed to execute query '%s' in UsersRepository".formatted(query),
+                failure.getMessage()
+            );
+
+            assertSame(cause, failure.getCause());
+            assertEquals(cause.getSQLState(), failure.sqlState());
+        });
+    }
+
     private RowMapper<User> userMapper() {
         return resultSet -> new User(
             resultSet.getLong("id"),
@@ -1500,6 +1761,165 @@ class JdbcQueryExecutorTest {
         long id,
         String name
     ) {
+    }
+
+    /**
+     * One SQLSTATE a driver may report and the exception type the executor
+     * must raise for it. A {@code null} state is the failure of a driver that
+     * reported none.
+     */
+    private record MappedState(
+        String sqlState,
+        Class<? extends QueryExecutionException> type
+    ) {
+
+        /** The driver failure this state arrives as. */
+        private SQLException failure() {
+            return new SQLException("driver failure", sqlState);
+        }
+    }
+
+    /**
+     * A DataSource and a caller-owned connection whose prepared statements
+     * fail every execution with one given {@link SQLException}, so one
+     * SQLSTATE can be driven through every operation of both construction
+     * paths. Every other call reaches H2, so the executor prepares, binds, and
+     * closes against a real driver around the failure.
+     */
+    private static final class FailingStatements {
+
+        /** The statement calls through which an operation executes its SQL. */
+        private static final List<String> EXECUTIONS = List.of(
+            "executeQuery",
+            "executeUpdate",
+            "executeBatch"
+        );
+
+        private final SQLException failure;
+
+        private FailingStatements(SQLException failure) {
+            this.failure = failure;
+        }
+
+        private DataSource dataSource(DataSource target) {
+            return (DataSource) Proxy.newProxyInstance(
+                getClass().getClassLoader(),
+                new Class<?>[] { DataSource.class },
+                (proxy, method, arguments) -> {
+                    Object result = delegate(target, method, arguments);
+
+                    return result instanceof Connection acquired ? connection(acquired) : result;
+                }
+            );
+        }
+
+        private Connection connection(Connection target) {
+            return (Connection) Proxy.newProxyInstance(
+                getClass().getClassLoader(),
+                new Class<?>[] { Connection.class },
+                (proxy, method, arguments) -> {
+                    Object result = delegate(target, method, arguments);
+
+                    return result instanceof PreparedStatement prepared
+                        ? statement(prepared)
+                        : result;
+                }
+            );
+        }
+
+        private PreparedStatement statement(PreparedStatement target) {
+            return (PreparedStatement) Proxy.newProxyInstance(
+                getClass().getClassLoader(),
+                new Class<?>[] { PreparedStatement.class },
+                (proxy, method, arguments) -> {
+                    if (EXECUTIONS.contains(method.getName())) {
+                        throw failure;
+                    }
+
+                    return delegate(target, method, arguments);
+                }
+            );
+        }
+    }
+
+    /**
+     * A DataSource whose one named JDBC call fails with one given
+     * {@link SQLException}: either its own {@code getConnection} or that call
+     * on every connection it hands out. Every other call reaches H2, so the
+     * delegate connection of a failing {@code close} is released by
+     * {@link #closeDelegates()} instead.
+     */
+    private static final class FailingConnections {
+
+        private final DataSource target;
+
+        private final String failingCall;
+
+        private final SQLException failure;
+
+        private final List<Connection> acquired = new ArrayList<>();
+
+        private FailingConnections(DataSource target, String failingCall, SQLException failure) {
+            this.target = target;
+            this.failingCall = failingCall;
+            this.failure = failure;
+        }
+
+        private DataSource dataSource() {
+            return (DataSource) Proxy.newProxyInstance(
+                getClass().getClassLoader(),
+                new Class<?>[] { DataSource.class },
+                (proxy, method, arguments) -> {
+                    if (failingCall.equals(method.getName())) {
+                        throw failure;
+                    }
+
+                    Object result = delegate(target, method, arguments);
+
+                    if (result instanceof Connection connection) {
+                        acquired.add(connection);
+
+                        return track(connection);
+                    }
+
+                    return result;
+                }
+            );
+        }
+
+        private Connection track(Connection connection) {
+            return (Connection) Proxy.newProxyInstance(
+                getClass().getClassLoader(),
+                new Class<?>[] { Connection.class },
+                (proxy, method, arguments) -> {
+                    if (failingCall.equals(method.getName())) {
+                        throw failure;
+                    }
+
+                    return delegate(connection, method, arguments);
+                }
+            );
+        }
+
+        /** Closes the delegate connections a failing {@code close} left open. */
+        private void closeDelegates() throws SQLException {
+            for (Connection connection : acquired) {
+                connection.close();
+            }
+        }
+    }
+
+    /** Calls one method on a proxy's delegate, unwrapping its own failure. */
+    private static Object delegate(
+        Object target,
+        Method method,
+        Object[] arguments
+    ) throws Throwable {
+        try {
+            return method.invoke(target, arguments);
+        } catch (InvocationTargetException e) {
+            throw e.getCause();
+        }
     }
 
     /**
