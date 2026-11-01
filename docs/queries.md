@@ -34,7 +34,18 @@ WHERE id = $1;
   entries may use the same query name, because each entry generates its own
   repository.
 - An unparsable header, an unknown annotation, a duplicate name, and a header
-  without SQL are all rejected.
+  without SQL are all rejected. An unknown annotation names the header's line,
+  the accepted annotations, and the closest one, as in
+  `Unknown query annotation ':mnay' at line 12; did you mean ':many'? Use one of
+  :one, :optional, :many, :exec, :batchexec`.
+
+A diagnostic that reports a name sqlcj does not know — an annotation, a table,
+or a column — suggests the closest name it knows, by one rule: the smallest edit
+distance, the number of single-character insertions, deletions, and
+substitutions, compared without regard to case, at most `2` and smaller than the
+length of the written name. A tie is decided by the order the candidates are
+declared in, so the suggestion is deterministic, and a written name no candidate
+is close to keeps its diagnostic unchanged.
 
 ## Annotations and Cardinality
 
@@ -218,7 +229,9 @@ configuration entry.
   WITH clause instead.`, in the same positions, because a view's columns stand
   in its own query, which sqlcj analyzes only where the query itself writes it.
   A modeled table is resolved before a view of its name, and a source that
-  names neither is rejected as `Table not found in schema: <t>`. The views
+  names neither is rejected as `Table not found in schema: <t>`, which suggests
+  the closest modeled table, as in
+  `Table not found in schema: author. Did you mean 'authors'?`. The views
   sqlcj records are those of the modeled namespace; see
   [Ignored Statements](postgresql.md#ignored-statements).
 - A table or a derived source may be joined with `JOIN` or `INNER JOIN`, with
@@ -680,6 +693,11 @@ name. A column two sources of one level expose is ambiguous in that level, while
 the same name in an enclosing level never makes a reference ambiguous, and a
 column no level exposes is rejected naming every visible source from the
 innermost level outward, as in `Column not found in sources p, o, u: missing`.
+That rejection suggests the closest column of the sources it lists, as in
+`Column not found in sources authors, books: titel. Did you mean 'title'?`, and
+a reference qualified with a source that does not have it is rejected as the
+`Column not found in table <t>: <c>` it is, which suggests the closest column of
+that source alone.
 
 A predicate subquery states no result column of the query, so its `SELECT` list
 accepts `SELECT 1`, a wildcard, and a column whose type sqlcj does not map,
@@ -2223,7 +2241,19 @@ Query sources and annotations:
   `DefaultQueryParserTest.rejectsInvalidHeader`,
   `DefaultQueryParserTest.rejectsInvalidQueryType`,
   `DefaultQueryParserTest.rejectsDuplicateQueryNames`, and
-  `DefaultQueryParserTest.rejectsQueryWithoutSql` cover the file format.
+  `DefaultQueryParserTest.rejectsQueryWithoutSql` cover the file format;
+  `DefaultQueryParserTest.suggestsClosestAnnotationAtItsHeaderLine`,
+  `DefaultQueryParserTest.suggestsAnnotationForDifferentlyCasedAnnotation`,
+  `DefaultQueryParserTest.suggestsAnnotationForAnnotationWithoutColon`, and
+  `DefaultQueryParserTest.suggestsNoAnnotationForFarAnnotation` cover the
+  unknown-annotation diagnostic, its header line, and its suggestion; and
+  `SuggestionsTest` covers the suggestion rule itself, including the accepted
+  distances, the length bound, a tie, and no candidate.
+- `QueryAnalyzerTest.shouldSuggestTheClosestModeledTable`,
+  `QueryAnalyzerTest.shouldSuggestTheClosestColumnOfTheListedSources`,
+  `QueryAnalyzerTest.shouldSuggestTheClosestColumnOfTheQualifiedSource`, and
+  `QueryAnalyzerTest.shouldSuggestTheClosestColumnOfAnInsertTarget` cover the
+  suggested table and column of a query.
 - `QueryAnalyzerTest.shouldRejectSelectWithoutResultQueryType`,
   `QueryAnalyzerTest.shouldAnalyzeSelectDeclaredAsOptional`,
   `QueryAnalyzerTest.shouldRejectWriteWithoutExecQueryType`,

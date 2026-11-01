@@ -914,6 +914,13 @@ sqlcj: Invalid schema source /home/dev/project/sql/migrations/V2__orders.sql: Ta
 sqlcj: Invalid schema source /home/dev/project/sql/migrations/V2__orders.sql: Column already exists in table orders: total
 ```
 
+A missing table suggests the modeled table closest to the written name, by the
+rule [Queries](queries.md#query-sources) states, as in
+`Table not found in schema: ordrs. Did you mean 'orders'?`. The tables compared
+are those modeled where the statement stands, in declaration order, and a name
+qualified with a schema other than `public` states no suggestion, because what
+fails is its schema and not its spelling.
+
 ## Ignored Statements
 
 A schema file records the whole history of a database, not only its tables, so
@@ -1662,7 +1669,14 @@ Ordered table DDL:
   `DefaultSchemaParserTest.shouldReportAStatementThatRepeatsATableName`,
   `DefaultSchemaParserTest.shouldReportAStatementThatRepeatsAColumnName`, and
   `DefaultSchemaParserTest.shouldReportTheLineOfARejectedAlterTableAction`
-  cover the rejected statements and their messages.
+  cover the rejected statements and their messages; and
+  `DefaultSchemaParserTest.shouldSuggestTheClosestModeledTable`,
+  `DefaultSchemaParserTest.shouldSuggestNoTableForAFarName`,
+  `DefaultSchemaParserTest.shouldSuggestNoTableForASourceOfAnotherSchema`, and
+  `DefaultSchemaParserTest.shouldDecideATieBetweenTablesByDeclarationOrder`
+  cover the suggested table of an `ALTER TABLE`, a `DROP TABLE`, and a `LIKE`,
+  the far and the qualified name that get none, and a tie in both declaration
+  orders.
 - `DefaultSchemaParserTest.shouldModelAPublicQualifiedTableNameAsItsUnqualifiedName`
   covers the unqualified, `public`-qualified, quoted, and upper-case qualifier
   forms of one `CREATE TABLE`, `ALTER TABLE`, and `DROP TABLE`;
