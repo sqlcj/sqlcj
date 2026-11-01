@@ -1,5 +1,7 @@
 package org.sqlcj.runtime;
 
+import org.jspecify.annotations.Nullable;
+
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
@@ -87,7 +89,9 @@ public final class JdbcTransactions {
      * and returns its value, committing on a normal return and rolling back on
      * any failure.
      */
-    public <T, X extends Exception> T inTransaction(TransactionCallback<T, X> callback) throws X {
+    public <T extends @Nullable Object, X extends Exception> T inTransaction(
+        TransactionCallback<T, X> callback
+    ) throws X {
         Transaction transaction = begin();
 
         T result;
@@ -110,7 +114,7 @@ public final class JdbcTransactions {
      * committing on a normal return and rolling back on any failure.
      */
     public <X extends Exception> void useTransaction(TransactionConsumer<X> callback) throws X {
-        this.<Void, X>inTransaction(connection -> {
+        this.<@Nullable Void, X>inTransaction(connection -> {
             callback.accept(connection);
 
             return null;
@@ -209,7 +213,7 @@ public final class JdbcTransactions {
      * returning the first failure of either step, with a later one attached to
      * it as suppressed, or {@code null} when both succeeded.
      */
-    private TransactionException release(Connection connection, boolean restoreAutoCommit) {
+    private @Nullable TransactionException release(Connection connection, boolean restoreAutoCommit) {
         TransactionException failure = null;
 
         if (restoreAutoCommit) {
@@ -235,7 +239,7 @@ public final class JdbcTransactions {
         return failure;
     }
 
-    private static void attach(Throwable failure, TransactionException suppressed) {
+    private static void attach(Throwable failure, @Nullable TransactionException suppressed) {
         if (suppressed != null) {
             failure.addSuppressed(suppressed);
         }

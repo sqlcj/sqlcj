@@ -6,7 +6,7 @@ CREATE SEQUENCE audit_log_id_seq;
 
 CREATE TABLE tasks
 (
-    id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id             bigint GENERATED ALWAYS AS IDENTITY NOT NULL PRIMARY KEY,
     project_id     bigint      NOT NULL,
     title          text        NOT NULL,
     status         task_status NOT NULL DEFAULT 'open',

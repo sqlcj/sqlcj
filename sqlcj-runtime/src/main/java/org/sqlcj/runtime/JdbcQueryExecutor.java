@@ -1,5 +1,7 @@
 package org.sqlcj.runtime;
 
+import org.jspecify.annotations.Nullable;
+
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -106,9 +108,9 @@ import java.util.Optional;
  */
 public final class JdbcQueryExecutor implements QueryExecutor {
 
-    private final DataSource dataSource;
+    private final @Nullable DataSource dataSource;
 
-    private final Connection connection;
+    private final @Nullable Connection connection;
 
     /**
      * Creates an executor that acquires and closes one connection from the
@@ -134,7 +136,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
         String repository,
         String query,
         String sql,
-        List<?> parameters,
+        List<? extends @Nullable Object> parameters,
         RowMapper<T> mapper
     ) {
         return onStatement(repository, query, sql, parameters, statement -> {
@@ -171,7 +173,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
         String repository,
         String query,
         String sql,
-        List<?> parameters,
+        List<? extends @Nullable Object> parameters,
         RowMapper<T> mapper
     ) {
         return onStatement(repository, query, sql, parameters, statement -> {
@@ -202,7 +204,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
         String repository,
         String query,
         String sql,
-        List<?> parameters,
+        List<? extends @Nullable Object> parameters,
         RowMapper<T> mapper
     ) {
         return onStatement(repository, query, sql, parameters, statement -> {
@@ -219,7 +221,12 @@ public final class JdbcQueryExecutor implements QueryExecutor {
     }
 
     @Override
-    public int execute(String repository, String query, String sql, List<?> parameters) {
+    public int execute(
+        String repository,
+        String query,
+        String sql,
+        List<? extends @Nullable Object> parameters
+    ) {
         return onStatement(repository, query, sql, parameters, PreparedStatement::executeUpdate);
     }
 
@@ -228,7 +235,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
         String repository,
         String query,
         String sql,
-        List<? extends List<?>> batch
+        List<? extends List<? extends @Nullable Object>> batch
     ) {
         if (Objects.requireNonNull(batch, "batch").isEmpty()) {
             return new int[0];
@@ -255,7 +262,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
     private int[] batchOnAcquiredConnection(
         String failureMessage,
         String sql,
-        List<? extends List<?>> batch
+        List<? extends List<? extends @Nullable Object>> batch
     ) {
         Connection acquired = acquireConnection(failureMessage);
 
@@ -323,10 +330,10 @@ public final class JdbcQueryExecutor implements QueryExecutor {
     private int[] addAndExecuteBatch(
         Connection target,
         String sql,
-        List<? extends List<?>> batch
+        List<? extends List<? extends @Nullable Object>> batch
     ) throws SQLException {
         try (PreparedStatement statement = target.prepareStatement(sql)) {
-            for (List<?> parameters : batch) {
+            for (List<? extends @Nullable Object> parameters : batch) {
                 bindParameters(target, statement, parameters);
 
                 statement.addBatch();
@@ -391,11 +398,11 @@ public final class JdbcQueryExecutor implements QueryExecutor {
      * attached to it as suppressed, that failure itself when none was pending,
      * or {@code null} when nothing failed.
      */
-    private QueryExecutionException release(
+    private @Nullable QueryExecutionException release(
         Connection target,
         boolean restoreAutoCommit,
         String failureMessage,
-        QueryExecutionException failure
+        @Nullable QueryExecutionException failure
     ) {
         QueryExecutionException pending = failure;
 
@@ -417,7 +424,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
     }
 
     private static QueryExecutionException attach(
-        QueryExecutionException pending,
+        @Nullable QueryExecutionException pending,
         String failureMessage,
         SQLException e
     ) {
@@ -441,7 +448,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
         String repository,
         String query,
         String sql,
-        List<?> parameters,
+        List<? extends @Nullable Object> parameters,
         StatementOperation<T> operation
     ) {
         if (connection != null) {
@@ -463,7 +470,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
         String repository,
         String query,
         String sql,
-        List<?> parameters,
+        List<? extends @Nullable Object> parameters,
         StatementOperation<T> operation
     ) {
         try (PreparedStatement statement = target.prepareStatement(sql)) {
@@ -487,7 +494,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
     private void bindParameters(
         Connection target,
         PreparedStatement statement,
-        List<?> parameters
+        List<? extends @Nullable Object> parameters
     ) throws SQLException {
         for (int i = 0; i < parameters.size(); i++) {
             Object parameter = parameters.get(i);
@@ -512,7 +519,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
         PreparedStatement statement,
         int position,
         String elementType,
-        List<?> elements
+        @Nullable List<? extends @Nullable Object> elements
     ) throws SQLException {
         if (elements == null) {
             statement.setNull(position, Types.ARRAY);

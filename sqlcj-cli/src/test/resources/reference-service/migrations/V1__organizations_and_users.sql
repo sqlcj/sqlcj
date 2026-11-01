@@ -10,7 +10,7 @@ CREATE DOMAIN email_address AS citext;
 
 CREATE TABLE organizations
 (
-    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id          bigint GENERATED ALWAYS AS IDENTITY NOT NULL PRIMARY KEY,
     name        text        NOT NULL,
     preferences jsonb       NOT NULL DEFAULT '{}'::jsonb,
     created_at  timestamptz NOT NULL DEFAULT now()

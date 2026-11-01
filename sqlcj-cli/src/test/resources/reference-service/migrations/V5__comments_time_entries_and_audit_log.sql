@@ -4,7 +4,7 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 CREATE TABLE public.comments
 (
-    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id         bigint GENERATED ALWAYS AS IDENTITY NOT NULL PRIMARY KEY,
     task_id    bigint      NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
     author_id  bigint      NOT NULL REFERENCES users (id),
     body       text        NOT NULL,
@@ -13,7 +13,7 @@ CREATE TABLE public.comments
 
 CREATE TABLE time_entries
 (
-    id      bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id      bigint GENERATED ALWAYS AS IDENTITY NOT NULL PRIMARY KEY,
     task_id bigint    NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
     during  tstzrange NOT NULL,
     EXCLUDE USING gist (task_id WITH =, during WITH &&)

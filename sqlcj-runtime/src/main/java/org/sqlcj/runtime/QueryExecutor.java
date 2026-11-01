@@ -1,5 +1,7 @@
 package org.sqlcj.runtime;
 
+import org.jspecify.annotations.Nullable;
+
 import java.util.List;
 import java.util.Optional;
 
@@ -29,7 +31,7 @@ public interface QueryExecutor {
         String repository,
         String query,
         String sql,
-        List<?> parameters,
+        List<? extends @Nullable Object> parameters,
         RowMapper<T> mapper
     );
 
@@ -43,7 +45,7 @@ public interface QueryExecutor {
         String repository,
         String query,
         String sql,
-        List<?> parameters,
+        List<? extends @Nullable Object> parameters,
         RowMapper<T> mapper
     );
 
@@ -55,14 +57,19 @@ public interface QueryExecutor {
         String repository,
         String query,
         String sql,
-        List<?> parameters,
+        List<? extends @Nullable Object> parameters,
         RowMapper<T> mapper
     );
 
     /**
      * Executes a write statement and returns its affected-row count.
      */
-    int execute(String repository, String query, String sql, List<?> parameters);
+    int execute(
+        String repository,
+        String query,
+        String sql,
+        List<? extends @Nullable Object> parameters
+    );
 
     /**
      * Executes {@code sql} once per element of {@code batch}, in the order of
@@ -82,6 +89,6 @@ public interface QueryExecutor {
         String repository,
         String query,
         String sql,
-        List<? extends List<?>> batch
+        List<? extends List<? extends @Nullable Object>> batch
     );
 }

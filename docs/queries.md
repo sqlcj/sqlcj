@@ -1576,7 +1576,7 @@ in its `SET` clause, so the generated method takes `(id, bio)` and binds
 `(bio, id)`:
 
 ```java
-public int updateAuthorBio(Long id, String bio) {
+public int updateAuthorBio(@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable String bio) {
     return executor.execute(
             "AuthorRepository",
             "UpdateAuthorBio",
@@ -1853,6 +1853,47 @@ included.
   and the column is read as `<EnumType>.fromLabel(resultSet.getString(position))`,
   so a `null` stays `null` in both directions; see
   [Enum Types](postgresql.md#enum-types).
+- Every generated type states its nullness with
+  [JSpecify](https://jspecify.dev) annotations, which the runtime brings as its
+  one dependency. Both are written out in full, as every runtime helper is, so
+  no generated enum can shadow them and the generated imports are unchanged:
+  - `@org.jspecify.annotations.NullMarked` is the line directly above
+    `public final class` of every repository, below the repository's own marker,
+    and directly above `public record` of every row record and
+    `public enum` of every generated enum. Every type those declare is
+    therefore non-null unless it is annotated. A nested `<QueryName>Result` or
+    `<QueryName>Params` record is marked by its repository and carries no mark
+    of its own.
+  - A result component carries `@org.jspecify.annotations.Nullable` exactly when
+    its column can be NULL: a column the schema models nullable, a column of a
+    null-extended source, an aliased `MIN`, `MAX`, `SUM`, or `AVG`, an aliased
+    cast, and a component holding an embedded row a join null-extends. Every
+    other component is unannotated, and therefore non-null.
+  - Every generated method parameter and every component of a
+    `<QueryName>Params` record is `@org.jspecify.annotations.Nullable`, because
+    every placeholder may be bound to `null`.
+  - An array element is always nullable, wherever the list type is written, as
+    in `java.util.List<@org.jspecify.annotations.Nullable String>`, because a
+    SQL array may hold a `NULL` element. A nullable `BYTEA` is written
+    `byte @org.jspecify.annotations.Nullable []`, which states that the array
+    itself may be null rather than its bytes.
+  - A generated enum's `fromLabel` accepts and returns
+    `@org.jspecify.annotations.Nullable`, and its constructor, `label()`, and
+    constants stay non-null.
+  - Unannotated, and therefore non-null, are the repository's
+    `QueryExecutor` field and constructor parameter, a batch method's
+    `List<<QueryName>Params> batch` and its elements, the `Optional` and
+    `List` a query returns and their elements, the value a single non-null
+    column returns, and an `int` or `int[]` return type.
+
+  So a Kotlin caller sees `AuthorsRow.bio` as `String?` and
+  `AuthorsRow.name` as `String`, and an IDE or a null checker reads the same
+  from the class files. The generated method bodies themselves trust the
+  schema's `NOT NULL`: a non-null component may be read through `fromLabel`,
+  `org.sqlcj.runtime.SqlArray.getList`, or
+  `org.sqlcj.runtime.SqlInterval.parse`, each of which is nullable, so a build
+  that runs a null checker over its own sources excludes the generated ones, as
+  is usual for generated code.
 - Generated repository source imports only `org.sqlcj.runtime.QueryExecutor`,
   `org.sqlcj.runtime.RowMapper`, `java.util.List`, `java.util.Optional` when the
   entry declares an `:optional` query, and the JDK types of the mapped columns,
@@ -1878,11 +1919,12 @@ import java.time.LocalDateTime;
  *
  * <p>Table: authors
  */
+@org.jspecify.annotations.NullMarked
 public record AuthorsRow(
     Long id,
     String name,
-    String bio,
-    LocalDateTime createdAt
+    @org.jspecify.annotations.Nullable String bio,
+    @org.jspecify.annotations.Nullable LocalDateTime createdAt
 ) {
 }
 ```
@@ -1906,6 +1948,7 @@ import java.time.LocalDateTime;
  * <p>Repository: Author
  */
 @org.sqlcj.runtime.GeneratedRepository
+@org.jspecify.annotations.NullMarked
 public final class AuthorRepository {
 
     private final QueryExecutor executor;
@@ -1927,7 +1970,7 @@ public final class AuthorRepository {
      * Table: authors
      * Type: ONE
      */
-    public AuthorsRow createAuthor(String name, String bio) {
+    public AuthorsRow createAuthor(@org.jspecify.annotations.Nullable String name, @org.jspecify.annotations.Nullable String bio) {
         return executor.queryOne(
                 "AuthorRepository",
                 "CreateAuthor",
@@ -1947,7 +1990,7 @@ public final class AuthorRepository {
      * Table: authors
      * Type: OPTIONAL
      */
-    public Optional<AuthorsRow> findAuthor(Long id) {
+    public Optional<AuthorsRow> findAuthor(@org.jspecify.annotations.Nullable Long id) {
         return executor.queryOptional(
                 "AuthorRepository",
                 "FindAuthor",

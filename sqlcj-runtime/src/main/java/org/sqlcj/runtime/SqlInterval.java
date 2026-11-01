@@ -1,5 +1,7 @@
 package org.sqlcj.runtime;
 
+import org.jspecify.annotations.Nullable;
+
 import java.math.BigInteger;
 import java.time.DateTimeException;
 import java.time.Duration;
@@ -82,7 +84,7 @@ public record SqlInterval(
      * @throws ArithmeticException      when a count the text states does not
      *                                  fit the value
      */
-    public static SqlInterval parse(String text) {
+    public static @Nullable SqlInterval parse(@Nullable String text) {
         if (text == null) {
             return null;
         }
@@ -200,7 +202,7 @@ public record SqlInterval(
     }
 
     /** One signed field of the text, and {@code 0} where the text omits it. */
-    private static int intField(String field) {
+    private static int intField(@Nullable String field) {
         return field == null
             ? 0
             : Integer.parseInt(field);
@@ -234,7 +236,7 @@ public record SqlInterval(
     }
 
     /** The fractional-second digits of the text as microseconds. */
-    private static long fractionMicroseconds(String fraction) {
+    private static long fractionMicroseconds(@Nullable String fraction) {
         if (fraction == null) {
             return 0;
         }

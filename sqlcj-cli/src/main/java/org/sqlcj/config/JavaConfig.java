@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 public record JavaConfig(
     String out,
-    @JsonProperty("package")
-    String packageName
+    @JsonProperty("package") String packageName
 ) {
 }
