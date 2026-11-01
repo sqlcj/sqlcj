@@ -88,6 +88,19 @@ class NullnessAnnotationsTest {
         assertTrue(isNullable(constructor.getAnnotatedParameterTypes()[1]));
     }
 
+    /**
+     * A failure may carry no SQLSTATE, because its cause may be no
+     * {@code SQLException} or may report none.
+     */
+    @Test
+    void shouldAllowAFailureWithoutASqlState() {
+        assertTrue(
+            isNullable(
+                method(QueryExecutionException.class, "sqlState").getAnnotatedReturnType()
+            )
+        );
+    }
+
     /** An untyped text argument may be a SQL {@code NULL}. */
     @Test
     void shouldAllowANullUntypedTextValue() {

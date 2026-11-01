@@ -78,11 +78,13 @@ import java.util.Optional;
  * </ul>
  *
  * <p>Every {@link SQLException} a batch raises, a
- * {@link java.sql.BatchUpdateException} included, is translated into the same
- * {@link QueryExecutionException} as every other operation's, and a failure to
- * roll back, to restore auto-commit, or to close the obtained connection that
- * follows it is attached to it as a suppressed
- * {@link QueryExecutionException}.
+ * {@link java.sql.BatchUpdateException} included, is translated exactly as
+ * every other operation's is, by the SQLSTATE of that exception itself, and a
+ * failure to roll back, to restore auto-commit, or to close the obtained
+ * connection that follows it is attached to it as a suppressed
+ * {@link QueryExecutionException}. The commit of a batch that is its own
+ * transaction is translated the same way, because PostgreSQL reports a
+ * serialization conflict or a deferred constraint there.
  *
  * <p>An unchecked failure of a batch on a connection obtained from the
  * {@link DataSource} is rethrown unchanged, as the same instance, after the
@@ -101,6 +103,15 @@ import java.util.Optional;
  * DataSource-acquired connection is translated into a
  * {@link QueryExecutionException} with the message {@code "Failed to execute
  * query '<query>' in <repository>"} and the {@code SQLException} as its cause.
+ *
+ * <p>A failed statement, a failed batch, and the commit of a batch that is its
+ * own transaction raise the subclass of {@link QueryExecutionException} that
+ * their SQLSTATE names, such as {@link UniqueViolationException} or
+ * {@link TransactionConflictException}, and a plain
+ * {@link QueryExecutionException} for every other code. The connection steps
+ * around them stay plain: acquiring a connection, disabling and restoring a
+ * batch's auto-commit, rolling a failed batch back, and closing an acquired
+ * connection.
  *
  * <p>This executor is blocking and synchronous. An instance constructed with a
  * caller-owned connection inherits that connection's confinement to a single
@@ -247,7 +258,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
             try {
                 return addAndExecuteBatch(connection, sql, batch);
             } catch (SQLException e) {
-                throw new QueryExecutionException(failureMessage, e);
+                throw translate(failureMessage, e);
             }
         }
 
@@ -281,7 +292,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
             try {
                 counts = addAndExecuteBatch(acquired, sql, batch);
             } catch (SQLException e) {
-                failure = new QueryExecutionException(failureMessage, e);
+                failure = translate(failureMessage, e);
 
                 if (autoCommitDisabled) {
                     restoreAutoCommit = rollBack(acquired, failureMessage, failure);
@@ -294,7 +305,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
 
                     restoreAutoCommit = true;
                 } catch (SQLException e) {
-                    failure = new QueryExecutionException(failureMessage, e);
+                    failure = translate(failureMessage, e);
                 }
             }
         } catch (SQLException e) {
@@ -478,10 +489,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
 
             return operation.run(statement);
         } catch (SQLException e) {
-            throw new QueryExecutionException(
-                failureMessage(repository, query),
-                e
-            );
+            throw translate(failureMessage(repository, query), e);
         }
     }
 
@@ -531,6 +539,52 @@ public final class JdbcQueryExecutor implements QueryExecutor {
             position,
             target.createArrayOf(elementType, elements.toArray())
         );
+    }
+
+    /**
+     * The failure of a statement, of a batch, or of a batch's own commit: the
+     * database-neutral exception its SQLSTATE names, or a plain
+     * {@link QueryExecutionException} when no specific type covers that code.
+     */
+    private static QueryExecutionException translate(String failureMessage, SQLException e) {
+        QueryExecutionException mapped = mapped(failureMessage, e);
+
+        return mapped != null ? mapped : new QueryExecutionException(failureMessage, e);
+    }
+
+    /**
+     * The database-neutral exception the SQLSTATE of the given failure names,
+     * or {@code null} when no specific type covers it, which leaves the
+     * failure a plain {@link QueryExecutionException}.
+     *
+     * <p>SQLSTATE comes from the SQL standard, so most of this mapping is not
+     * one database's own. The code of the failure itself is read: the
+     * PostgreSQL driver sets the failed statement's SQLSTATE on a
+     * {@link java.sql.BatchUpdateException} too, so a batch is mapped like a
+     * single statement.
+     *
+     * <p>{@link JdbcTransactions} maps a failed commit through this method,
+     * because PostgreSQL reports a serialization conflict or a deferred
+     * constraint at the {@code COMMIT} rather than at the statement.
+     */
+    static @Nullable QueryExecutionException mapped(String failureMessage, SQLException e) {
+        String sqlState = e.getSQLState();
+
+        if (sqlState == null) {
+            return null;
+        }
+
+        return switch (sqlState) {
+            case "23505" -> new UniqueViolationException(failureMessage, e);
+            case "23503" -> new ForeignKeyViolationException(failureMessage, e);
+            case "23502" -> new NotNullViolationException(failureMessage, e);
+            case "23514" -> new CheckViolationException(failureMessage, e);
+            case "40001", "40P01" -> new TransactionConflictException(failureMessage, e);
+            case "57014" -> new QueryTimeoutException(failureMessage, e);
+            default -> sqlState.startsWith("23")
+                ? new ConstraintViolationException(failureMessage, e)
+                : null;
+        };
     }
 
     private static String failureMessage(String repository, String query) {

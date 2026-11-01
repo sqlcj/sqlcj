@@ -375,6 +375,136 @@ class JdbcTransactionsTest {
     }
 
     /**
+     * A commit that fails with a SQLSTATE the runtime maps raises that type
+     * instead, so a serialization failure and a deadlock PostgreSQL reports at
+     * the {@code COMMIT} are caught exactly as one a statement reported, and a
+     * constraint PostgreSQL checked at the commit is a constraint violation.
+     * The message, the cause, and the auto-commit and closing behavior of a
+     * failed commit are unchanged.
+     */
+    @Test
+    void shouldRaiseTheMappedExceptionOfACommitFailure() throws SQLException {
+        Map<String, Class<? extends QueryExecutionException>> mapped = new LinkedHashMap<>();
+
+        mapped.put("40001", TransactionConflictException.class);
+        mapped.put("40P01", TransactionConflictException.class);
+        mapped.put("23503", ForeignKeyViolationException.class);
+
+        for (Map.Entry<String, Class<? extends QueryExecutionException>> state : mapped.entrySet()) {
+            SQLException cause = new SQLException("cannot commit", state.getKey());
+
+            TransactionRecorder recorder = new TransactionRecorder(dataSource)
+                .failing("commit", cause);
+
+            JdbcTransactions transactions = new JdbcTransactions(recorder.dataSource());
+
+            QueryExecutionException failure = assertThrows(
+                QueryExecutionException.class,
+                () -> transactions.useTransaction(connection -> insert(connection, 1L, "Alice"))
+            );
+
+            assertEquals(state.getValue(), failure.getClass());
+            assertEquals("Failed to commit the transaction", failure.getMessage());
+            assertSame(cause, failure.getCause());
+            assertEquals(state.getKey(), failure.sqlState());
+            assertEquals(0, failure.getSuppressed().length);
+
+            assertEquals(List.of(), names());
+
+            assertEquals(
+                List.of("getConnection", "setAutoCommit(false)", "commit", "close"),
+                recorder.calls
+            );
+
+            recorder.assertOneClosedConnection();
+        }
+
+        SQLException commitCause = new SQLException("cannot commit", "40001");
+        SQLException closeCause = new SQLException("cannot close");
+
+        TransactionRecorder pendingRecorder = new TransactionRecorder(dataSource)
+            .failing("commit", commitCause)
+            .failing("close", closeCause);
+
+        JdbcTransactions pendingTransactions = new JdbcTransactions(pendingRecorder.dataSource());
+
+        TransactionConflictException pendingFailure = assertThrows(
+            TransactionConflictException.class,
+            () -> pendingTransactions.useTransaction(connection -> insert(connection, 2L, "Bob"))
+        );
+
+        assertSame(commitCause, pendingFailure.getCause());
+        assertEquals(1, pendingFailure.getSuppressed().length);
+
+        TransactionException suppressed = assertInstanceOf(
+            TransactionException.class,
+            pendingFailure.getSuppressed()[0]
+        );
+
+        assertEquals("Failed to release the transaction's connection", suppressed.getMessage());
+        assertSame(closeCause, suppressed.getCause());
+
+        pendingRecorder.closeDelegates();
+    }
+
+    /**
+     * A failure to begin or to roll back stays a {@link TransactionException}
+     * even when it carries a SQLSTATE the runtime maps, because the mapped
+     * types name what a statement or a commit did.
+     */
+    @Test
+    void shouldKeepABeginOrRollbackFailureCarryingAMappedSqlStateATransactionException()
+        throws SQLException {
+        SQLException beginCause = new SQLException("cannot disable auto-commit", "40001");
+
+        TransactionRecorder beginRecorder = new TransactionRecorder(dataSource)
+            .failing("setAutoCommit(false)", beginCause);
+
+        JdbcTransactions beginTransactions = new JdbcTransactions(beginRecorder.dataSource());
+
+        TransactionException beginFailure = assertThrows(
+            TransactionException.class,
+            () -> beginTransactions.useTransaction(connection -> insert(connection, 1L, "Alice"))
+        );
+
+        assertEquals("Failed to begin a transaction", beginFailure.getMessage());
+        assertSame(beginCause, beginFailure.getCause());
+
+        beginRecorder.assertOneClosedConnection();
+
+        SQLException rollbackCause = new SQLException("cannot roll back", "40P01");
+
+        TransactionRecorder rollbackRecorder = new TransactionRecorder(dataSource)
+            .failing("rollback", rollbackCause);
+
+        JdbcTransactions rollbackTransactions = new JdbcTransactions(rollbackRecorder.dataSource());
+
+        IllegalStateException thrown = new IllegalStateException("callback failed");
+
+        IllegalStateException callbackFailure = assertThrows(
+            IllegalStateException.class,
+            () -> rollbackTransactions.useTransaction(connection -> {
+                insert(connection, 1L, "Alice");
+
+                throw thrown;
+            })
+        );
+
+        assertSame(thrown, callbackFailure);
+        assertEquals(1, callbackFailure.getSuppressed().length);
+
+        TransactionException suppressed = assertInstanceOf(
+            TransactionException.class,
+            callbackFailure.getSuppressed()[0]
+        );
+
+        assertEquals("Failed to roll back the transaction", suppressed.getMessage());
+        assertSame(rollbackCause, suppressed.getCause());
+
+        rollbackRecorder.assertOneClosedConnection();
+    }
+
+    /**
      * A rollback that fails is attached to the callback's failure as a
      * suppressed {@link TransactionException}, and auto-commit is left
      * untouched so that the restore cannot commit the work the rollback failed
