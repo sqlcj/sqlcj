@@ -642,7 +642,9 @@ public enum StageSetting {
         return label;
     }
 
-    public static @org.jspecify.annotations.Nullable StageSetting fromLabel(@org.jspecify.annotations.Nullable String label) {
+    public static @org.jspecify.annotations.Nullable StageSetting fromLabel(
+        @org.jspecify.annotations.Nullable String label
+    ) {
         if (label == null) {
             return null;
         }
