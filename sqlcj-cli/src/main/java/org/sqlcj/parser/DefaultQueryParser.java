@@ -1,5 +1,7 @@
 package org.sqlcj.parser;
 
+import org.sqlcj.diagnostic.Suggestions;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -8,6 +10,21 @@ import java.util.Set;
 public final class DefaultQueryParser implements QueryParser {
 
     private static final String HEADER_PREFIX = "-- name:";
+
+    /**
+     * The query annotations sqlcj accepts, in the order the rejection of an
+     * unknown one lists them, which are also the candidates it suggests from.
+     * {@link QueryType} parses three further annotations, which semantic
+     * analysis rejects by the shape of their statement, so they are neither
+     * listed nor suggested.
+     */
+    private static final List<String> ACCEPTED_ANNOTATIONS = List.of(
+        ":one",
+        ":optional",
+        ":many",
+        ":exec",
+        ":batchexec"
+    );
 
     @Override
     public List<Query> parse(String source) {
@@ -27,7 +44,7 @@ public final class DefaultQueryParser implements QueryParser {
                     queries.add(buildQuery(builder, currentName, currentType, currentLine));
                 }
 
-                QueryHeader header = parseHeader(line);
+                QueryHeader header = parseHeader(line, lineNumber);
                 currentName = header.name();
                 currentType = header.type();
                 currentLine = lineNumber;
@@ -81,7 +98,7 @@ public final class DefaultQueryParser implements QueryParser {
         );
     }
 
-    private QueryHeader parseHeader(String line) {
+    private QueryHeader parseHeader(String line, int lineNumber) {
         String header = line.substring(HEADER_PREFIX.length()).trim();
         String[] parts = header.split("\\s+");
 
@@ -92,7 +109,30 @@ public final class DefaultQueryParser implements QueryParser {
         }
 
         String name = parts[0];
-        QueryType type = QueryType.from(parts[1]);
+        String annotation = parts[1];
+        QueryType type = QueryType.from(annotation)
+            .orElseThrow(() -> unknownAnnotation(annotation, lineNumber));
+
         return new QueryHeader(name, type);
+    }
+
+    /**
+     * The rejection of an annotation sqlcj does not parse: the annotation as it
+     * is written, the line of the header that writes it, the accepted
+     * annotations, and the one closest to the written text when there is one.
+     */
+    private IllegalArgumentException unknownAnnotation(String annotation, int lineNumber) {
+        String suggestion = Suggestions.closest(annotation, ACCEPTED_ANNOTATIONS)
+            .map(closest -> "; did you mean '" + closest + "'?")
+            .orElse(".");
+
+        return new IllegalArgumentException(
+            "Unknown query annotation '%s' at line %d%s Use one of %s".formatted(
+                annotation,
+                lineNumber,
+                suggestion,
+                String.join(", ", ACCEPTED_ANNOTATIONS)
+            )
+        );
     }
 }
