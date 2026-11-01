@@ -69,10 +69,20 @@ The CLI and the runtime must always be used at the same version.
 ## Commands
 
 ```bash
-java -jar sqlcj-cli-0.1.0-SNAPSHOT.jar version    # print the tool version
-java -jar sqlcj-cli-0.1.0-SNAPSHOT.jar generate   # compile sqlcj.yaml into Java
-java -jar sqlcj-cli-0.1.0-SNAPSHOT.jar --help     # list the commands
+java -jar sqlcj-cli-0.1.0-SNAPSHOT.jar version          # print the tool version
+java -jar sqlcj-cli-0.1.0-SNAPSHOT.jar --version        # the same, as an option
+java -jar sqlcj-cli-0.1.0-SNAPSHOT.jar -v               # the same, short
+java -jar sqlcj-cli-0.1.0-SNAPSHOT.jar generate         # compile sqlcj.yaml into Java
+java -jar sqlcj-cli-0.1.0-SNAPSHOT.jar                  # list the commands
+java -jar sqlcj-cli-0.1.0-SNAPSHOT.jar --help           # the same, as an option
+java -jar sqlcj-cli-0.1.0-SNAPSHOT.jar -h               # the same, short
+java -jar sqlcj-cli-0.1.0-SNAPSHOT.jar generate --help  # usage of one command
 ```
+
+Every version and help form above prints on standard output and exits with
+status `0`. `-h` and `--help` work on every command; the version options belong
+to the root command. See
+[Configuration](docs/configuration.md#version-and-help) for the full list.
 
 `generate` reads whichever of `sqlcj.yaml` and `sqlcj.yml` exists in the
 directory it is run in; neither name wins, so holding both files, like holding

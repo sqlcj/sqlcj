@@ -36,6 +36,32 @@ exits with status `1`; there is no fallback to `sqlcj.yaml` or `sqlcj.yml`.
 There is no short alias, no environment variable, no further accepted file name,
 spelling, or letter case, and no configuration discovery in parent directories.
 
+## Version and Help
+
+Besides `generate`, the command line tool answers which version it is and how
+to use it:
+
+| Form | What it prints |
+| --- | --- |
+| `sqlcj version` | the tool version, on one line |
+| `sqlcj --version` | the same version |
+| `sqlcj -v` | the same version |
+| `sqlcj` | the usage, which lists the commands |
+| `sqlcj --help` | the same usage |
+| `sqlcj -h` | the same usage |
+| `sqlcj generate --help`, `sqlcj generate -h` | the usage of `generate` |
+| `sqlcj version --help`, `sqlcj version -h` | the usage of `version` |
+
+Each form prints on standard output, leaves standard error empty, runs no
+command, and exits with status `0`. The version is the one the packaged JAR
+records; run from class directories, where no manifest exists, every version
+form prints an empty line.
+
+`-h` and `--help` are accepted by every command. The version options belong to
+the root command only, so `sqlcj generate --version` is an unknown option. An
+unknown option or command, `sqlcj -V` among them, prints its message and the
+usage on standard error and exits with status `2`.
+
 ## Supported Version
 
 Only configuration version `"1"` is supported. Every field below is required;
