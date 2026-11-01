@@ -73,6 +73,32 @@ public final class JavaCodeGenerator implements CodeGenerator {
      */
     private static final int MAPPING_INDENT = 16;
 
+    /**
+     * The column a generated line may reach, which is the repository's own
+     * formatter limit and an IDE's default right margin. It is fixed, because
+     * sqlcj writes one output style, and it is read from the generated text
+     * alone, so the output stays deterministic.
+     */
+    private static final int LINE_LIMIT = 120;
+
+    /** The indentation a generated type adds to each of its members. */
+    private static final int MEMBER_INDENT = 4;
+
+    /** The indentation one wrapped declaration gives each of its parameters. */
+    private static final int PARAMETER_INDENT = 4;
+
+    /**
+     * The indentation one wrapped bound-argument list gives each of its
+     * arguments, one call continuation past the line that opens the list.
+     */
+    private static final int ARGUMENT_INDENT = SQL_INDENT.length() + 8;
+
+    /**
+     * The indentation one wrapped value row mapper gives its mapping, one call
+     * continuation past its field, as the whole-row mapper's lambda line is.
+     */
+    private static final int MAPPER_INDENT = 8;
+
     private final TypeResolver typeResolver = new DefaultTypeResolver();
     private final String packageName;
 
@@ -569,7 +595,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
      */
     private String generateFromLabelMethod(SharedEnum sharedEnum) {
         return """
-            public static %s %s fromLabel(%s String label) {
+            %s
                 if (label == null) {
                     return null;
                 }
@@ -584,9 +610,10 @@ public final class JavaCodeGenerator implements CodeGenerator {
             }
             """
             .formatted(
-                NULLABLE,
-                sharedEnum.typeName(),
-                NULLABLE,
+                generateMethodDeclaration(
+                    "public static %s %s fromLabel".formatted(NULLABLE, sharedEnum.typeName()),
+                    List.of(NULLABLE + " String label")
+                ),
                 sharedEnum.typeName(),
                 generateStringLiteral(
                     "Unknown label for enum type " + sharedEnum.enumName() + ": "
@@ -1019,7 +1046,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             : NULLABLE + " " + type;
     }
 
-    private String generateMethodParameters(QueryModel query, JavaNames.QueryNames names) {
+    private List<String> generateMethodParameters(QueryModel query, JavaNames.QueryNames names) {
         return IntStream.range(0, query.parameters().size())
             .mapToObj(index -> {
                 QueryParameter parameter = query.parameters().get(index);
@@ -1028,7 +1055,42 @@ public final class JavaCodeGenerator implements CodeGenerator {
                     + " "
                     + names.parameterNames().get(index);
             })
-            .collect(Collectors.joining(", "));
+            .toList();
+    }
+
+    /**
+     * Reports whether one generated line fits the limit, counted from the
+     * file's margin with the indentation its type gives the member it belongs
+     * to, the indentation of the line inside that member, and the line's own
+     * trailing punctuation included.
+     */
+    private boolean fits(int indent, String line) {
+        return MEMBER_INDENT + indent + line.length() <= LINE_LIMIT;
+    }
+
+    /**
+     * Writes the declaration of one generated method, which stays on one line
+     * when that line fits the limit and otherwise writes each parameter, with
+     * its annotation, on a line of its own, one level past the declaration,
+     * with the closing parenthesis and the opening brace on a line of their own
+     * at the declaration's column, the layout a generated record already uses.
+     * A declaration without parameters has nothing to wrap. A single parameter
+     * that alone passes the limit stays on its line.
+     */
+    private String generateMethodDeclaration(String signature, List<String> parameters) {
+        String oneLine = parameters.stream()
+            .collect(Collectors.joining(", ", signature + "(", ") {"));
+
+        if (parameters.isEmpty() || fits(0, oneLine)) {
+            return oneLine;
+        }
+
+        return signature
+            + "(\n"
+            + parameters.stream()
+                .map(parameter -> " ".repeat(PARAMETER_INDENT) + parameter)
+                .collect(Collectors.joining(",\n"))
+            + "\n) {";
     }
 
     private String generateMethod(
@@ -1050,7 +1112,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
         JavaNames.QueryNames names
     ) {
         return """
-            public %s %s(%s) {
+            %s
                 return executor.%s(
                         %s,
                         %s,
@@ -1061,14 +1123,15 @@ public final class JavaCodeGenerator implements CodeGenerator {
             }
             """
             .formatted(
-                generateReturnType(query, names),
-                names.methodName(),
-                generateMethodParameters(query, names),
+                generateMethodDeclaration(
+                    "public %s %s".formatted(generateReturnType(query, names), names.methodName()),
+                    generateMethodParameters(query, names)
+                ),
                 generateExecutorMethod(query),
                 generateStringLiteral(repositoryClassName),
                 generateStringLiteral(query.name()),
                 generateSql(query),
-                generateParameterList(query, names.parameterNames()),
+                generateParameterList(query, names.parameterNames(), "", ","),
                 names.rowMapperName()
             );
     }
@@ -1079,7 +1142,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
         JavaNames.QueryNames names
     ) {
         return """
-            public %s %s(%s) {
+            %s
                 return executor.execute(
                         %s,
                         %s,
@@ -1089,13 +1152,14 @@ public final class JavaCodeGenerator implements CodeGenerator {
             }
             """
             .formatted(
-                generateReturnType(query, names),
-                names.methodName(),
-                generateMethodParameters(query, names),
+                generateMethodDeclaration(
+                    "public %s %s".formatted(generateReturnType(query, names), names.methodName()),
+                    generateMethodParameters(query, names)
+                ),
                 generateStringLiteral(repositoryClassName),
                 generateStringLiteral(query.name()),
                 generateSql(query),
-                generateParameterList(query, names.parameterNames())
+                generateParameterList(query, names.parameterNames(), "", "")
             );
     }
 
@@ -1110,7 +1174,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
         JavaNames.QueryNames names
     ) {
         return """
-            public %s %s(List<%s> %s) {
+            %s
                 return executor.executeBatch(
                         %s,
                         %s,
@@ -1120,10 +1184,10 @@ public final class JavaCodeGenerator implements CodeGenerator {
             }
             """
             .formatted(
-                generateReturnType(query, names),
-                names.methodName(),
-                names.paramsTypeName(),
-                BATCH_NAME,
+                generateMethodDeclaration(
+                    "public %s %s".formatted(generateReturnType(query, names), names.methodName()),
+                    List.of("List<%s> %s".formatted(names.paramsTypeName(), BATCH_NAME))
+                ),
                 generateStringLiteral(repositoryClassName),
                 generateStringLiteral(query.name()),
                 generateSql(query),
@@ -1138,32 +1202,39 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * row explicitly to fail before the executor is called.
      */
     private String generateBatchArgumentLists(QueryModel query, JavaNames.QueryNames names) {
-        return "%s.stream()%s.map(%s -> %s).toList()"
+        String prefix = "%s.stream()%s.map(%s -> "
             .formatted(
                 BATCH_NAME,
                 query.bindingParameterIndexes().isEmpty()
                     ? ".map(java.util.Objects::requireNonNull)"
                     : "",
-                PARAMS_NAME,
-                generateParameterList(
-                    query,
-                    names.parameterNames().stream()
-                        .map(name -> PARAMS_NAME + "." + name + "()")
-                        .toList()
-                )
+                PARAMS_NAME
             );
+        String suffix = ").toList()";
+
+        return prefix
+            + generateParameterList(
+                query,
+                names.parameterNames().stream()
+                    .map(name -> PARAMS_NAME + "." + name + "()")
+                    .toList(),
+                prefix,
+                suffix
+            )
+            + suffix;
     }
 
     private String generateUnsupportedMethod(QueryModel query, JavaNames.QueryNames names) {
         return """
-            public %s %s(%s) {
+            %s
                 throw new UnsupportedOperationException("Not implemented");
             }
             """
             .formatted(
-                generateReturnType(query, names),
-                names.methodName(),
-                generateMethodParameters(query, names)
+                generateMethodDeclaration(
+                    "public %s %s".formatted(generateReturnType(query, names), names.methodName()),
+                    generateMethodParameters(query, names)
+                )
             );
     }
 
@@ -1282,19 +1353,47 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * {@code java.util.Collections.singletonList}, and of two or more with
      * {@code java.util.Arrays.asList}. Each of the three accepts a null
      * argument, unlike {@code List.of}, so a null parameter can be bound.
+     *
+     * <p>A list of at least one argument whose line would pass the limit writes
+     * each argument on a line of its own, one call continuation past the line
+     * that opens the list, with the closing parenthesis at that line's column.
+     * {@code prefix} and {@code suffix} are the text the caller writes before
+     * and after the list on that line, so the decision counts the whole line.
+     * A single argument that alone passes the limit stays on its line.
      */
-    private String generateParameterList(QueryModel query, List<String> valueNames) {
+    private String generateParameterList(
+        QueryModel query,
+        List<String> valueNames,
+        String prefix,
+        String suffix
+    ) {
         Map<Integer, String> argumentsByIndex = generateArgumentsByIndex(query, valueNames);
         List<String> arguments = query.bindingParameterIndexes().stream()
             .map(argumentsByIndex::get)
             .toList();
 
-        return switch (arguments.size()) {
-            case 0 -> "java.util.Collections.emptyList()";
-            case 1 -> "java.util.Collections.singletonList(%s)".formatted(arguments.get(0));
-            default -> arguments.stream()
-                .collect(Collectors.joining(", ", "java.util.Arrays.asList(", ")"));
-        };
+        if (arguments.isEmpty()) {
+            return "java.util.Collections.emptyList()";
+        }
+
+        String factory = arguments.size() == 1
+            ? "java.util.Collections.singletonList"
+            : "java.util.Arrays.asList";
+        String oneLine = arguments.stream()
+            .collect(Collectors.joining(", ", factory + "(", ")"));
+
+        if (fits(SQL_INDENT.length(), prefix + oneLine + suffix)) {
+            return oneLine;
+        }
+
+        return factory
+            + "(\n"
+            + arguments.stream()
+                .map(argument -> " ".repeat(ARGUMENT_INDENT) + argument)
+                .collect(Collectors.joining(",\n"))
+            + "\n"
+            + SQL_INDENT
+            + ")";
     }
 
     /**
@@ -1462,17 +1561,22 @@ public final class JavaCodeGenerator implements CodeGenerator {
 
     /**
      * Generates the row mapper of one value-returning query, which reads the
-     * single column of its result as the value the method returns.
+     * single column of its result as the value the method returns. A mapper
+     * whose line would pass the limit continues its mapping on the next line,
+     * one call continuation past its field, as the whole-row mapper's lambda
+     * line is.
      */
     private String generateValueRowMapper(QueryModel query, String mapperName) {
-        return """
-            private static final RowMapper<%s> %s = resultSet -> %s;
-            """
-            .formatted(
-                valueType(query),
-                mapperName,
-                generateResultMapping(query.columns().get(0), 1)
-            );
+        String field = "private static final RowMapper<%s> %s ="
+            .formatted(valueType(query), mapperName);
+        String mapping = "resultSet -> %s;"
+            .formatted(generateResultMapping(query.columns().get(0), 1));
+
+        if (fits(0, field + " " + mapping)) {
+            return field + " " + mapping + "\n";
+        }
+
+        return field + "\n" + " ".repeat(MAPPER_INDENT) + mapping + "\n";
     }
 
     private String generateRowMapper(String typeName, String mapperName, List<QueryColumn> columns) {

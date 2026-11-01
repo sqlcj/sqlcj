@@ -279,7 +279,8 @@ class ReferenceServiceIntegrationTest {
     /**
      * The migration history, the hand-written snapshot, and the dump of the
      * migrated database are three spellings of one schema, so each generates
-     * the same files with the same bytes, and that output compiles.
+     * the same files with the same bytes, that output compiles, and every line
+     * of it outside a SQL text block fits 120 columns.
      */
     @Test
     void shouldGenerateIdenticalRepositoriesFromHistorySnapshotAndDump() throws Exception {
@@ -298,7 +299,52 @@ class ReferenceServiceIntegrationTest {
         assertIdentical(historyFiles, generatedFiles(fromSnapshot));
         assertIdentical(historyFiles, generatedFiles(fromDump));
 
+        assertNoLinePassesTheColumnLimit(fromHistory);
+
         compile(fromHistory, tempDir.resolve("classes-history"));
+    }
+
+    /**
+     * Asserts that no line of one generated tree passes 120 columns, which is
+     * the limit a generated declaration, bound-argument list, and value row
+     * mapper is written within. A line inside a SQL text block is exempt,
+     * because it is the SQL of the query source, written as its author wrote
+     * it.
+     */
+    private void assertNoLinePassesTheColumnLimit(Path generatedDirectory) throws Exception {
+        try (Stream<Path> paths = Files.walk(generatedDirectory)) {
+            List<Path> sources = paths
+                .filter(path -> path.toString().endsWith(".java"))
+                .sorted()
+                .toList();
+
+            assertFalse(sources.isEmpty());
+
+            for (Path path : sources) {
+                boolean insideSql = false;
+
+                for (String line : Files.readAllLines(path)) {
+                    if (line.contains("\"\"\"")) {
+                        insideSql = !insideSql;
+
+                        continue;
+                    }
+
+                    if (insideSql) {
+                        continue;
+                    }
+
+                    assertTrue(
+                        line.length() <= 120,
+                        "%s has a line of %d columns: %s".formatted(
+                            generatedDirectory.relativize(path),
+                            line.length(),
+                            line
+                        )
+                    );
+                }
+            }
+        }
     }
 
     /**
