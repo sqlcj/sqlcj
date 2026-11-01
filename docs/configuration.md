@@ -501,6 +501,18 @@ its first file. A configuration, source, schema, query, or generated-path
 failure therefore ends the run without writing any file, and output from an
 earlier successful run is left unchanged.
 
+A configuration failure, an unreadable source, and a schema failure end the run
+at once, because the work that follows them depends on what they failed to
+produce; a schema failure reports the rejected queries of the entries analyzed
+before it and then itself. A rejected query does not end the run: every query of
+every entry is analyzed, and every rejected query is reported, one diagnostic
+each, in configuration order and then header-line order. The checks that follow
+analysis, such as the repository-method, row-record, enum, and generated-path
+collisions, run only when every query compiled, and still end the run at their
+first failure. Every diagnostic that names a source line begins with the
+location `<absolute path>:<line>: `; a diagnostic that names no line, every
+configuration diagnostic included, keeps its own form.
+
 Writing itself is not transactional. The files of a successful compilation are
 written one after another, each created or truncated in place, so a filesystem
 failure part-way through can leave a mixture of newly written files and files

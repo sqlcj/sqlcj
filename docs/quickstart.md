@@ -554,15 +554,22 @@ while a file sqlcj never generated is left alone. See
 [Configuration](configuration.md#generated-output-and-failures) for the full
 manifest and cleanup rules.
 
-If a query is invalid, `sqlcj generate` prints one diagnostic naming the source,
-the query, and the line, and exits with status `1`:
+If a query is invalid, `sqlcj generate` prints one diagnostic per rejected
+query, each beginning with the source's absolute path and the query's header
+line, and exits with status `1`:
 
 ```text
-sqlcj: Invalid query 'ListAuthorNames' in /home/dev/my-app/sql/queries.sql at line 57: Cannot infer the type of lower(name) in SELECT; state it with a cast and an alias, such as SUM(amount)::numeric AS total
+sqlcj: /home/dev/my-app/sql/queries.sql:57: Invalid query 'ListAuthorNames': Cannot infer the type of lower(name) in SELECT; state it with a cast and an alias, such as SUM(amount)::numeric AS total
+sqlcj: /home/dev/my-app/sql/queries.sql:72: Invalid query 'ListBookTitles': Cannot infer the type of upper(title) in SELECT; state it with a cast and an alias, such as SUM(amount)::numeric AS total
 ```
 
-Every configured source is compiled before any file is written, so a diagnostic
-like this writes no new file and leaves the previous output in place.
+A rejected query does not end the run, so one run reports every rejected query
+of every configured entry and the whole set can be fixed before running again.
+The `<path>:<line>: ` location is the form IDE terminals and CI log viewers turn
+into a link to the file.
+
+Every configured source is compiled before any file is written, so diagnostics
+like these write no new file and leave the previous output in place.
 
 ## 12. The Spring Boot path
 

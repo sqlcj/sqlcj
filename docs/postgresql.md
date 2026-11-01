@@ -599,7 +599,7 @@ left:
 | `ALTER TYPE ... RENAME VALUE '<label>' TO '<new label>'` | Renames the label in its position, so the modeled labels keep PostgreSQL's sort order. |
 | A `CREATE TYPE ... AS ENUM (...)` or an `ALTER TYPE ... RENAME TO` whose name a modeled enum already has | Replaces that enum in its position with the newly declared or renamed one, because the `DROP TYPE ... CASCADE` that freed the name is never seen. This is how the migration that replaces an enum loads, in either of its usual shapes: renaming the old type away before declaring the new one under its name, or declaring the new type beside it and renaming the new type onto its name once the columns are retyped. A column that still names a replaced enum keeps that name, so it is modeled as a column of the replacing enum with its labels, which is the same unseen `DROP TYPE ... CASCADE` case: PostgreSQL would have removed the column. |
 | `ALTER TYPE ... OWNER TO`, `RENAME ATTRIBUTE`, `ADD ATTRIBUTE`, `DROP ATTRIBUTE`, and `ALTER ATTRIBUTE` | Ignored. Ownership cannot change a modeled enum and the attribute actions belong to a composite type, so the stated type is not resolved at all. |
-| `ALTER TYPE ... SET SCHEMA <schema>` | Rejected for a modeled enum as `Unsupported ALTER TYPE action: SET SCHEMA <schema> at line <n>`, because the columns of that type would keep it in a namespace sqlcj does not model. |
+| `ALTER TYPE ... SET SCHEMA <schema>` | Rejected for a modeled enum as `Unsupported ALTER TYPE action: SET SCHEMA <schema>`, located at the line its statement begins on, because the columns of that type would keep it in a namespace sqlcj does not model. |
 | `ALTER TYPE ... SET SCHEMA public` | Does nothing for a modeled enum: the type already stands in the one namespace sqlcj models. |
 | `ALTER TYPE ... RENAME TO` or `SET SCHEMA` of a type sqlcj does not model | Ignored, however the type is qualified, because such a type is none of its enum types. |
 | A `CREATE TYPE` or an `ALTER TYPE` whose own type is qualified with a schema other than `public` | Ignored before anything it states is resolved, so it never touches the modeled enum of the same unqualified name and neither a repeated label nor a missing label or neighbor fails. |
@@ -634,7 +634,7 @@ other type, has no single Java type and is rejected by query analysis, which
 names each enum by its PostgreSQL type:
 
 ```text
-sqlcj: Invalid query 'UpdateStage' in /home/dev/project/sql/queries.sql at line 5: Placeholder $1 has conflicting types: stage_setting from 'setting' and String from 'handle'
+sqlcj: /home/dev/project/sql/queries.sql:5: Invalid query 'UpdateStage': Placeholder $1 has conflicting types: stage_setting from 'setting' and String from 'handle'
 ```
 
 Two entries of one package that use one enum type must define its labels alike,
@@ -698,7 +698,7 @@ These statements update the domains the statements and files before them left:
 | `ALTER TYPE ... RENAME TO` of an enum type | Renames the enum type in every domain over it, so a column of such a domain still reads the one modeled enum. |
 | Every other `ALTER DOMAIN` action, readable or not: `SET DEFAULT`, `DROP DEFAULT`, `SET NOT NULL`, `DROP NOT NULL`, `ADD`, `DROP`, `RENAME`, and `VALIDATE CONSTRAINT`, `OWNER TO`, and `SET SCHEMA` | Ignored. None of them can change the type a column of the domain has, and a domain's own `NOT NULL` never decides a column's nullability. |
 | `DROP DOMAIN [IF EXISTS] <name>[, <name> ...]`, with or without `CASCADE` or `RESTRICT` | Removes every modeled domain it names and skips every other name. sqlcj's parser reads no `DROP DOMAIN` at all, so the statement is classified by its own words, each name an identifier optionally qualified with a schema. A column already resolved keeps the type its own statement gave it, and a column declared afterwards is recorded with its declared type. |
-| A `DROP DOMAIN` whose words state no such statement | Rejected as `Unsupported schema statement: DROP DOMAIN at line <n>`, because sqlcj cannot tell what it would drop. |
+| A `DROP DOMAIN` whose words state no such statement | Rejected as `Unsupported schema statement: DROP DOMAIN`, located at the line its statement begins on, because sqlcj cannot tell what it would drop. |
 | A `CREATE DOMAIN`, `ALTER DOMAIN`, or `DROP DOMAIN` name qualified with a schema other than `public` | Ignored before anything it states is resolved, as every other statement of another schema is; a `DROP DOMAIN` skips such a name among its names. |
 
 Domain names are matched case-insensitively, after their SQL identifier
@@ -813,9 +813,9 @@ are recorded with their declared type; see
 | `LIKE t`, with any `INCLUDING` and `EXCLUDING` options | Accepted. Copies the columns, types, and nullability of the modeled table `t` at the position the clause stands in. |
 | `PARTITION OF t`, with `FOR VALUES FROM ... TO ...`, `FOR VALUES IN (...)`, `FOR VALUES WITH (MODULUS ...)`, or `DEFAULT` | Accepted. Copies the columns, types, and nullability of the modeled table `t` and keeps following its column changes; see [Ordered Table DDL](#ordered-table-ddl). |
 | An empty element list, `()` | Accepted and modeled as a table without columns. |
-| `AS SELECT ...` | Rejected as `Unsupported CREATE TABLE clause: AS SELECT at line <n>`. |
-| `OF <type>` | Rejected as `Unsupported CREATE TABLE clause: OF <type> at line <n>`. |
-| `INHERITS (p)` | Rejected as `Unsupported CREATE TABLE clause: INHERITS at line <n>`. |
+| `AS SELECT ...` | Rejected as `Unsupported CREATE TABLE clause: AS SELECT`. |
+| `OF <type>` | Rejected as `Unsupported CREATE TABLE clause: OF <type>`. |
+| `INHERITS (p)` | Rejected as `Unsupported CREATE TABLE clause: INHERITS`. |
 | A table statement sqlcj's parser cannot read, such as `ALTER FOREIGN TABLE` | Rejected; see [Ignored Statements](#ignored-statements). |
 | Any other table-constraint kind | Rejected. |
 | Unparsable SQL | Rejected. |
@@ -853,7 +853,7 @@ model.
 A `CREATE TABLE` with neither an element list, `()`, nor `PARTITION OF`, such as
 `CREATE TABLE c LIKE t` without the parentheses PostgreSQL requires, states no
 columns at all and is rejected as
-`Unsupported schema statement: CREATE TABLE at line <n>`. A form sqlcj's parser
+`Unsupported schema statement: CREATE TABLE`. A form sqlcj's parser
 cannot read, such as the column options `PARTITION OF` and `OF <type>` allow
 (`id WITH OPTIONS NOT NULL`) or `AS SELECT ... WITH NO DATA`, is rejected as
 unreadable table DDL with the parser's reason; see
@@ -884,9 +884,9 @@ statements and files before them left; the enum-type statements are listed in
 | `ALTER TABLE ... ALTER COLUMN ... SET NOT NULL` | Models the column non-null. |
 | `ALTER TABLE ... ALTER COLUMN ... DROP NOT NULL` | Models the column nullable. |
 | `ALTER TABLE IF EXISTS ...` | Does nothing when the table is not modeled. It covers only the table, so a missing column of a modeled table still fails. |
-| `ALTER TABLE ... SET SCHEMA <schema>`, as the statement's sole action, which is the only form PostgreSQL accepts | Removes the table, keeping the order of the remaining ones, because it moves out of the one namespace sqlcj models. `SET SCHEMA public` does nothing: the table already stands there. A table with modeled partitions is rejected as `Unsupported ALTER TABLE action: SET SCHEMA <schema> at line <n>`, because its partitions would stay in the modeled namespace following a parent sqlcj no longer models. |
+| `ALTER TABLE ... SET SCHEMA <schema>`, as the statement's sole action, which is the only form PostgreSQL accepts | Removes the table, keeping the order of the remaining ones, because it moves out of the one namespace sqlcj models. `SET SCHEMA public` does nothing: the table already stands there. A table with modeled partitions is rejected as `Unsupported ALTER TABLE action: SET SCHEMA <schema>`, because its partitions would stay in the modeled namespace following a parent sqlcj no longer models. |
 | A `CREATE TABLE` or an `ALTER TABLE` whose own table is qualified with a schema other than `public` | Ignored before anything it names is resolved, so neither its rejected clauses, its rejected actions, nor its `LIKE` and `PARTITION OF` sources are resolved and a modeled table of the same unqualified name is left alone. |
-| Any other `ALTER TABLE` action outside the ignored actions listed in [Ignored Statements](#ignored-statements) | Rejected as `Unsupported ALTER TABLE action: <action> at line <n>`, quoting the action's own SQL. |
+| Any other `ALTER TABLE` action outside the ignored actions listed in [Ignored Statements](#ignored-statements) | Rejected as `Unsupported ALTER TABLE action: <action>`, quoting the action's own SQL. |
 | `DROP` of any object other than a table, such as `DROP VIEW` or `DROP INDEX` | Ignored; see [Ignored Statements](#ignored-statements). A `DROP VIEW` or `DROP MATERIALIZED VIEW` changes no modeled table either, and only removes the names it states from the recorded views. |
 
 One `ALTER TABLE` may state several actions; they are applied in the written
@@ -984,16 +984,18 @@ table or a column the snapshot does not model: a view over an unmodeled table
 and a `TRUNCATE` of one are both accepted.
 
 These statements are rejected rather than ignored, because sqlcj cannot tell
-what they would do to the schema model:
+what they would do to the schema model. Each diagnostic below is reported at the
+line its own statement begins on, or at the line of the unexpected token, in the
+located form `<absolute path>:<line>: Invalid schema source: <reason>`:
 
 | Statement | Diagnostic |
 | --- | --- |
-| An `ALTER TABLE` action outside [Ordered Table DDL](#ordered-table-ddl) and the ignored actions below | `Unsupported ALTER TABLE action: <action> at line <n>`, quoting the action's own SQL |
-| A `CREATE TABLE ... AS SELECT`, `OF <type>`, or `INHERITS`, whose columns sqlcj cannot determine | `Unsupported CREATE TABLE clause: <clause> at line <n>`, naming `AS SELECT`, `OF <type>`, or `INHERITS` |
-| An `ALTER TYPE ... SET SCHEMA <other schema>` of a modeled enum type | `Unsupported ALTER TYPE action: SET SCHEMA <schema> at line <n>` |
-| A statement sqlcj's parser cannot read that opens as table or type DDL, outside the `ALTER TABLE` actions below and the names of another schema below | The parser's own reason with the line and column of the unexpected token, as in `Encountered unexpected token: "DATA" at line 18, column 41` |
-| A statement sqlcj's parser reports only as opaque text, or as several statements, and that opens as table or type DDL | `Unsupported schema statement: ALTER FOREIGN TABLE at line <n>`, quoting the opening words |
-| A `DROP DOMAIN` whose words state no such statement, and a `CREATE DOMAIN` sqlcj's parser cannot read whose words state no name | `Unsupported schema statement: DROP DOMAIN at line <n>` and the parser's own reason; see [Domain Types](#domain-types) |
+| An `ALTER TABLE` action outside [Ordered Table DDL](#ordered-table-ddl) and the ignored actions below | `Unsupported ALTER TABLE action: <action>`, quoting the action's own SQL |
+| A `CREATE TABLE ... AS SELECT`, `OF <type>`, or `INHERITS`, whose columns sqlcj cannot determine | `Unsupported CREATE TABLE clause: <clause>`, naming `AS SELECT`, `OF <type>`, or `INHERITS` |
+| An `ALTER TYPE ... SET SCHEMA <other schema>` of a modeled enum type | `Unsupported ALTER TYPE action: SET SCHEMA <schema>` |
+| A statement sqlcj's parser cannot read that opens as table or type DDL, outside the `ALTER TABLE` actions below and the names of another schema below | The parser's own reason with the column of the unexpected token, located at its line, as in `/home/dev/project/schema.sql:18: Invalid schema source: Encountered unexpected token: "DATA" at column 41` |
+| A statement sqlcj's parser reports only as opaque text, or as several statements, and that opens as table or type DDL | `Unsupported schema statement: ALTER FOREIGN TABLE`, quoting the opening words |
+| A `DROP DOMAIN` whose words state no such statement, and a `CREATE DOMAIN` sqlcj's parser cannot read whose words state no name | `Unsupported schema statement: DROP DOMAIN` and the parser's own reason; see [Domain Types](#domain-types) |
 
 A statement opens as table DDL when its first words are `CREATE`, `ALTER`, or
 `DROP`, then any of `GLOBAL`, `LOCAL`, `TEMP`, `TEMPORARY`, `UNLOGGED`, or
@@ -1004,7 +1006,7 @@ domains the schema models; see [Domain Types](#domain-types). The words are
 matched case-insensitively and the diagnostic quotes them
 in upper case, single-spaced, so both
 `ALTER FOREIGN TABLE ft ADD COLUMN x integer` and its lower-case spelling are
-rejected as `Unsupported schema statement: ALTER FOREIGN TABLE at line <n>`.
+rejected as `Unsupported schema statement: ALTER FOREIGN TABLE`.
 
 An unreadable statement that opens as `CREATE` or `ALTER TABLE` or as `CREATE`
 or `ALTER TYPE` is ignored instead when the object it names stands in a schema
@@ -1068,10 +1070,10 @@ action, the only form PostgreSQL accepts, it is applied as
 [Ordered Table DDL](#ordered-table-ddl) states, and written beside another
 action, as in `ALTER TABLE users ADD COLUMN x int, SET SCHEMA archive` or
 `ALTER TABLE users SET SCHEMA archive, OWNER TO app`, it is rejected as
-`Unsupported ALTER TABLE action: SET SCHEMA archive at line <n>`. A modeled
+`Unsupported ALTER TABLE action: SET SCHEMA archive`. A modeled
 action written after an ignored action is rejected rather than skipped, so
 `ALTER TABLE users OWNER TO app, ADD COLUMN x int` is rejected as
-`Unsupported ALTER TABLE action: ADD COLUMN x int at line <n>`. Written the
+`Unsupported ALTER TABLE action: ADD COLUMN x int`. Written the
 other way round, `ALTER TABLE users ADD COLUMN x int, OWNER TO app` appends `x`.
 
 An `ALTER TABLE` sqlcj's parser cannot read is classified by its words instead,
@@ -1105,7 +1107,8 @@ fails only itself:
   ends at the next occurrence of its own opening delimiter, as PostgreSQL ends
   it, whether that delimiter stands alone or is glued to the body as in
   `$fn$BEGIN ... END$fn$`. A body that is never closed fails the source as
-  `Unterminated dollar-quoted string at line <n>, column <c>`.
+  `Unterminated dollar-quoted string at column <c>`, located at the line of the
+  delimiter that opened it.
 - A psql meta-command line, a line whose first non-blank character is a
   backslash, such as the `\restrict` and `\unrestrict` lines recent `pg_dump`
   releases write, is skipped. Every line and column a diagnostic reports is a
@@ -1244,30 +1247,39 @@ the column without using its type, such as `WHERE tags IS NULL`.
 
 ### Failure Behavior
 
-An unsupported statement, a schema sqlcj cannot parse, or a query that uses a
-column of an unmapped type stops compilation. `sqlcj generate` prints a single
-message on standard error
-and exits with status `1`. Because every configured source is analyzed and
+An unsupported statement or a schema sqlcj cannot parse stops compilation where
+it stands, because the queries of that entry cannot be analyzed without its
+schema. A query that uses a column of an unmapped type is that query's
+rejection alone: every query of every entry is analyzed, and `sqlcj generate`
+prints one message per rejected query on standard error, in configuration order
+and then header-line order, before exiting with status `1`. A schema failure
+prints the rejected queries of the entries analyzed before it and then itself.
+Because every configured source is analyzed and
 generated before the run writes its first file, such a failure writes no
 generated file, and output
 written by an earlier successful run is left unchanged. The writing step itself
 is sequential rather than atomic; see
 [Generated Output and Failures](configuration.md#generated-output-and-failures).
 
-A schema message names the schema source and the offending statement or action
-in SQL terms with the line it begins on, the table or column the statement
-refers to, or the syntax error with the line and column it was found at. A query
-message names the query, its source, its header line, and the offending column
-and recorded type:
+A message that names a source line begins with the location
+`<absolute path>:<line>: `, the form IDE terminals and CI log viewers turn into
+a link to the file. A schema message names the offending statement or action in
+SQL terms at the line it begins on, the table or column the statement refers to,
+or the syntax error at the line it was found on with the column inside the
+reason. A query message names the query and the offending column and recorded
+type, at the query's header line:
 
 ```text
-sqlcj: Invalid schema source /home/dev/project/schema.sql: Unsupported schema statement: ALTER FOREIGN TABLE at line 12
-sqlcj: Invalid schema source /home/dev/project/schema.sql: Unsupported ALTER TABLE action: SET SCHEMA archive at line 18
-sqlcj: Invalid schema source /home/dev/project/schema.sql: Unsupported CREATE TABLE clause: AS SELECT at line 24
+sqlcj: /home/dev/project/schema.sql:12: Invalid schema source: Unsupported schema statement: ALTER FOREIGN TABLE
+sqlcj: /home/dev/project/schema.sql:18: Invalid schema source: Unsupported ALTER TABLE action: SET SCHEMA archive
+sqlcj: /home/dev/project/schema.sql:24: Invalid schema source: Unsupported CREATE TABLE clause: AS SELECT
 sqlcj: Invalid schema source /home/dev/project/schema.sql: Table not found in schema: reporting.events
-sqlcj: Invalid schema source /home/dev/project/schema.sql: Encountered unexpected token: ";" at line 4, column 1
-sqlcj: Invalid query 'ListTags' in /home/dev/project/queries.sql at line 5: Column 'tags' has unsupported type JSONB[]
+sqlcj: /home/dev/project/schema.sql:4: Invalid schema source: Encountered unexpected token: ";" at column 1
+sqlcj: /home/dev/project/queries.sql:5: Invalid query 'ListTags': Column 'tags' has unsupported type JSONB[]
 ```
+
+A schema diagnostic that names no line, such as `Table not found in schema`,
+keeps its unlocated form, which names the schema source itself.
 
 ## Verified by
 
@@ -1785,6 +1797,12 @@ Ignored statements:
   covers the migration file, the SQL-term message, and the line of a rejected
   statement that follows an ignored index and an ignored view, and that no file
   is written.
+- `SqlcjCompilerIntegrationTest.shouldReportAnEarlierEntrysRejectionsBeforeASchemaFailure`
+  covers a schema failure that ends the run after an earlier entry's rejected
+  query, reporting neither its own entry's queries nor any generated file, and
+  `SqlcjCompilerIntegrationTest.shouldLocateASchemaDiagnosticOfARelativePathAbsolutely`
+  covers the absolute path a located schema diagnostic states for a relatively
+  configured source.
 
 Nulls:
 

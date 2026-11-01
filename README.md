@@ -101,9 +101,15 @@ run in, while the relative paths inside the file stay relative to the file's own
 directory. `generate` exits with status `0` on success, and with status `1`
 after printing one diagnostic for a configuration file it cannot find or choose,
 invalid configuration, an unreadable source, a
-schema it cannot parse, a query it cannot compile, an output directory or file
+schema it cannot parse, an output directory or file
 it cannot write, a stale generated file it cannot delete, or an output manifest
 it cannot read or write.
+
+A query it cannot compile does not end the run: every rejected query of every
+configured entry is reported, one diagnostic per rejected query, before the run
+exits with status `1` having written nothing. Every diagnostic that names a
+source line begins with the location `<absolute path>:<line>: `, which IDE
+terminals and CI log viewers turn into a link to the file.
 
 ## Getting started
 
