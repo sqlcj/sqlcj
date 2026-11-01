@@ -141,11 +141,37 @@ the application declares both itself, as in
 [Spring Framework and Spring Boot Without the Starter](#spring-framework-and-spring-boot-without-the-starter).
 
 The starter adds no configuration property of its own: the database is
-configured by Spring Boot's own `spring.datasource.*` properties. It also
-translates no exception. A failing operation throws the runtime's
-`org.sqlcj.runtime.QueryExecutionException`, and a `:one` read that matches no
-row or several throws `org.sqlcj.runtime.QueryCardinalityException`, inside a
-Spring application exactly as outside one.
+configured by Spring Boot's own `spring.datasource.*` properties.
+
+### Exceptions
+
+The starter translates no exception. A generated operation throws the
+runtime's own exceptions inside a Spring application exactly as outside one,
+and converts none of them into Spring's `DataAccessException` family:
+
+- `org.sqlcj.runtime.QueryExecutionException` for a failure, with
+  `UniqueViolationException`, `ForeignKeyViolationException`,
+  `NotNullViolationException`, `CheckViolationException`, their parent
+  `ConstraintViolationException`, `TransactionConflictException`, and
+  `QueryTimeoutException` under it, each named by what went wrong;
+- `org.sqlcj.runtime.QueryCardinalityException` for a `:one` read that matched
+  no row or several.
+
+[Connection Ownership and Transactions](postgresql.md#connection-ownership-and-transactions)
+lists the exception each SQLSTATE raises, and `sqlState()` reports the code
+itself.
+
+So a `@Transactional` service method catches a duplicate key as
+`UniqueViolationException`, not as Spring's `DuplicateKeyException`. The
+`PersistenceExceptionTranslationPostProcessor` Spring Boot registers does not
+reach a generated repository either: a generated class carries no Spring
+stereotype.
+
+A commit failure of a Spring-managed transaction is Spring's own exception,
+because Spring commits that transaction: its transaction manager translates
+the failure into its family, and the runtime is not involved. The runtime's
+mapped commit failure belongs to its own `JdbcTransactions` helper, which a
+Spring application does not use inside a Spring-managed transaction.
 
 ## A Generated Package Outside the Application's Packages
 

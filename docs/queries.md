@@ -86,6 +86,18 @@ whether that change is kept, by running the write on a caller-owned connection
 and rolling back. The exception messages are listed in
 [PostgreSQL Support](postgresql.md#connection-ownership-and-transactions).
 
+A statement the database refused raises the exception of the runtime that names
+what went wrong: `UniqueViolationException`, `ForeignKeyViolationException`,
+`NotNullViolationException`, and `CheckViolationException`, their parent
+`ConstraintViolationException` for any other constraint violation,
+`TransactionConflictException` for a serialization failure or a deadlock, and
+`QueryTimeoutException` for a cancelled statement. Each one is a
+`QueryExecutionException`, as is a plain failure no SQLSTATE names, and each
+carries the `SQLException` as its cause and reports its SQLSTATE through
+`sqlState()`. The exception a given SQLSTATE raises, and the failures that stay
+plain, are listed in
+[Connection Ownership and Transactions](postgresql.md#connection-ownership-and-transactions).
+
 ## Reads
 
 A `SELECT` query is analyzed against the schema snapshot of its own
@@ -2333,6 +2345,13 @@ Query sources and annotations:
   executes `:one`, `:optional`, and `:many` over zero, one, and two matching
   rows of a non-unique column against PostgreSQL 16, through both executor
   construction paths.
+- `JdbcQueryExecutorTest.shouldRaiseTheMappedExceptionOfEverySqlStateOnADataSourceOperation`,
+  `JdbcQueryExecutorTest.shouldRaiseTheMappedExceptionOfEverySqlStateOnACallerOwnedConnection`,
+  and
+  `PostgresIntegrationTest.shouldRaiseTheMappedConstraintViolationsOfGeneratedWritesAgainstPostgres`
+  cover the exception each refused statement raises, through a generated
+  `:exec` and `:batchexec` method against PostgreSQL 16; the full list is in
+  [Connection Ownership and Transactions](postgresql.md#connection-ownership-and-transactions).
 - `JavaCodeGeneratorTest.shouldGenerateOptionalExecutionForOptionalQuery`,
   `JavaCodeGeneratorTest.shouldShareOneRowRecordBetweenOptionalAndOtherFullRowQueries`,
   `JavaCodeGeneratorTest.shouldNotImportOptionalWithoutAnOptionalQuery`,
