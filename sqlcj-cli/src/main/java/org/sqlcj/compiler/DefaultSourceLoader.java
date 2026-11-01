@@ -6,7 +6,7 @@ import org.sqlcj.io.DefaultFileLoader;
 import org.sqlcj.io.FileLoader;
 import org.sqlcj.io.FileSystemReason;
 import org.sqlcj.parser.DefaultQueryParser;
-import org.sqlcj.parser.Query;
+import org.sqlcj.parser.ParsedQueries;
 import org.sqlcj.parser.QueryParser;
 
 import java.io.IOException;
@@ -49,14 +49,15 @@ public final class DefaultSourceLoader implements SourceLoader {
             Path queriesPath = Path.of(sqlConfig.queries());
 
             List<SchemaFile> schemaFiles = loadSchema(sqlConfig.schema());
-            List<Query> queries = parse(read(queriesPath, "queries"), queriesPath);
+            ParsedQueries parsed = queryParser.parse(read(queriesPath, "queries"));
 
             sources.add(
                 new Source(
                     sqlConfig.name(),
                     schemaFiles,
                     queriesPath,
-                    queries
+                    parsed.queries(),
+                    parsed.rejections()
                 )
             );
         }
@@ -195,17 +196,6 @@ public final class DefaultSourceLoader implements SourceLoader {
             throw new CompilationException(
                 "Cannot read %s source: %s: %s"
                     .formatted(kind, path, FileSystemReason.of(e)),
-                e
-            );
-        }
-    }
-
-    private List<Query> parse(String querySource, Path queriesPath) {
-        try {
-            return queryParser.parse(querySource);
-        } catch (IllegalArgumentException e) {
-            throw new CompilationException(
-                "Invalid query source %s: %s".formatted(queriesPath, e.getMessage()),
                 e
             );
         }

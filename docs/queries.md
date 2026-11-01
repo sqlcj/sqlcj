@@ -34,10 +34,13 @@ WHERE id = $1;
   entries may use the same query name, because each entry generates its own
   repository.
 - An unparsable header, an unknown annotation, a duplicate name, and a header
-  without SQL are all rejected. An unknown annotation names the header's line,
-  the accepted annotations, and the closest one, as in
-  `Unknown query annotation ':mnay' at line 12; did you mean ':many'? Use one of
-  :one, :optional, :many, :exec, :batchexec`.
+  without SQL are all rejected. Each rejects its own query alone, at its header
+  line, and the lines up to the next header are skipped, so one run reports
+  every rejected header of the file. An unknown annotation names the accepted
+  annotations and the closest one, as in
+  `/home/dev/project/sql/queries.sql:12: Invalid query source: Unknown query
+  annotation ':mnay'; did you mean ':many'? Use one of :one, :optional, :many,
+  :exec, :batchexec`.
 
 A diagnostic that reports a name sqlcj does not know — an annotation, a table,
 or a column — suggests the closest name it knows, by one rule: the smallest edit
@@ -2003,8 +2006,12 @@ the documented shapes are contract, tested, and safe to rely on.
 
 ### Rejected
 
-Rejection stops the run with one diagnostic line naming the query source, the
-query name, and its header line.
+A rejected query is reported as one diagnostic line that begins with the
+absolute path of the query source and the query's header line, as in
+`/home/dev/project/sql/queries.sql:57: Invalid query 'ListAuthorNames': ...`.
+Rejection does not stop the run: every query of every configured entry is
+analyzed, and every rejected query is reported, in configuration order and then
+header-line order, before the run exits with status `1` having written nothing.
 
 - A statement that is not a `SELECT`, an `INSERT`, an `UPDATE`, or a `DELETE`,
   including `VALUES`, `TABLE`, `MERGE`, `TRUNCATE`, `EXPLAIN`, `EXECUTE`, a DDL
@@ -2189,9 +2196,11 @@ query name, and its header line.
 An unexpected failure of schema parsing, query analysis, or generation is not a
 diagnostic of the compiled input: it is reported as one line that names the
 step's own input and ends `; please report this sqlcj defect`, such as
-`Internal error while analyzing query 'GetUser' in queries.sql at line 1;
-please report this sqlcj defect`. The line carries neither the message nor the
-class of the failure, because neither describes the compiled input.
+`/home/dev/project/sql/queries.sql:1: Internal error while analyzing query
+'GetUser'; please report this sqlcj defect`. The line carries neither the
+message nor the class of the failure, because neither describes the compiled
+input. Such a failure of one query is that query's rejection, so the run
+continues and reports the other rejected queries beside it.
 
 ### Not analyzed
 
@@ -2242,6 +2251,11 @@ Query sources and annotations:
   `DefaultQueryParserTest.rejectsInvalidQueryType`,
   `DefaultQueryParserTest.rejectsDuplicateQueryNames`, and
   `DefaultQueryParserTest.rejectsQueryWithoutSql` cover the file format;
+  `DefaultQueryParserTest.rejectsEveryHeaderItCannotReadBesideAnAcceptedQuery`
+  and `DefaultQueryParserTest.rejectsQueryWithoutSqlBesideALaterQuery` cover a
+  rejected header ending at the next header, so the queries around it are still
+  parsed, and `DefaultSourceLoaderTest.shouldCarryTheRejectedQueriesOfItsSource`
+  covers the rejections a loaded entry carries;
   `DefaultQueryParserTest.suggestsClosestAnnotationAtItsHeaderLine`,
   `DefaultQueryParserTest.suggestsAnnotationForDifferentlyCasedAnnotation`,
   `DefaultQueryParserTest.suggestsAnnotationForAnnotationWithoutColon`, and
@@ -3100,6 +3114,22 @@ Unsupported queries and internal errors:
   line of each, that it carries neither the failure's message nor its class,
   including a blank-message unsupported-operation failure and a
   `NumberFormatException`, and that no file is written.
+- `SqlcjCompilerIntegrationTest.shouldReportEveryRejectedQueryOfOneSourceInHeaderOrder`
+  covers two rejected queries of one source with a rejected header between
+  them, in header order,
+  `SqlcjCompilerIntegrationTest.shouldReportTheRejectedQueriesOfEveryEntry`
+  covers the rejected queries of two entries in configuration order beside
+  untouched earlier output,
+  `SqlcjCompilerIntegrationTest.shouldNotReportAGenerationCollisionWhileAQueryIsRejected`
+  covers the repeated repository method that is not reported while a query is
+  rejected, and
+  `SqlcjCompilerIntegrationTest.shouldReportAnUnexpectedAnalysisFailureBesideARejectedQuery`
+  covers an unforeseen failure of one query reported as that query's rejection
+  beside another rejected query, in header order.
+- `GenerateCommandTest.shouldReportEveryRejectedQueryOfOneSource` and
+  `GenerateCommandTest.shouldReportTheRejectedQueriesOfBothEntries` run the CLI
+  and cover one located line of standard error per rejected query, their order,
+  status `1`, and the absent output directory.
 
 Parameters:
 

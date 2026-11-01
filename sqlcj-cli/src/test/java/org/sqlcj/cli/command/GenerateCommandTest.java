@@ -317,10 +317,10 @@ class GenerateCommandTest {
         assertEquals(1, result.exitCode(), result.error());
         assertEquals(
             List.of(
-                "sqlcj: Invalid schema source %s: "
+                "sqlcj: %s:4: Invalid schema source: "
                     .formatted(workingDirectory.resolve("schema.sql"))
                     + "Encountered unexpected token: \";\" "
-                    + "at line 4, column 1"
+                    + "at column 1"
             ),
             result.error().lines().toList()
         );
@@ -360,7 +360,7 @@ class GenerateCommandTest {
         assertEquals(1, result.exitCode(), result.error());
         assertEquals(
             List.of(
-                "sqlcj: Invalid query 'GetUser' in %s at line 1: "
+                "sqlcj: %s:1: Invalid query 'GetUser': "
                     .formatted(workingDirectory.resolve("queries.sql"))
                     + "Encountered unexpected token: \"AND\""
             ),
@@ -463,13 +463,138 @@ class GenerateCommandTest {
 
         assertTrue(
             result.error().contains(
-                "sqlcj: Invalid query 'GetUser' in %s at line 5: "
+                "sqlcj: %s:5: Invalid query 'GetUser': "
                     .formatted(workingDirectory.resolve("queries.sql"))
                     + "Placeholder indexes must start at $1 without gaps, but were [1, 3]"
             ),
             result.error()
         );
 
+        assertFalse(result.error().contains("\tat "));
+        assertFalse(Files.exists(workingDirectory.resolve("generated")));
+    }
+
+    /**
+     * Every rejected query of one source is reported, each as its own located
+     * line of standard error, in the order the source writes its headers, and
+     * the run exits with status {@code 1} without writing anything.
+     */
+    @Test
+    void shouldReportEveryRejectedQueryOfOneSource() throws Exception {
+        Files.writeString(workingDirectory.resolve("schema.sql"), SCHEMA);
+        Files.writeString(
+            workingDirectory.resolve("queries.sql"),
+            """
+                -- name: ListUsers :many
+                SELECT id
+                FROM users
+                WHERE id = $2;
+
+                -- name: ListNames :mnay
+                SELECT name
+                FROM users;
+
+                -- name: GetUser :one
+                SELECT id
+                FROM users
+                WHERE id = $3;
+                """
+        );
+        Files.writeString(
+            workingDirectory.resolve("sqlcj.yaml"),
+            """
+                version: "1"
+                sql:
+                  - name: Users
+                    schema: schema.sql
+                    queries: queries.sql
+                java:
+                  package: dev.example.generated
+                  out: generated
+                """
+        );
+
+        Result result = runGenerate();
+
+        Path queries = workingDirectory.resolve("queries.sql");
+
+        assertEquals(1, result.exitCode(), result.error());
+        assertEquals(
+            List.of(
+                "sqlcj: %s:1: Invalid query 'ListUsers': ".formatted(queries)
+                    + "Placeholder indexes must start at $1 without gaps, but were [2]",
+                "sqlcj: %s:6: Invalid query source: ".formatted(queries)
+                    + "Unknown query annotation ':mnay'; did you mean ':many'?"
+                    + " Use one of :one, :optional, :many, :exec, :batchexec",
+                "sqlcj: %s:10: Invalid query 'GetUser': ".formatted(queries)
+                    + "Placeholder indexes must start at $1 without gaps, but were [3]"
+            ),
+            result.error().lines().toList()
+        );
+        assertFalse(result.error().contains("\tat "));
+        assertFalse(Files.exists(workingDirectory.resolve("generated")));
+    }
+
+    /**
+     * The rejected queries of both configured entries are reported in one run,
+     * in configuration order, and nothing is written.
+     */
+    @Test
+    void shouldReportTheRejectedQueriesOfBothEntries() throws Exception {
+        Files.writeString(workingDirectory.resolve("schema.sql"), SCHEMA);
+        Files.writeString(
+            workingDirectory.resolve("users-queries.sql"),
+            """
+                -- name: ListUsers :many
+                SELECT id
+                FROM users
+                WHERE id = $2;
+                """
+        );
+        Files.writeString(
+            workingDirectory.resolve("people-queries.sql"),
+            """
+                -- name: ListPeople :many
+                SELECT id
+                FROM users;
+
+                -- name: GetPerson :one
+                SELECT id
+                FROM users
+                WHERE id = $2;
+                """
+        );
+        Files.writeString(
+            workingDirectory.resolve("sqlcj.yaml"),
+            """
+                version: "1"
+                sql:
+                  - name: Users
+                    schema: schema.sql
+                    queries: users-queries.sql
+                  - name: People
+                    schema: schema.sql
+                    queries: people-queries.sql
+                java:
+                  package: dev.example.generated
+                  out: generated
+                """
+        );
+
+        Result result = runGenerate();
+
+        assertEquals(1, result.exitCode(), result.error());
+        assertEquals(
+            List.of(
+                "sqlcj: %s:1: Invalid query 'ListUsers': "
+                    .formatted(workingDirectory.resolve("users-queries.sql"))
+                    + "Placeholder indexes must start at $1 without gaps, but were [2]",
+                "sqlcj: %s:5: Invalid query 'GetPerson': "
+                    .formatted(workingDirectory.resolve("people-queries.sql"))
+                    + "Placeholder indexes must start at $1 without gaps, but were [2]"
+            ),
+            result.error().lines().toList()
+        );
         assertFalse(result.error().contains("\tat "));
         assertFalse(Files.exists(workingDirectory.resolve("generated")));
     }

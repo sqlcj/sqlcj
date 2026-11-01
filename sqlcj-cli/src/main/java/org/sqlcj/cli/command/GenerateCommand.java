@@ -13,6 +13,7 @@ import picocli.CommandLine.Model.CommandSpec;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Spec;
 
+import java.io.PrintWriter;
 import java.nio.file.Path;
 import java.util.concurrent.Callable;
 
@@ -51,10 +52,18 @@ public class GenerateCommand implements Callable<Integer> {
             SqlcjCompiler compiler = new SqlcjCompiler();
             compiler.compile(config);
             return CommandLine.ExitCode.OK;
-        } catch (ConfigurationException | CompilationException e) {
+        } catch (ConfigurationException e) {
             spec.commandLine()
                 .getErr()
                 .println("sqlcj: " + e.getMessage());
+
+            return CommandLine.ExitCode.SOFTWARE;
+        } catch (CompilationException e) {
+            PrintWriter err = spec.commandLine().getErr();
+
+            for (String diagnostic : e.diagnostics()) {
+                err.println("sqlcj: " + diagnostic);
+            }
 
             return CommandLine.ExitCode.SOFTWARE;
         }
