@@ -540,6 +540,7 @@ package com.example.app.db;
  *
  * <p>Enum: stage_setting
  */
+@org.jspecify.annotations.NullMarked
 public enum StageSetting {
 
     INDOOR("indoor"),
@@ -556,7 +557,7 @@ public enum StageSetting {
         return label;
     }
 
-    public static StageSetting fromLabel(String label) {
+    public static @org.jspecify.annotations.Nullable StageSetting fromLabel(@org.jspecify.annotations.Nullable String label) {
         if (label == null) {
             return null;
         }
@@ -1189,8 +1190,12 @@ Nullability itself is parsed from `NOT NULL` only:
   `SERIAL4`, or `SERIAL8`, is always modeled non-null, because PostgreSQL
   defines those spellings as an integer type with a sequence default and
   `NOT NULL`,
-- nullability never changes a generated Java type. It is carried into the
-  analyzed model, but the generated type is resolved from the column type alone.
+- nullability never changes which Java type is generated. It is resolved from
+  the column type alone, and nullability states itself on that type as a
+  JSpecify annotation: a nullable result component carries
+  `@org.jspecify.annotations.Nullable`, and a non-null one carries nothing. The
+  rules and their placement are documented in
+  [Generated Java](queries.md#generated-java).
 
 Null binding and null reading are executed against PostgreSQL for the nullable
 columns of the integration schema snapshots, which cover `SMALLINT`, `VARCHAR`,

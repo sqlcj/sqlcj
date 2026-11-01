@@ -134,8 +134,10 @@ mkdir -p sql/migrations src/main/java/com/example/app
 
 Two details matter:
 
-- `sqlcj-runtime` is the only sqlcj dependency. It has no dependencies of its
-  own; the compiler, YAML, and SQL-parser libraries stay inside the CLI JAR.
+- `sqlcj-runtime` is the only sqlcj dependency. Its one dependency is
+  `org.jspecify:jspecify`, the annotation-only artifact the runtime and the
+  generated sources state their nullness with; the compiler, YAML, and
+  SQL-parser libraries stay inside the CLI JAR.
 - Maven Compiler Plugin 3.15.0 compiles the directories listed in
   `compileSourceRoots`. Setting that list replaces the default, so both
   `src/main/java` and the sqlcj output directory must be named explicitly.

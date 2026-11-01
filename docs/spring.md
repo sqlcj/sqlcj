@@ -1,10 +1,11 @@
 # Spring
 
-Generated code depends on the sqlcj runtime alone, so a generated repository is
-an ordinary Java object in a Spring application: it runs its queries through
-the `org.sqlcj.runtime.QueryExecutor` it was constructed with. All a Spring
-application decides is which executor that is and how the repositories become
-beans.
+Generated code depends on the sqlcj runtime alone, which brings the JSpecify
+annotations the generated sources state their nullness with, so a generated
+repository is an ordinary Java object in a Spring application: it runs its
+queries through the `org.sqlcj.runtime.QueryExecutor` it was constructed with.
+All a Spring application decides is which executor that is and how the
+repositories become beans.
 
 This guide covers four cases:
 
