@@ -219,7 +219,11 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertTrue(repository.contains("private static final RowMapper<UsersRow> usersRowMapper"));
-        assertTrue(repository.contains("resultSet.getObject(1, Long.class)"));
+        assertTrue(
+            repository.contains(
+                "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)"
+            )
+        );
         assertTrue(repository.contains("resultSet.getObject(2, String.class)"));
         assertTrue(repository.contains("resultSet.getObject(3, Boolean.class)"));
         assertTrue(repository.contains("resultSet.getObject(4, LocalDate.class)"));
@@ -1082,7 +1086,9 @@ class SqlcjCompilerIntegrationTest {
         String source = Files.readString(tempDir.resolve("generated/generated/UsersRepository.java"));
 
         assertTrue(source.contains("public GetUserResult getUser(@org.jspecify.annotations.Nullable Long id)"));
-        assertTrue(source.contains("resultSet.getObject(1, Long.class)"));
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+        );
         assertTrue(source.contains("resultSet.getObject(2, String.class)"));
 
         QueryExecutor executor = new JdbcQueryExecutor(joinDataSource());
@@ -1195,8 +1201,12 @@ class SqlcjCompilerIntegrationTest {
             recordComponents(source, "ListUserProfilesResult")
         );
 
-        assertTrue(source.contains("resultSet.getObject(1, Long.class)"));
-        assertTrue(source.contains("resultSet.getObject(2, Long.class)"));
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+        );
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, Long.class)")
+        );
         assertTrue(source.contains("resultSet.getObject(3, String.class)"));
 
         QueryExecutor executor = new JdbcQueryExecutor(joinDataSource());
@@ -1988,7 +1998,9 @@ class SqlcjCompilerIntegrationTest {
 
         String previous = Files.readString(generatedFile);
 
-        assertTrue(previous.contains("resultSet.getObject(1, Long.class)"));
+        assertTrue(
+            previous.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+        );
 
         byte[] previousManifest = Files.readAllBytes(
             generatedDirectory.resolve("sqlcj-manifest.txt")
@@ -3570,7 +3582,9 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(source.contains("Long userId"));
         assertTrue(source.contains("String class_"));
-        assertTrue(source.contains("resultSet.getObject(1, Long.class)"));
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+        );
         assertTrue(source.contains("resultSet.getObject(2, String.class)"));
         assertTrue(source.contains("listUserData(@org.jspecify.annotations.Nullable String class_)"));
         assertTrue(source.contains("WHERE \"class\" = ?"));
@@ -3693,7 +3707,11 @@ class SqlcjCompilerIntegrationTest {
             )
         );
         assertTrue(repository.contains("resultSet.getObject(1, String.class)"));
-        assertTrue(repository.contains("resultSet.getObject(2, Long.class)"));
+        assertTrue(
+            repository.contains(
+                "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, Long.class)"
+            )
+        );
         assertTrue(repository.contains("java.util.Arrays.asList(name, id)"));
         assertTrue(repository.contains("RETURNING name, id"));
 

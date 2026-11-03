@@ -54,6 +54,14 @@ public final class JavaCodeGenerator implements CodeGenerator {
      */
     private static final String NULLABLE = "@org.jspecify.annotations.Nullable";
 
+    /**
+     * The runtime class every read of a component or single-column value the
+     * model states non-null goes through, written fully qualified as every
+     * runtime helper is, so that no generated name can shadow it and the
+     * generated imports stay unchanged.
+     */
+    private static final String NOT_NULL_COLUMN = "org.sqlcj.runtime.NotNullColumn";
+
     /** Generator-owned name of the list one generated batch method takes. */
     private static final String BATCH_NAME = "batch";
 
@@ -1679,6 +1687,12 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * {@code org.sqlcj.runtime.SqlArray}, which reads each element as a scalar
      * of the element type is read; every other column is read as its mapped
      * Java type.
+     *
+     * <p>A column the model states non-null is read through
+     * {@code org.sqlcj.runtime.NotNullColumn} instead, which reads the same
+     * value and fails where the database returns SQL {@code NULL} all the
+     * same, so that the read never contradicts the nullness the generated API
+     * declares.
      */
     private String generateResultMapping(QueryColumn column, int position) {
         if (column.array()) {
@@ -1686,44 +1700,63 @@ public final class JavaCodeGenerator implements CodeGenerator {
         }
 
         if (column.type() == ColumnType.ENUM) {
-            return "%s.fromLabel(resultSet.getString(%d))"
-                .formatted(JavaNames.enumTypeName(column.enumType()), position);
+            String enumTypeName = JavaNames.enumTypeName(column.enumType());
+
+            return column.nullable()
+                ? "%s.fromLabel(resultSet.getString(%d))".formatted(enumTypeName, position)
+                : "%s.getString(resultSet, %d, %s::fromLabel)"
+                    .formatted(NOT_NULL_COLUMN, position, enumTypeName);
         }
 
         if (isUntypedText(column.type())) {
-            return "resultSet.getString(%d)".formatted(position);
+            return column.nullable()
+                ? "resultSet.getString(%d)".formatted(position)
+                : "%s.getString(resultSet, %d)".formatted(NOT_NULL_COLUMN, position);
         }
 
         if (column.type() == ColumnType.INTERVAL) {
-            return "org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(%d))"
-                .formatted(position);
+            return column.nullable()
+                ? "org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(%d))"
+                    .formatted(position)
+                : "%s.getString(resultSet, %d, org.sqlcj.runtime.SqlInterval::parse)"
+                    .formatted(NOT_NULL_COLUMN, position);
         }
 
         String javaType = typeResolver.resolve(column.type());
 
-        return "resultSet.getObject(%d, %s.class)"
-            .formatted(position, javaType);
+        return column.nullable()
+            ? "resultSet.getObject(%d, %s.class)".formatted(position, javaType)
+            : "%s.getObject(resultSet, %d, %s.class)"
+                .formatted(NOT_NULL_COLUMN, position, javaType);
     }
 
     /**
      * Reads one array column as a list of its element type. An array of an enum
      * reads each label and resolves it to the generated constant, and an array
-     * of {@code INTERVAL} reads each element's text and parses it.
+     * of {@code INTERVAL} reads each element's text and parses it. An array
+     * column the model states non-null reads the same elements through
+     * {@code org.sqlcj.runtime.NotNullColumn}, which fails where the column
+     * itself is SQL {@code NULL}; a {@code NULL} element stays a {@code null}
+     * element either way.
      */
     private String generateArrayMapping(QueryColumn column, int position) {
+        String reader = column.nullable()
+            ? "org.sqlcj.runtime.SqlArray"
+            : NOT_NULL_COLUMN;
+
         if (column.type() == ColumnType.ENUM) {
-            return "org.sqlcj.runtime.SqlArray.getList(resultSet, %d, String.class, %s::fromLabel)"
-                .formatted(position, JavaNames.enumTypeName(column.enumType()));
+            return "%s.getList(resultSet, %d, String.class, %s::fromLabel)"
+                .formatted(reader, position, JavaNames.enumTypeName(column.enumType()));
         }
 
         if (column.type() == ColumnType.INTERVAL) {
-            return ("org.sqlcj.runtime.SqlArray.getList("
+            return ("%s.getList("
                 + "resultSet, %d, String.class, org.sqlcj.runtime.SqlInterval::parse)")
-                .formatted(position);
+                .formatted(reader, position);
         }
 
-        return "org.sqlcj.runtime.SqlArray.getList(resultSet, %d, %s.class)"
-            .formatted(position, typeResolver.resolve(column.type()));
+        return "%s.getList(resultSet, %d, %s.class)"
+            .formatted(reader, position, typeResolver.resolve(column.type()));
     }
 
     private String generateExecutorField() {

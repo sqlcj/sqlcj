@@ -33,6 +33,8 @@
         <testcontainers.version>1.21.4</testcontainers.version>
         <postgresql.version>42.7.14</postgresql.version>
         <commons-compress.version>1.28.0</commons-compress.version>
+        <errorprone.version>2.42.0</errorprone.version>
+        <nullaway.version>0.14.3</nullaway.version>
     </properties>
 
     <dependencyManagement>
@@ -84,6 +86,25 @@
                 <groupId>org.postgresql</groupId>
                 <artifactId>postgresql</artifactId>
                 <version>${postgresql.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <!--
+                Error Prone hosts NullAway, which one test runs over the
+                generated trees in a javac process of its own. Error Prone
+                2.43.0 and later are compiled for Java 21 and do not run on
+                JDK 17, which is the build's minimum, so 2.42.0 is the last
+                release usable here.
+            -->
+            <dependency>
+                <groupId>com.google.errorprone</groupId>
+                <artifactId>error_prone_core</artifactId>
+                <version>${errorprone.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.uber.nullaway</groupId>
+                <artifactId>nullaway</artifactId>
+                <version>${nullaway.version}</version>
                 <scope>test</scope>
             </dependency>
             <!--

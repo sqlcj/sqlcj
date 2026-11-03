@@ -90,6 +90,22 @@
             <scope>test</scope>
         </dependency>
         <!--
+            Error Prone and NullAway are not part of the command line tool.
+            One test runs NullAway over the generated trees, in a javac
+            process of its own, so neither is an annotation processor of this
+            build.
+        -->
+        <dependency>
+            <groupId>com.google.errorprone</groupId>
+            <artifactId>error_prone_core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.uber.nullaway</groupId>
+            <artifactId>nullaway</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!--
             Spring and Hibernate are not part of the command line tool. Tests
             use them to run generated code inside a framework-managed
             transaction.

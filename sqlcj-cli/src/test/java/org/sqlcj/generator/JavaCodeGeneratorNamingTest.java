@@ -151,7 +151,9 @@ class JavaCodeGeneratorNamingTest {
         assertTrue(source.contains("String userId1"));
         assertTrue(source.contains("String userId2"));
 
-        assertTrue(source.contains("resultSet.getObject(1, Long.class)"));
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+        );
         assertTrue(source.contains("resultSet.getObject(2, String.class)"));
         assertTrue(source.contains("resultSet.getObject(3, String.class)"));
         assertTrue(source.contains("resultSet.getObject(4, String.class)"));
