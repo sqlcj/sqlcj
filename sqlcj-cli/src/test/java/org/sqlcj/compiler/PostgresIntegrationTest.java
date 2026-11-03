@@ -380,6 +380,41 @@ class PostgresIntegrationTest {
         """;
 
     /**
+     * A snapshot that states {@code NOT NULL} for one scalar, one enum, one
+     * {@code INTERVAL}, and one array column, beside
+     * {@link #DRIFT_DATABASE_SCHEMA}, which is the same table as the database
+     * holds it: every one of those columns allows {@code NULL} there. The two
+     * together are schema drift between the snapshot sqlcj generates from and
+     * the database the generated code runs against.
+     */
+    private static final String DRIFT_SCHEMA = """
+        CREATE TYPE drift_setting AS ENUM ('indoor', 'outdoor');
+
+        CREATE TABLE drifted
+        (
+            id      BIGINT PRIMARY KEY,
+            counted INTEGER       NOT NULL,
+            setting drift_setting NOT NULL,
+            age     INTERVAL      NOT NULL,
+            tags    TEXT[]        NOT NULL
+        );
+        """;
+
+    /** The drifted table as the database holds it, with nullable columns. */
+    private static final String DRIFT_DATABASE_SCHEMA = """
+        CREATE TYPE drift_setting AS ENUM ('indoor', 'outdoor');
+
+        CREATE TABLE drifted
+        (
+            id      BIGINT PRIMARY KEY,
+            counted INTEGER,
+            setting drift_setting,
+            age     INTERVAL,
+            tags    TEXT[]
+        );
+        """;
+
+    /**
      * A snapshot declaring one domain over each kind of base a domain may
      * have, beside the tables whose columns name them. The
      * {@code email_address} domain is written exactly as {@code pg_dump} does
@@ -880,6 +915,8 @@ class PostgresIntegrationTest {
         execute("DROP TABLE IF EXISTS documents");
         execute("DROP TABLE IF EXISTS network_values");
         execute("DROP TABLE IF EXISTS duration_values");
+        execute("DROP TABLE IF EXISTS drifted");
+        execute("DROP TYPE IF EXISTS drift_setting");
         execute("DROP TABLE IF EXISTS user_aliases");
         execute("DROP TABLE IF EXISTS users");
         execute(SCHEMA);
@@ -5406,6 +5443,100 @@ class PostgresIntegrationTest {
             assertEquals(20L, component(rows.get(1), "id"));
             assertEquals(9, component(rows.get(1), "quantity"));
         }
+    }
+
+    /**
+     * Covers schema drift end to end: the snapshot sqlcj generated from states
+     * a column {@code NOT NULL}, while the database allows {@code NULL} there
+     * and the row holds one. Every read of such a column fails where it is
+     * read, rather than putting {@code null} into a component the generated API
+     * declares non-null, for a scalar, an enum, an {@code INTERVAL}, and an
+     * array alike. The executor reports each failure as a plain
+     * {@link QueryExecutionException} naming the query and the repository, with
+     * the read's own {@code SQLException} as its cause and no SQLSTATE, because
+     * no database reported it.
+     */
+    @Test
+    void shouldFailWhereADriftedNotNullColumnReadsNull() throws Exception {
+        execute(DRIFT_DATABASE_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(
+            DRIFT_SCHEMA,
+            """
+                -- name: GetDriftedCount :one
+                SELECT counted
+                FROM drifted
+                WHERE id = $1;
+
+                -- name: GetDriftedSetting :one
+                SELECT setting
+                FROM drifted
+                WHERE id = $1;
+
+                -- name: GetDriftedAge :one
+                SELECT age
+                FROM drifted
+                WHERE id = $1;
+
+                -- name: GetDriftedTags :one
+                SELECT tags
+                FROM drifted
+                WHERE id = $1;
+                """
+        );
+
+        execute("INSERT INTO drifted (id) VALUES (1)");
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            assertDriftFailure(repository, "getDriftedCount", "GetDriftedCount", "counted");
+            assertDriftFailure(repository, "getDriftedSetting", "GetDriftedSetting", "setting");
+            assertDriftFailure(repository, "getDriftedAge", "GetDriftedAge", "age");
+            assertDriftFailure(repository, "getDriftedTags", "GetDriftedTags", "tags");
+        }
+    }
+
+    /**
+     * Asserts that one generated read of a drifted {@code NOT NULL} column
+     * fails naming the query, the repository, and the column it read.
+     */
+    private void assertDriftFailure(
+        Object repository,
+        String method,
+        String query,
+        String column
+    ) throws Exception {
+        InvocationTargetException thrown = assertThrows(
+            InvocationTargetException.class,
+            () -> repository.getClass()
+                .getMethod(method, Long.class)
+                .invoke(repository, 1L)
+        );
+
+        QueryExecutionException failure = assertInstanceOf(
+            QueryExecutionException.class,
+            thrown.getCause()
+        );
+
+        assertEquals(QueryExecutionException.class, failure.getClass());
+
+        assertEquals(
+            "Failed to execute query '%s' in UsersRepository".formatted(query),
+            failure.getMessage()
+        );
+
+        assertNull(failure.sqlState());
+
+        SQLException cause = assertInstanceOf(SQLException.class, failure.getCause());
+
+        assertEquals(
+            "Column 1 (%s) is NULL, but the schema sqlcj generated from declares it NOT NULL"
+                .formatted(column),
+            cause.getMessage()
+        );
+
+        assertNull(cause.getSQLState());
     }
 
     /**

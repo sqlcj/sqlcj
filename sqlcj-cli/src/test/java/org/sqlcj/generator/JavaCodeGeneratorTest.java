@@ -520,8 +520,12 @@ class JavaCodeGeneratorTest {
         assertTrue(source.contains("Long id2"));
         assertTrue(source.contains("String nickname"));
 
-        assertTrue(source.contains("resultSet.getObject(1, Long.class)"));
-        assertTrue(source.contains("resultSet.getObject(2, Long.class)"));
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+        );
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, Long.class)")
+        );
         assertTrue(source.contains("resultSet.getObject(3, String.class)"));
 
         assertEquals(0, compile(file, "UsersRepository.java"));
@@ -605,7 +609,9 @@ class JavaCodeGeneratorTest {
     /**
      * A {@code :one} query whose result is one column that cannot be NULL
      * returns that column's Java type and generates no result record, so its
-     * row mapper reads the value itself.
+     * row mapper reads the value itself, through
+     * {@code org.sqlcj.runtime.NotNullColumn}, which fails on a SQL
+     * {@code NULL}.
      */
     @Test
     void shouldReturnTheValueOfOneNonNullColumn() throws IOException {
@@ -628,8 +634,9 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "private static final RowMapper<Long> countUsersRowMapper = "
-                    + "resultSet -> resultSet.getObject(1, Long.class);"
+                "private static final RowMapper<Long> countUsersRowMapper =\n"
+                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + ".getObject(resultSet, 1, Long.class);"
             ),
             source
         );
@@ -664,8 +671,9 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "private static final RowMapper<UUID> findUserExternalIdRowMapper = "
-                    + "resultSet -> resultSet.getObject(1, UUID.class);"
+                "private static final RowMapper<UUID> findUserExternalIdRowMapper =\n"
+                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + ".getObject(resultSet, 1, UUID.class);"
             ),
             source
         );
@@ -697,8 +705,9 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "private static final RowMapper<String> listUserNamesRowMapper = "
-                    + "resultSet -> resultSet.getObject(1, String.class);"
+                "private static final RowMapper<String> listUserNamesRowMapper =\n"
+                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + ".getObject(resultSet, 1, String.class);"
             ),
             source
         );
@@ -730,8 +739,9 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "private static final RowMapper<Long> insertUserRowMapper = "
-                    + "resultSet -> resultSet.getObject(1, Long.class);"
+                "private static final RowMapper<Long> insertUserRowMapper =\n"
+                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + ".getObject(resultSet, 1, Long.class);"
             ),
             source
         );
@@ -773,7 +783,8 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "private static final RowMapper<StageSetting> getStageSettingRowMapper =\n"
-                    + "            resultSet -> StageSetting.fromLabel(resultSet.getString(1));"
+                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + ".getString(resultSet, 1, StageSetting::fromLabel);"
             ),
             source
         );
@@ -812,7 +823,8 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "private static final RowMapper<List<@org.jspecify.annotations.Nullable String>> getUserTagsRowMapper =\n"
-                    + "            resultSet -> org.sqlcj.runtime.SqlArray.getList(resultSet, 1, String.class);"
+                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + ".getList(resultSet, 1, String.class);"
             ),
             source
         );
@@ -820,6 +832,95 @@ class JavaCodeGeneratorTest {
         assertFalse(source.contains("public record"), source);
 
         assertCompiles(file);
+    }
+
+    /**
+     * Every kind of read a result mapper writes has two forms: a column the
+     * model states non-null is read through
+     * {@code org.sqlcj.runtime.NotNullColumn}, which fails on a SQL
+     * {@code NULL}, and a nullable column keeps the read it had, character for
+     * character.
+     */
+    @Test
+    void shouldReadEveryNonNullColumnThroughNotNullColumn() throws IOException {
+        QueryModel query = new QueryModel(
+            "ReadEverything",
+            QueryType.MANY,
+            "readings",
+            "SELECT * FROM readings",
+            List.of(),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("score", ColumnType.BIGINT, true),
+                new QueryColumn("profile", ColumnType.JSON, false),
+                new QueryColumn("metadata", ColumnType.JSON, true),
+                new QueryColumn("setting", ColumnType.ENUM, false, "stage_setting"),
+                new QueryColumn("fallback", ColumnType.ENUM, true, "stage_setting"),
+                new QueryColumn("age", ColumnType.INTERVAL, false),
+                new QueryColumn("idle", ColumnType.INTERVAL, true),
+                new QueryColumn("tags", ColumnType.VARCHAR, false, null, true),
+                new QueryColumn("labels", ColumnType.VARCHAR, true, null, true),
+                new QueryColumn("settings", ColumnType.ENUM, false, "stage_setting", true),
+                new QueryColumn("choices", ColumnType.ENUM, true, "stage_setting", true),
+                new QueryColumn("ages", ColumnType.INTERVAL, false, null, true),
+                new QueryColumn("spans", ColumnType.INTERVAL, true, null, true)
+            ),
+            List.of(),
+            null
+        );
+
+        GeneratedFile repository = generate(
+            enumGroup(
+                GROUP,
+                query,
+                new EnumType("stage_setting", List.of("indoor", "outdoor"))
+            )
+        );
+
+        String source = repository.content();
+
+        assertReads(
+            source,
+            List.of(
+                "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)",
+                "resultSet.getObject(2, Long.class)",
+                "org.sqlcj.runtime.NotNullColumn.getString(resultSet, 3)",
+                "resultSet.getString(4)",
+                "org.sqlcj.runtime.NotNullColumn.getString(resultSet, 5, StageSetting::fromLabel)",
+                "StageSetting.fromLabel(resultSet.getString(6))",
+                "org.sqlcj.runtime.NotNullColumn.getString("
+                    + "resultSet, 7, org.sqlcj.runtime.SqlInterval::parse)",
+                "org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(8))",
+                "org.sqlcj.runtime.NotNullColumn.getList(resultSet, 9, String.class)",
+                "org.sqlcj.runtime.SqlArray.getList(resultSet, 10, String.class)",
+                "org.sqlcj.runtime.NotNullColumn.getList("
+                    + "resultSet, 11, String.class, StageSetting::fromLabel)",
+                "org.sqlcj.runtime.SqlArray.getList("
+                    + "resultSet, 12, String.class, StageSetting::fromLabel)",
+                "org.sqlcj.runtime.NotNullColumn.getList("
+                    + "resultSet, 13, String.class, org.sqlcj.runtime.SqlInterval::parse)",
+                "org.sqlcj.runtime.SqlArray.getList("
+                    + "resultSet, 14, String.class, org.sqlcj.runtime.SqlInterval::parse)"
+            )
+        );
+
+        assertCompiles(repository, codeGenerator.generateEnums().get(0));
+    }
+
+    /**
+     * Asserts that one generated source holds each read, in the selected order
+     * of the columns they read.
+     */
+    private void assertReads(String source, List<String> reads) {
+        int previous = -1;
+
+        for (String read : reads) {
+            int index = source.indexOf(read);
+
+            assertTrue(index > previous, read + " in\n" + source);
+
+            previous = index;
+        }
     }
 
     /** One nullable column keeps its result record, which may hold null. */
@@ -1424,7 +1525,9 @@ class JavaCodeGeneratorTest {
             )
         );
 
-        assertTrue(source.contains("resultSet.getObject(1, Long.class)"));
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+        );
         assertTrue(source.contains("resultSet.getString(2)"));
         assertTrue(source.contains("resultSet.getString(3)"));
         assertTrue(source.contains("resultSet.getObject(4, String.class)"));
@@ -1515,7 +1618,9 @@ class JavaCodeGeneratorTest {
             )
         );
 
-        assertTrue(source.contains("resultSet.getObject(1, Long.class)"));
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+        );
         assertTrue(source.contains("resultSet.getString(2)"));
         assertTrue(source.contains("resultSet.getString(3)"));
         assertTrue(source.contains("resultSet.getString(4)"));
@@ -1587,7 +1692,9 @@ class JavaCodeGeneratorTest {
             )
         );
 
-        assertTrue(source.contains("resultSet.getObject(1, Long.class)"));
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+        );
 
         assertTrue(
             source.contains("org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(2))")
@@ -1869,7 +1976,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "resultSet.getObject(1, Long.class)"
+                "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)"
             )
         );
 
@@ -1918,8 +2025,11 @@ class JavaCodeGeneratorTest {
 
         int nameIndex = source.indexOf("resultSet.getObject(1, String.class)");
 
-        int idIndex = source.indexOf("resultSet.getObject(2, Long.class)");
+        int idIndex = source.indexOf(
+            "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, Long.class)"
+        );
 
+        assertTrue(nameIndex >= 0);
         assertTrue(nameIndex < idIndex);
     }
 
@@ -1955,7 +2065,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "resultSet.getObject(1, Long.class)"
+                "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)"
             )
         );
 
@@ -3170,7 +3280,8 @@ class JavaCodeGeneratorTest {
             source.contains(
                 "    private static final RowMapper<String> "
                     + "listEveryProjectAndTaskTitleRowMapper =\n"
-                    + "            resultSet -> resultSet.getObject(1, String.class);"
+                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + ".getObject(resultSet, 1, String.class);"
             ),
             source
         );
@@ -4534,12 +4645,12 @@ class JavaCodeGeneratorTest {
                     private static final RowMapper<ListUserProfilesResult> listUserProfilesRowMapper =
                             resultSet -> new ListUserProfilesResult(
                                     new UsersRow(
-                                            resultSet.getObject(1, Long.class),
+                                            org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
                                             resultSet.getObject(2, String.class)
                                     ),
                                     new ProfilesRow(
-                                            resultSet.getObject(3, Long.class),
-                                            resultSet.getObject(4, Long.class),
+                                            org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 3, Long.class),
+                                            org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 4, Long.class),
                                             resultSet.getObject(5, String.class)
                                     )
                             );
@@ -4603,14 +4714,14 @@ class JavaCodeGeneratorTest {
                     private static final RowMapper<ListUserProfilesResult> listUserProfilesRowMapper =
                             resultSet -> new ListUserProfilesResult(
                                     new UsersRow(
-                                            resultSet.getObject(1, Long.class),
+                                            org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
                                             resultSet.getObject(2, String.class)
                                     ),
                                     org.sqlcj.runtime.SqlRow.isNull(resultSet, 3, 5)
                                         ? null
                                         : new ProfilesRow(
-                                                resultSet.getObject(3, Long.class),
-                                                resultSet.getObject(4, Long.class),
+                                                org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 3, Long.class),
+                                                org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 4, Long.class),
                                                 resultSet.getObject(5, String.class)
                                         )
                             );
@@ -4677,8 +4788,8 @@ class JavaCodeGeneratorTest {
                                     org.sqlcj.runtime.SqlRow.isNull(resultSet, 1, 3)
                                         ? null
                                         : new ProfilesRow(
-                                                resultSet.getObject(1, Long.class),
-                                                resultSet.getObject(2, Long.class),
+                                                org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
+                                                org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, Long.class),
                                                 resultSet.getObject(3, String.class)
                                         )
                             );
@@ -4746,7 +4857,9 @@ class JavaCodeGeneratorTest {
         assertTrue(source.contains("import java.time.LocalDateTime;"));
         assertTrue(source.contains("StageSetting.fromLabel(resultSet.getString(2))"));
         assertTrue(source.contains("resultSet.getObject(3, LocalDateTime.class)"));
-        assertTrue(source.contains("resultSet.getObject(4, Long.class)"));
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 4, Long.class)")
+        );
 
         assertFalse(source.contains("RowMapper<StagesRow>"));
 
@@ -5078,7 +5191,9 @@ class JavaCodeGeneratorTest {
 
         assertTrue(source.contains("StageSetting setting"));
         assertTrue(source.contains("StageSetting.fromLabel(resultSet.getString(2))"));
-        assertTrue(source.contains("resultSet.getObject(1, Long.class)"));
+        assertTrue(
+            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+        );
         assertTrue(source.contains("resultSet.getObject(3, String.class)"));
 
         assertFalse(source.contains("import generated.StageSetting;"));
