@@ -94,8 +94,17 @@ what went wrong: `UniqueViolationException`, `ForeignKeyViolationException`,
 `QueryTimeoutException` for a cancelled statement. Each one is a
 `QueryExecutionException`, as is a plain failure no SQLSTATE names, and each
 carries the `SQLException` as its cause and reports its SQLSTATE through
-`sqlState()`. The exception a given SQLSTATE raises, and the failures that stay
-plain, are listed in
+`sqlState()`. A column or value the model states non-null that the database
+returns as SQL `NULL` fails where it is read, as a plain
+`QueryExecutionException` whose `sqlState()` is `null`, because no database
+reported that failure. Nullness is the model's: a column a null-extended source
+contributes on its own is nullable however its table declares it, so it keeps
+its plain read and reads back as `null`, while a whole row such a source
+contributes is instead the nullable component, guarded by
+`org.sqlcj.runtime.SqlRow.isNull`, whose own `NOT NULL` columns are read through
+`org.sqlcj.runtime.NotNullColumn` inside that guard. The exception a given
+SQLSTATE raises, the failures that stay plain, and that read's own message are
+listed in
 [Connection Ownership and Transactions](postgresql.md#connection-ownership-and-transactions).
 
 ## Reads
@@ -1779,7 +1788,12 @@ included.
   type, as `T`, `Optional<T>`, and `List<T>`, and generates no
   `<QueryName>Result` record. Its private `RowMapper<T>` field reads that one
   column by its position, as in
-  `private static final RowMapper<Long> countAuthorsRowMapper = resultSet -> resultSet.getObject(1, Long.class);`,
+
+  ```java
+  private static final RowMapper<Long> countAuthorsRowMapper =
+          resultSet -> org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class);
+  ```
+
   so `SELECT COUNT(*) AS total FROM authors` returns `Long` and a `:many` read
   of one `NOT NULL` column returns `List<String>`. A non-null column of an enum
   type returns the generated Java enum, and a non-null array column returns its
@@ -1800,9 +1814,9 @@ included.
 - A component that holds one table's complete row is typed by that table's
   `<TableName>Row` record, by its simple name, and is built inside the result's
   own mapper from the consecutive positions its wildcard selected, as in
-  `new ListUserProfilesResult(new UsersRow(resultSet.getObject(1, Long.class),
-  ...), new ProfilesRow(resultSet.getObject(3, Long.class), ...))`, so a row the
-  repository only embeds generates no mapper field of its own.
+  `new ListUserProfilesResult(new UsersRow(org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
+  ...), new ProfilesRow(org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 3, Long.class), ...))`,
+  so a row the repository only embeds generates no mapper field of its own.
 - A nullable row component, which a null-extended source contributes, is guarded
   by `org.sqlcj.runtime.SqlRow.isNull`, written out in full as every other
   runtime helper is, over the one-based first and last positions of that row's
@@ -1812,14 +1826,14 @@ included.
   private static final RowMapper<ListUserProfilesResult> listUserProfilesRowMapper =
           resultSet -> new ListUserProfilesResult(
                   new UsersRow(
-                          resultSet.getObject(1, Long.class),
+                          org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
                           resultSet.getObject(2, String.class)
                   ),
                   org.sqlcj.runtime.SqlRow.isNull(resultSet, 3, 5)
                       ? null
                       : new ProfilesRow(
-                              resultSet.getObject(3, Long.class),
-                              resultSet.getObject(4, Long.class),
+                              org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 3, Long.class),
+                              org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 4, Long.class),
                               resultSet.getObject(5, String.class)
                       )
           );
@@ -1857,16 +1871,23 @@ included.
   `java.util.List<T>` of the element's Java type. Its argument is passed as
   `new org.sqlcj.runtime.SqlArray("<element type>", <parameter>)`, or as
   `org.sqlcj.runtime.SqlArray.of("<enum type>", <parameter>, <EnumType>::label)`
-  for an array of an enum, and the column is read as
-  `org.sqlcj.runtime.SqlArray.getList(resultSet, position, <Type>.class)`, so a
-  `null` list, an empty list, and a `null` element are preserved in both
-  directions; see [Array Types](postgresql.md#array-types).
+  for an array of an enum. A nullable column is read as
+  `org.sqlcj.runtime.SqlArray.getList(resultSet, position, <Type>.class)` and a
+  non-null one as
+  `org.sqlcj.runtime.NotNullColumn.getList(resultSet, position, <Type>.class)`,
+  so an empty list is preserved in both directions, a `null` list only for a
+  nullable column, because the non-null read fails instead, and a `null`
+  element stays `null` in both forms; see
+  [Array Types](postgresql.md#array-types).
 - A column or parameter of an enum type the schema declares uses the Java enum
   the package generates for that type, by its simple name. Its argument is
   passed as
   `new org.sqlcj.runtime.UntypedText(<parameter> == null ? null : <parameter>.label())`,
-  and the column is read as `<EnumType>.fromLabel(resultSet.getString(position))`,
-  so a `null` stays `null` in both directions; see
+  a nullable column is read as
+  `<EnumType>.fromLabel(resultSet.getString(position))`, and a non-null one as
+  `org.sqlcj.runtime.NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`,
+  so a `null` stays `null` in both directions for a nullable column, while the
+  non-null read fails on a SQL `NULL`; see
   [Enum Types](postgresql.md#enum-types).
 - Every generated type states its nullness with
   [JSpecify](https://jspecify.dev) annotations, which the runtime brings as its
@@ -1903,12 +1924,19 @@ included.
 
   So a Kotlin caller sees `AuthorsRow.bio` as `String?` and
   `AuthorsRow.name` as `String`, and an IDE or a null checker reads the same
-  from the class files. The generated method bodies themselves trust the
-  schema's `NOT NULL`: a non-null component may be read through `fromLabel`,
-  `org.sqlcj.runtime.SqlArray.getList`, or
-  `org.sqlcj.runtime.SqlInterval.parse`, each of which is nullable, so a build
-  that runs a null checker over its own sources excludes the generated ones, as
-  is usual for generated code.
+  from the class files. The generated method bodies read every component and
+  every single-column value the model states non-null through
+  `org.sqlcj.runtime.NotNullColumn`, written out in full as every other runtime
+  helper is, so the generated imports are unchanged: `getObject` for a mapped
+  Java type, `getString` for a `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`,
+  `MACADDR`, or `MACADDR8` column, `getString` with a converter for an enum
+  label and for an `INTERVAL`, and both `getList` forms for an array column.
+  Each of them fails where the database returns SQL `NULL` all the same, rather
+  than returning `null`, so a generated body never contradicts the nullness it
+  declares. sqlcj's own tests compile every generated tree with
+  `javac -Xlint:all -Werror` and NullAway `0.14.3` in JSpecify mode and find
+  nothing, so a build that runs a null checker over its own sources need not
+  exclude the generated ones.
 - A method declaration that has parameters, a bound-argument list built with
   `java.util.Collections.singletonList` or `java.util.Arrays.asList`, and a
   value row mapper are written wrapped when one line would pass 120 columns,
@@ -1991,8 +2019,8 @@ public final class AuthorRepository {
 
     private static final RowMapper<AuthorsRow> authorsRowMapper =
             resultSet -> new AuthorsRow(
-                    resultSet.getObject(1, Long.class),
-                    resultSet.getObject(2, String.class),
+                    org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
+                    org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, String.class),
                     resultSet.getObject(3, String.class),
                     resultSet.getObject(4, LocalDateTime.class)
             );
@@ -3383,6 +3411,21 @@ Generated Java:
   mapper, the absence of a result record, and compilation, for a read, an
   `:optional` read, a `:many` read, a `RETURNING` write, an enum column, and an
   array column.
+- `JavaCodeGeneratorTest.shouldReadEveryNonNullColumnThroughNotNullColumn`
+  pins both forms of every read a result mapper writes: a column the model
+  states non-null read through `org.sqlcj.runtime.NotNullColumn` and a nullable
+  column keeping the read it had, character for character, in the generated
+  text, and
+  `GeneratedSourceCheckTest.shouldReportNoFindingOnTheReferenceServiceTree`
+  and
+  `GeneratedSourceCheckTest.shouldReportNoFindingOnTheEveryTypeFixtureTree`
+  compile the reference service's generated tree and the fixture tree that
+  reads every mapped type, scalar and array, nullable and `NOT NULL`, through
+  every result shape, with `javac -Xlint:all -Werror` and NullAway in JSpecify
+  mode at error level, with no finding, while
+  `GeneratedSourceCheckTest.shouldReportANullnessErrorOnABrokenSource` is the
+  negative control that reports one on a `@NullMarked` source returning `null`
+  from a non-null method.
 - `JavaCodeGeneratorTest.shouldKeepTheResultRecordOfOneNullableColumn`,
   `JavaCodeGeneratorTest.shouldKeepTheResultRecordOfOneEmbeddedRowComponent`,
   `JavaCodeGeneratorTest.shouldKeepTheSharedRowOfAOneColumnTable`, and
