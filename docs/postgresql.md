@@ -187,7 +187,9 @@ driver reported:
 `QueryExecutionException.sqlState()` returns the SQLSTATE of the underlying
 `SQLException`, so a code no row above covers stays reachable all the same,
 and `null` when the cause is no `SQLException`, as for a cardinality failure,
-or when the driver reported no code.
+or when the driver reported no code, and `null` as well for a failure no
+database reported at all, such as the read of a column the model states
+non-null that found a SQL `NULL`, which is described below.
 
 The exceptions carry no constraint name: the JDBC API does not expose one, and
 the runtime depends on no driver. The name PostgreSQL reported is in the
@@ -232,6 +234,32 @@ Query 'FindAuthor' in AuthorRepository returned more than one row; expected at m
 
 A cardinality check runs after the statement has executed, so a returning write
 that fails it has already changed the database.
+
+A read of a column or value the model states non-null fails where it is read
+when the database returns SQL `NULL` there all the same. The generated mapper
+reads such a column through `org.sqlcj.runtime.NotNullColumn`, so the failure is
+raised instead of a `null` reaching a component the generated API declares
+non-null. Nullness is the model's rather than the declaration's: a column a
+null-extended source contributes on its own is nullable however its table
+declares it, so it keeps its plain read and reads back as `null` for an
+unmatched row, while a whole row such a source contributes is instead the
+nullable component, guarded by `org.sqlcj.runtime.SqlRow.isNull`, whose own
+`NOT NULL` columns are read through `org.sqlcj.runtime.NotNullColumn` inside
+that guard. For a direct column the model states non-null, which is a column
+the generation snapshot declares `NOT NULL`, such a failure means that the
+database and that snapshot disagree:
+
+```text
+Failed to execute query 'GetDriftedCount' in UsersRepository
+Column 1 (counted) is NULL, but the schema sqlcj generated from declares it NOT NULL
+```
+
+The first message is the `QueryExecutionException`'s own and the second its
+cause's. The exception is a plain `QueryExecutionException`, and its
+`sqlState()` and its cause's SQLSTATE are both `null`, because no database
+reported the failure. It is not a `NotNullViolationException`: that one is the
+database refusing a write of `NULL` into a `NOT NULL` column, reported as
+`23502`.
 
 A failed operation on a caller-owned connection leaves the connection open, so
 the application decides whether to continue or roll back.
@@ -572,12 +600,25 @@ enum column reads its label the same way and resolves it with
 `<EnumType>.fromLabel(...)`, an `INTERVAL` column reads PostgreSQL's own text
 the same way and parses it with
 `org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(position))`, and an
-array column is read with `org.sqlcj.runtime.SqlArray.getList(...)`.
+array column is read with `org.sqlcj.runtime.SqlArray.getList(...)`. Those are
+the reads of a nullable column. A column the model states non-null is read
+through `org.sqlcj.runtime.NotNullColumn`, which reads the same value and fails
+on a SQL `NULL`:
+`org.sqlcj.runtime.NotNullColumn.getObject(resultSet, position, JavaType.class)`,
+`org.sqlcj.runtime.NotNullColumn.getString(resultSet, position)` for the types
+read as text,
+`org.sqlcj.runtime.NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`
+for an enum and
+`org.sqlcj.runtime.NotNullColumn.getString(resultSet, position, org.sqlcj.runtime.SqlInterval::parse)`
+for an `INTERVAL`, and
+`org.sqlcj.runtime.NotNullColumn.getList(...)` for an array column; see
+[Nulls](#nulls).
 
 `SqlInterval.parse` reads the text PostgreSQL writes under its default
 `IntervalStyle`, `postgres`, such as `1 year 2 mons -3 days +01:02:03.000004`,
-and reads `null` as `null`, so a SQL `NULL` column is a `null` component. Text
-of any other `IntervalStyle`, which the session can select, is rejected with
+and reads `null` as `null`, so a SQL `NULL` in a nullable column is a `null`
+component. Text of any other `IntervalStyle`, which the session can select, is
+rejected with
 `IllegalArgumentException` naming the text and `IntervalStyle`, because such
 text cannot be told apart from the `postgres` form: a leading `-` of
 `sql_standard` applies to every unsigned field after it. sqlcj never changes the
@@ -667,7 +708,12 @@ public enum StageSetting {
   [Generated Java Names](configuration.md#generated-java-names).
 - `fromLabel` reads back a label: `null` for a SQL `NULL`, and a failure for a
   label the generated enum does not hold, which means the database declares one
-  the schema source does not.
+  the schema source does not. A nullable enum column is read with
+  `<EnumType>.fromLabel(resultSet.getString(position))`, while a non-null one is
+  read with
+  `org.sqlcj.runtime.NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`,
+  which resolves the label the same way and fails on a SQL `NULL` instead of
+  reading it as `null`.
 - Only an enum type a query actually uses generates a file, including an enum
   type only an array element names.
 - A one-dimensional array of an enum type, such as `stage_setting[]`, is a
@@ -856,7 +902,7 @@ org.sqlcj.runtime.SqlInterval::format)`.
 
 `JdbcQueryExecutor` builds the value with `Connection.createArrayOf` on the
 connection the operation runs on and binds it with
-`PreparedStatement.setArray`. An array column is read with
+`PreparedStatement.setArray`. A nullable array column is read with
 `org.sqlcj.runtime.SqlArray.getList(resultSet, position, <Type>.class)`, which
 reads each element as a scalar of that type is read, a `String` element with
 `getString`, for the same reason a scalar of one of those types is; an array of
@@ -864,9 +910,11 @@ an enum is read
 as `org.sqlcj.runtime.SqlArray.getList(resultSet, position, String.class,
 <EnumType>::fromLabel)`, and an array of `INTERVAL` as
 `org.sqlcj.runtime.SqlArray.getList(resultSet, position, String.class,
-org.sqlcj.runtime.SqlInterval::parse)`. All of them go through the JDBC
-`java.sql.Array` API alone, so neither the runtime nor the generated code
-depends on a driver.
+org.sqlcj.runtime.SqlInterval::parse)`. A non-null array column is read with
+the same three forms of `org.sqlcj.runtime.NotNullColumn.getList`, which read
+the same elements and fail where the column itself is SQL `NULL`. All of them
+go through the JDBC `java.sql.Array` API alone, so neither the runtime nor the
+generated code depends on a driver.
 
 Nulls are carried in both directions:
 
@@ -874,8 +922,9 @@ Nulls are carried in both directions:
   `PreparedStatement.setNull(position, java.sql.Types.ARRAY)`, so the column
   receives a SQL `NULL` rather than an empty array,
 - a `null` element is bound as a `NULL` element of the array,
-- a SQL `NULL` column reads back as a `null` list, an empty array as an empty
-  list, and a `NULL` element as a `null` element, so a `NULL` element of an
+- a SQL `NULL` in a nullable column reads back as a `null` list, while the read
+  of a non-null column fails instead, an empty array reads as an empty list, and
+  a `NULL` element as a `null` element either way, so a `NULL` element of an
   `INTERVAL[]` is a `null` `SqlInterval`.
 
 A declared multidimensional array, such as `integer[][]`, and an array of
@@ -1225,7 +1274,11 @@ reference type, so each of them can represent SQL `NULL`. A result component may
 be `null` exactly when its column is modeled nullable by the schema snapshot or
 is read from a null-extended source — one a `LEFT`, `RIGHT`, or `FULL` join
 null-extends — whose columns are all nullable because an unmatched row supplies
-no value for them.
+no value for them. A component the model states non-null never holds `null`: its
+read goes through `org.sqlcj.runtime.NotNullColumn` and fails where the database
+returns SQL `NULL` all the same, as
+[Connection Ownership and Transactions](#connection-ownership-and-transactions)
+describes.
 
 The column a `JOIN ... USING (...)` or a `NATURAL JOIN` merges is nullable by
 the value PostgreSQL exposes for it, read from both sides before that join
@@ -1262,12 +1315,20 @@ Null handling does not depend on the column type:
   argument is bound as a SQL `NULL` array through its
   `org.sqlcj.runtime.SqlArray` wrapper, and a null element stays null inside the
   bound array,
-- each result column is read with `ResultSet.getObject(position, Class)`, or
-  with `ResultSet.getString(position)` for `JSON`, `JSONB`, `CITEXT`, `INET`,
+- each nullable result column is read with
+  `ResultSet.getObject(position, Class)`, or with
+  `ResultSet.getString(position)` for `JSON`, `JSONB`, `CITEXT`, `INET`,
   `CIDR`, `MACADDR`, `MACADDR8`, and an enum, so a
   SQL `NULL` is read back as `null`, which `fromLabel` keeps `null` for an
-  enum. An array column is read with `org.sqlcj.runtime.SqlArray.getList`, which
-  reads a SQL `NULL` as a null list and a `NULL` element as a null element.
+  enum. A nullable array column is read with
+  `org.sqlcj.runtime.SqlArray.getList`, which reads a SQL `NULL` as a null list
+  and a `NULL` element as a null element,
+- each non-null result column is read with the matching
+  `org.sqlcj.runtime.NotNullColumn` form, `getObject`, `getString`, `getString`
+  with a converter, or `getList`, each of which reads the same value and fails
+  on a SQL `NULL` rather than reading it as `null`. A `NULL` element of a
+  non-null array column stays a `null` element, because only the column itself
+  is `NOT NULL`.
 
 Nullability itself is parsed from `NOT NULL` only:
 
@@ -1289,7 +1350,10 @@ columns of the integration schema snapshots, which cover `SMALLINT`, `VARCHAR`,
 `TEXT`, `BOOLEAN`, `DATE`, `TIMESTAMP`, `DECIMAL`, `UUID`,
 `TIMESTAMP WITH TIME ZONE`, `REAL`, `DOUBLE PRECISION`, `FLOAT(24)`, `FLOAT`,
 `BYTEA`, `TIME`, `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`,
-`MACADDR8`, an enum type, and an array of every mapped element type.
+`MACADDR8`, an enum type, and an array of every mapped element type. The failing
+read of a `NOT NULL` column is executed there too, over a database that allows
+`NULL` in a column the generation snapshot states `NOT NULL` and a row that
+holds one, for a scalar, an enum, an `INTERVAL`, and an array alike.
 
 ## Unsupported Types and DDL
 
@@ -2046,6 +2110,25 @@ The exception a failure raises:
   keeps a begin and a rollback failure a `TransactionException`.
 - `NullnessAnnotationsTest.shouldAllowAFailureWithoutASqlState` reads
   `sqlState()` back as `@Nullable`.
+- `NotNullColumnTest.shouldReadTheValueOfEachColumn`,
+  `NotNullColumnTest.shouldFailOnASqlNull`,
+  `NotNullColumnTest.shouldFailWhenTheConverterReturnsNull`,
+  `NotNullColumnTest.shouldKeepNullElementsOfAnArrayColumn`, and
+  `NotNullColumnTest.shouldReportTheFailureThroughTheExecutor` cover every read
+  of a `NOT NULL` column: the value each form returns, the failure each raises
+  on a SQL `NULL`, with the message naming the column's one-based position and
+  its label and without a SQLSTATE, the same failure when a converter returns
+  `null`, the `NULL` elements a non-null array column keeps, and the plain
+  `QueryExecutionException` the executor reports such a failure as, naming the
+  query and the repository, with the read's own `SQLException` as its cause;
+  `NullnessAnnotationsTest.shouldReadANotNullColumnAsANonNullValue` reads those
+  returns back as non-null with nullable array elements.
+- `PostgresIntegrationTest.shouldFailWhereADriftedNotNullColumnReadsNull`
+  executes the drift against PostgreSQL 16: the generation snapshot states a
+  column `NOT NULL`, the database allows `NULL` there, and the row holds one,
+  for a scalar, an enum, an `INTERVAL`, and an array column, each of which
+  fails with the plain `QueryExecutionException`, its exact message, a `null`
+  `sqlState()`, and the read's own message and `null` SQLSTATE on the cause.
 - `PostgresIntegrationTest.shouldRaiseTheMappedConstraintViolationsOfGeneratedWritesAgainstPostgres`
   raises a unique, foreign-key, not-null, and check violation against
   PostgreSQL 16 through a generated `:exec` method and through a generated
