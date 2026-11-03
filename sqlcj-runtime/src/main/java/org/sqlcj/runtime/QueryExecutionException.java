@@ -28,6 +28,12 @@ import java.sql.SQLException;
  * <p>A failure no subclass covers, and every failure of acquiring or releasing
  * a connection, is this type itself. {@link #sqlState()} reports the SQLSTATE
  * behind it, so a rarer code stays reachable all the same.
+ *
+ * <p>One cause is raised by the runtime rather than by a driver: a column the
+ * schema sqlcj generated from states {@code NOT NULL} read as SQL
+ * {@code NULL}, which {@link NotNullColumn} reports as a {@code SQLException}
+ * without a SQLSTATE. It is this type itself, and {@link #sqlState()} is
+ * {@code null} for it.
  */
 public class QueryExecutionException extends RuntimeException {
 

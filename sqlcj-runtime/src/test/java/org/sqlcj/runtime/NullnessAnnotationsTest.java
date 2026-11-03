@@ -14,6 +14,7 @@ import java.lang.reflect.RecordComponent;
 import java.lang.reflect.TypeVariable;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -130,6 +131,37 @@ class NullnessAnnotationsTest {
         }
     }
 
+    /**
+     * A read of a column the generated schema states {@code NOT NULL} returns
+     * a value that is never null, while an array column's elements stay
+     * nullable and a converter it applies may return {@code null}, which the
+     * read itself rejects.
+     */
+    @Test
+    void shouldReadANotNullColumnAsANonNullValue() {
+        for (String name : List.of("getObject", "getString", "getList")) {
+            for (Method read : methods(NotNullColumn.class, name)) {
+                assertFalse(isNullable(read.getAnnotatedReturnType()), name);
+            }
+        }
+
+        for (Method getList : methods(NotNullColumn.class, "getList")) {
+            assertNullableElement(getList.getAnnotatedReturnType());
+        }
+
+        for (Method read : converting(NotNullColumn.class)) {
+            assertTrue(
+                isNullable(
+                    typeArgument(
+                        read.getAnnotatedParameterTypes()[read.getParameterCount() - 1],
+                        1
+                    )
+                ),
+                read.getName()
+            );
+        }
+    }
+
     /** Interval text is read back from a column that may be {@code NULL}. */
     @Test
     void shouldReadAndWriteANullInterval() {
@@ -160,6 +192,20 @@ class NullnessAnnotationsTest {
 
     private Method method(Class<?> type, String name) {
         return methods(type, name).get(0);
+    }
+
+    /** Every read of one type whose last parameter is an element converter. */
+    private List<Method> converting(Class<?> type) {
+        List<Method> found = Arrays.stream(type.getDeclaredMethods())
+            .filter(method -> method.getParameterTypes().length > 0)
+            .filter(
+                method -> method.getParameterTypes()[method.getParameterCount() - 1] == Function.class
+            )
+            .toList();
+
+        assertFalse(found.isEmpty(), type.getName());
+
+        return found;
     }
 
     private List<Method> methods(Class<?> type, String name) {
