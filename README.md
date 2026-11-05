@@ -33,8 +33,11 @@ AuthorsRow author = authors.getAuthor(1L);
 ```
 
 Every query of `sql/queries.sql` becomes a method of that one
-`AuthorRepository`, and the `authors` row it returns is the top-level
-`AuthorsRow` record generated once for the configured package.
+`AuthorRepository`, generated into the `repositories` subpackage of the
+configured package, and the `authors` row it returns is the `AuthorsRow` record
+generated once into that package's `rows` subpackage and imported by every
+repository that returns it. A generated Java enum goes into the `enums`
+subpackage the same way.
 
 The SQL stays visible and owned by the application. sqlcj is not an ORM, a
 migration tool, or a query builder: it does not run migrations, inspect a live
