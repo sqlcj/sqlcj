@@ -283,9 +283,11 @@ All eleven queries become methods of the one generated `AuthorRepository`:
 `deleteAuthor`, `searchAuthors`, `countAuthors`, `listAuthorPage`, `createBook`,
 and `listAuthorBooks`. `CreateAuthor`, `GetAuthor`, `FindAuthor`, `ListAuthors`,
 `SearchAuthors`, and `ListAuthorPage` each return one complete `authors` row, so
-all six share the top-level record `AuthorsRow`, generated once for the package
-`com.example.app.db` from the schema's column order. Another entry of the same
-package that returns the full `authors` row would return that same record. A
+all six share the record `AuthorsRow`, generated once into
+`com.example.app.db.rows` from the schema's column order and imported by the
+repository, which `sqlcj.yaml` generates into
+`com.example.app.db.repositories`. Another entry of the same `java.package`
+that returns the full `authors` row would return that same record. A
 query whose result is one column that cannot be NULL returns that column's
 value, so `countAuthors()` returns the non-null `Long` count itself. A query
 with another result shape, such as a partial projection or a `RETURNING`
@@ -304,8 +306,8 @@ query contract is documented in [Queries](queries.md).
 ```java
 package com.example.app;
 
-import com.example.app.db.AuthorRepository;
-import com.example.app.db.AuthorsRow;
+import com.example.app.db.repositories.AuthorRepository;
+import com.example.app.db.rows.AuthorsRow;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.sqlcj.runtime.JdbcQueryExecutor;
 import org.sqlcj.runtime.JdbcTransactions;
@@ -464,13 +466,14 @@ mvn exec:java
 - `mvn compile` then compiles `src/main/java` together with
   `target/generated-sources/sqlcj`.
 
-Generation writes one repository per configured entry, one row record per table
-whose complete row an entry returns, plus the manifest that records what it
-wrote:
+Generation writes one repository per configured entry into the `repositories`
+subpackage of `java.package`, one row record per table whose complete row an
+entry returns into its `rows` subpackage, plus the manifest that records what it
+wrote, at the root of `java.out`:
 
 ```text
-target/generated-sources/sqlcj/com/example/app/db/AuthorRepository.java
-target/generated-sources/sqlcj/com/example/app/db/AuthorsRow.java
+target/generated-sources/sqlcj/com/example/app/db/repositories/AuthorRepository.java
+target/generated-sources/sqlcj/com/example/app/db/rows/AuthorsRow.java
 target/generated-sources/sqlcj/sqlcj-manifest.txt
 ```
 
@@ -701,8 +704,8 @@ spring.datasource.password=quickstart
 ```java
 package com.example.app;
 
-import com.example.app.db.AuthorRepository;
-import com.example.app.db.AuthorsRow;
+import com.example.app.db.repositories.AuthorRepository;
+import com.example.app.db.rows.AuthorsRow;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -745,8 +748,8 @@ its transaction is rolled back.
 ```java
 package com.example.app;
 
-import com.example.app.db.AuthorRepository;
-import com.example.app.db.AuthorsRow;
+import com.example.app.db.repositories.AuthorRepository;
+import com.example.app.db.rows.AuthorsRow;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
@@ -798,7 +801,8 @@ mvn spring-boot:run
 ```
 
 `sqlcj generate` reads the copied `sqlcj.yaml`, so it writes the same
-`AuthorRepository` and `AuthorsRow` into `com.example.app.db` as before.
+`AuthorRepository` into `com.example.app.db.repositories` and the same
+`AuthorsRow` into `com.example.app.db.rows` as before.
 `mvn spring-boot:run` compiles the project and runs the application, which
 prints these lines among Spring Boot's own log lines:
 
@@ -823,8 +827,8 @@ The run shows what the starter does, and what it does not ask for:
   transaction. The rolled-back author is gone, which `searchAuthors` reports as
   zero matching rows, and `countAuthors` still counts the two stored authors.
 - `AuthorRepository` is registered as a bean because `sqlcj.yaml` generates it
-  into `com.example.app.db`, which is below the `com.example.app` package of
-  the `@SpringBootApplication` class.
+  into `com.example.app.db.repositories`, which is below the `com.example.app`
+  package of the `@SpringBootApplication` class.
 
 [Spring](spring.md) documents the starter's rules in full, together with a
 generated package outside the application's packages, several databases, and

@@ -93,7 +93,7 @@ java:
 | `sql[].schema` | string or list | One path, or a non-empty ordered list of paths, to a file containing `CREATE TABLE` statements, such as a `pg_dump --schema-only` snapshot, or to a directory of `.sql` migration files. |
 | `sql[].queries` | string | Path to a file containing named queries. |
 | `java` | mapping | Java generation settings. |
-| `java.package` | string | Package of the generated Java classes. |
+| `java.package` | string | Root package of the generated Java classes, which are generated into its `repositories`, `rows`, and `enums` subpackages. |
 | `java.out` | string | Directory that receives the generated package directories. |
 
 ### `sql` entries
@@ -218,14 +218,28 @@ schema file, stand in
 ### `java.package`
 
 `java.package` must be a dot-separated sequence of valid, non-keyword Java
-identifiers, for example `dev.example.generated`. It is used both for the
-generated `package` declaration and for the generated file layout.
+identifiers, for example `dev.example.generated`. It is the root of the
+generated packages, and is used both for the generated `package` declarations
+and for the generated file layout.
+
+Nothing is generated into `java.package` itself. Each kind of generated type
+belongs to one of three fixed subpackages of it: a repository to
+`<java.package>.repositories`, a row record to `<java.package>.rows`, and a
+generated Java enum to `<java.package>.enums`. Those three names are fixed and
+have no setting.
+
+Generated code therefore imports every generated type it names, each by its
+fully qualified name, and uses it by its simple name: a repository imports every
+row record it returns or embeds and the generated enum of every enum type its
+queries read or bind, and a row record imports the generated enum of each of its
+enum components. An application imports from up to three packages, one per kind
+of generated type it names itself.
 
 An entry named `Author` with `java.package: dev.example.generated` and
 `java.out: generated` is written to:
 
 ```text
-generated/dev/example/generated/AuthorRepository.java
+generated/dev/example/generated/repositories/AuthorRepository.java
 ```
 
 ### Value rules
@@ -269,17 +283,18 @@ java:
 With the configuration above, sqlcj generates one repository per entry:
 
 ```text
-target/generated-sources/sqlcj/dev/example/generated/UserRepository.java
-target/generated-sources/sqlcj/dev/example/generated/OrderRepository.java
+target/generated-sources/sqlcj/dev/example/generated/repositories/UserRepository.java
+target/generated-sources/sqlcj/dev/example/generated/repositories/OrderRepository.java
 ```
 
 Both repositories may contain a query named `GetById`, because each name is
 resolved inside its own repository.
 
-The entries share one generated package, so they also share its row records and
-its enums: a table whose complete row both entries return generates one
-`<TableName>Row` file that both repositories return, and an enum type both
-entries use generates one Java enum file that both repositories use.
+The entries share one `java.package`, so they also share its `rows` and `enums`
+subpackages: a table whose complete row both entries return generates one
+`<TableName>Row` file in `dev.example.generated.rows` that both repositories
+import and return, and an enum type both entries use generates one Java enum
+file in `dev.example.generated.enums` that both repositories import and use.
 
 ## Generated Java Names
 
@@ -336,9 +351,9 @@ The rules are applied as follows:
   `Result`, so `get_author` generates `GetAuthorResult`,
 - a row record is the upper camel form of the table name followed by `Row`, so
   the table `authors` generates `AuthorsRow`. Row names are normalized, never
-  singularized. A row record is a top-level type of `java.package`, generated
-  once per table into its own file and shared by every repository of the package
-  that returns or embeds that row,
+  singularized. A row record is a top-level type of `<java.package>.rows`,
+  generated once per table into its own file and imported and shared by every
+  repository of the same `java.package` that returns or embeds that row,
 - a result component that holds one table's complete row is named after the name
   its query source exposes, which is the source's alias or its table name as
   written, by the same rules every other component follows, so
@@ -347,8 +362,8 @@ The rules are applied as follows:
   generates `users1` and `users2`,
 - an enum type is the upper camel form of its PostgreSQL name, so
   `stage_setting` generates `StageSetting`. It is a top-level type of
-  `java.package`, generated once per enum type into its own file, and only for
-  an enum type a query reads or binds,
+  `<java.package>.enums`, generated once per enum type into its own file, and
+  only for an enum type a query reads or binds,
 - an enum constant is the label's words, upper-cased and joined with `_`, so the
   labels `in progress` and `in-progress` both generate `IN_PROGRESS`, the label
   `InProgress`, which is one word, generates `INPROGRESS`, and the label `2fast`
@@ -418,7 +433,8 @@ sqlcj: Invalid query group 'User' in /home/dev/project/sql/queries.sql: Queries 
 
 Two tables whose row records are equal ignoring case are rejected on the same
 grounds, naming both tables and both row types. Because a row record belongs to
-the package, the two tables may come from one entry or from two:
+the generated tree of the whole configuration, the two tables may come from one
+entry or from two:
 
 ```text
 sqlcj: Invalid query group 'User' in /home/dev/project/sql/queries.sql: Tables 'user_data' and 'userdata' generate row types that are equal ignoring case: UserDataRow and UserdataRow
@@ -426,8 +442,10 @@ sqlcj: Invalid query group 'User' in /home/dev/project/sql/queries.sql: Tables '
 
 Two enum types whose Java enums are equal ignoring case, and an enum type whose
 Java enum is equal ignoring case to a repository, row record, or nested result
-record of the package, are rejected on the same grounds, in either generation
-order:
+record of the same configuration, are rejected on the same grounds, in either
+generation order. The three subpackages separate the generated files, not their
+simple names: a generated simple name stays unique across the whole generated
+tree, whichever of the subpackages holds it:
 
 ```text
 sqlcj: Invalid query group 'Stage' in /home/dev/project/sql/queries.sql: Enum types 'stage_setting' and 'stagesetting' generate enum types that are equal ignoring case: StageSetting and Stagesetting
@@ -465,8 +483,8 @@ that differ only by the case of their first character, such as `User` and
 `user`, generate one repository name and collide as the same path:
 
 ```text
-sqlcj: Duplicate generated file for repositories 'User' and 'user': generated/UserRepository.java
-sqlcj: Generated file paths for repositories 'UserData' and 'Userdata' differ only by case: generated/UserDataRepository.java and generated/UserdataRepository.java
+sqlcj: Duplicate generated file for repositories 'User' and 'user': generated/repositories/UserRepository.java
+sqlcj: Generated file paths for repositories 'UserData' and 'Userdata' differ only by case: generated/repositories/UserDataRepository.java and generated/repositories/UserdataRepository.java
 ```
 
 ## Diagnostics
@@ -487,10 +505,10 @@ sqlcj: Cannot read configuration file: /home/dev/project/sqlcj.yaml: No such fil
 sqlcj: Malformed configuration file: /home/dev/project/sqlcj.yaml: expected <block end>, but found '<block mapping start>' at line 2, column 3
 sqlcj: Invalid configuration in /home/dev/project/sqlcj.yaml: 'java.package' value 'dev.class.generated' is not a valid Java package name
 sqlcj: Cannot read queries source: /home/dev/project/sql/missing.sql: No such file or directory
-sqlcj: Cannot create output directory: /home/dev/project/target/generated-sources/sqlcj/dev/example/generated: Not a directory
-sqlcj: Cannot write generated file: /home/dev/project/target/generated-sources/sqlcj/dev/example/generated/UsersRepository.java: Permission denied
+sqlcj: Cannot create output directory: /home/dev/project/target/generated-sources/sqlcj/dev/example/generated/repositories: Not a directory
+sqlcj: Cannot write generated file: /home/dev/project/target/generated-sources/sqlcj/dev/example/generated/repositories/UsersRepository.java: Permission denied
 sqlcj: Cannot read output manifest: /home/dev/project/target/generated-sources/sqlcj/sqlcj-manifest.txt: Permission denied
-sqlcj: Cannot delete stale generated file: /home/dev/project/target/generated-sources/sqlcj/dev/example/generated/OrdersRepository.java: Permission denied
+sqlcj: Cannot delete stale generated file: /home/dev/project/target/generated-sources/sqlcj/dev/example/generated/repositories/OrdersRepository.java: Permission denied
 sqlcj: Cannot write output manifest: /home/dev/project/target/generated-sources/sqlcj/sqlcj-manifest.txt: Permission denied
 ```
 
@@ -536,10 +554,17 @@ deleted too.
 Cleanup is deliberately narrow:
 
 - A file no previous manifest listed is never deleted, so a hand-written file in
-  the generated package survives, and so does output written before the first
-  manifest existed.
+  one of the generated packages survives, and so does output written before the
+  first manifest existed.
 - No directory is deleted, so a package directory stays in place after the
   repository inside it is removed.
+- The first run after an upgrade to a sqlcj that generates a different layout is
+  that same cleanup: it deletes the files the previous manifest lists, because
+  this run generates them under their new paths, and leaves the emptied
+  directory in place. An upgrade from a sqlcj that wrote the generated files
+  directly into the `java.package` directory therefore removes those files on
+  the next run and keeps that directory, which then holds the subdirectories of
+  the generated subpackages.
 - Changing `java.out` leaves the previous directory and its files untouched,
   because cleanup only reads the manifest of the directory it generates into.
 - A run that fails while writing a generated file, deleting a stale one, or

@@ -68,7 +68,9 @@ than with repositories bound to a database nobody chose.
 Every class sqlcj generated in the application's auto-configuration packages —
 the package of the `@SpringBootApplication` class and the packages below it —
 is registered as a singleton bean under its fully qualified class name, built
-from the one `QueryExecutor` bean definition. The generator marks every
+from the one `QueryExecutor` bean definition. The generated repositories sit in
+`<java.package>.repositories`, which is one of those packages whenever
+`java.package` itself is. The generator marks every
 repository with `@org.sqlcj.runtime.GeneratedRepository`, which is how the
 starter finds them; a row record and a generated enum carry no marker and are
 not registered.
@@ -182,8 +184,8 @@ application registers its repositories with `@Import`:
 ```java
 package com.example.app;
 
-import com.example.generated.AuthorRepository;
-import com.example.generated.BookRepository;
+import com.example.generated.repositories.AuthorRepository;
+import com.example.generated.repositories.BookRepository;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 
@@ -264,7 +266,7 @@ one `@Bean` over the qualified executor:
 ```java
 package com.example.app;
 
-import com.example.app.audit.EventRepository;
+import com.example.app.audit.repositories.EventRepository;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -305,7 +307,7 @@ package sits under the application's own:
 ```java
 package com.example.app;
 
-import com.example.app.library.AuthorRepository;
+import com.example.app.library.repositories.AuthorRepository;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 
@@ -338,7 +340,7 @@ Spring Boot application:
 ```java
 package com.example.app;
 
-import com.example.app.db.AuthorRepository;
+import com.example.app.db.repositories.AuthorRepository;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
