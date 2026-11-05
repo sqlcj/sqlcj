@@ -5,13 +5,14 @@ import org.sqlcj.analysis.QueryGroupModel;
 import java.util.List;
 
 /**
- * Generates the source files of one package from the query groups of that
- * package.
+ * Generates the source files of one configured package from the query groups
+ * of that package.
  *
- * <p>A generator is used for one package: every group of the package is
- * generated through the same generator, in configuration order, and
+ * <p>A generator is used for one configured package: every group of that
+ * package is generated through the same generator, in configuration order, and
  * {@link #generateRows()} and {@link #generateEnums()} then yield the row
- * records and enum types those groups share.
+ * records and enum types those groups share. Each kind of file is written to a
+ * subpackage of the configured package, so no two kinds share a directory.
  */
 public interface CodeGenerator {
 

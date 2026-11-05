@@ -1,9 +1,9 @@
 package com.example.app;
 
-import com.example.app.db.AuthorRepository;
-import com.example.app.db.AuthorsRow;
-import com.example.app.db.BookFormat;
-import com.example.app.db.BooksRow;
+import com.example.app.db.enums.BookFormat;
+import com.example.app.db.repositories.AuthorRepository;
+import com.example.app.db.rows.AuthorsRow;
+import com.example.app.db.rows.BooksRow;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.sqlcj.runtime.JdbcQueryExecutor;
 import org.sqlcj.runtime.JdbcTransactions;

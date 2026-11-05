@@ -169,14 +169,14 @@ class ReferenceServiceIntegrationTest {
     /** The files the three schema inputs generate, relative to {@code java.out}. */
     private static final Set<String> GENERATED_FILES = Set.of(
         "sqlcj-manifest.txt",
-        "generated/TrackerRepository.java",
-        "generated/TasksRow.java",
-        "generated/ProjectsRow.java",
-        "generated/CommentsRow.java",
-        "generated/AuditLog2026Row.java",
-        "generated/AuditLogArchiveRow.java",
-        "generated/TaskStatus.java",
-        "generated/MembershipRole.java"
+        "generated/repositories/TrackerRepository.java",
+        "generated/rows/TasksRow.java",
+        "generated/rows/ProjectsRow.java",
+        "generated/rows/CommentsRow.java",
+        "generated/rows/AuditLog2026Row.java",
+        "generated/rows/AuditLogArchiveRow.java",
+        "generated/enums/TaskStatus.java",
+        "generated/enums/MembershipRole.java"
     );
 
     private static PostgreSQLContainer<?> postgres;
@@ -519,7 +519,7 @@ class ReferenceServiceIntegrationTest {
             assertEquals(
                 List.of("id", "occurredAt", "actorId", "action", "detail"),
                 recordComponentNames(
-                    Class.forName("generated.AuditLogArchiveRow", true, classLoader)
+                    Class.forName("generated.rows.AuditLogArchiveRow", true, classLoader)
                 ),
                 "the LIKE copy does not follow the column the audit log gained"
             );
@@ -2564,7 +2564,7 @@ class ReferenceServiceIntegrationTest {
 
     private Object newRepository(URLClassLoader classLoader) throws Exception {
         Class<?> generatedClass = Class.forName(
-            "generated." + GROUP + "Repository",
+            "generated.repositories." + GROUP + "Repository",
             true,
             classLoader
         );
@@ -2580,7 +2580,7 @@ class ReferenceServiceIntegrationTest {
         String enumName,
         String constant
     ) throws Exception {
-        return Class.forName("generated." + enumName, true, classLoader)
+        return Class.forName("generated.enums." + enumName, true, classLoader)
             .getField(constant)
             .get(null);
     }

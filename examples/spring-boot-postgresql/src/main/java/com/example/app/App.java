@@ -1,9 +1,9 @@
 package com.example.app;
 
-import com.example.app.db.AuthorRepository;
-import com.example.app.db.AuthorsRow;
-import com.example.app.db.BookRepository;
-import com.example.app.db.BooksRow;
+import com.example.app.db.repositories.AuthorRepository;
+import com.example.app.db.repositories.BookRepository;
+import com.example.app.db.rows.AuthorsRow;
+import com.example.app.db.rows.BooksRow;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.ConfigurableApplicationContext;
@@ -20,11 +20,12 @@ import java.util.Objects;
  * reads from {@code application.properties}. There is no {@code @Bean} for an
  * executor or for a repository and no {@code @Import}: the starter
  * auto-configures one executor over the application's {@code DataSource} and
- * registers the two generated repositories of {@code com.example.app.db},
- * which sits under this {@code @SpringBootApplication} package, as beans built
- * from it. {@link LibraryService} therefore receives
- * {@link AuthorRepository} and {@link BookRepository} by constructor
- * injection, and this class takes all three from the context.
+ * registers the two generated repositories of
+ * {@code com.example.app.db.repositories}, which sits under this
+ * {@code @SpringBootApplication} package, as beans built from it.
+ * {@link LibraryService} therefore receives {@link AuthorRepository} and
+ * {@link BookRepository} by constructor injection, and this class takes all
+ * three from the context.
  *
  * <p>Three steps are checked, in order:
  *

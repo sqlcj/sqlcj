@@ -16,16 +16,18 @@
 # then generate the query groups 'Author' and 'Library' and next only 'Writer',
 # proving that a renamed or removed entry leaves no stale repository and a
 # manifest listing the surviving files alone. Both entries share the one
-# top-level 'AuthorsRow' record and the one 'BookFormat' enum the package
-# generates. The final generation uses the sample's own 'sqlcj.yaml' from the
-# sample directory and must restore the first generated output byte for byte
-# before the sample is compiled and run. The sample's migrations declare an
+# 'AuthorsRow' record and the one 'BookFormat' enum the package generates. The
+# final generation uses the sample's own 'sqlcj.yaml' from the sample directory
+# and must restore the first generated output byte for byte before the sample
+# is compiled and run. The sample's migrations declare an
 # enum type and add an enum, an array, and a 'JSONB' column to 'books' and an
 # 'updated_at' column to 'authors', so the generated package holds the shared
-# 'AuthorsRow' and 'BooksRow' records, the 'BookFormat' enum, and one
-# repository whose methods cover every named query, including the named
-# parameter filter, the 'now()' rename, the grouped book count, the upsert, and
-# the id-list read.
+# 'AuthorsRow' and 'BooksRow' records in its 'rows' subpackage, the
+# 'BookFormat' enum in its 'enums' subpackage, and in its 'repositories'
+# subpackage one repository whose methods cover every named query, including
+# the named parameter filter, the 'now()' rename, the grouped book count, the
+# upsert, and the id-list read. Each kind of generated file is written to a
+# subpackage of its own, so no file lands in the configured package itself.
 #
 # The staged runtime's own dependencies are verified before the samples, from a
 # scratch project outside the repository that depends on the staged runtime
@@ -223,8 +225,9 @@ log "Generating with --config from another working directory"
 
 (cd "${elsewhere_dir}" && java -jar "${cli_jar}" generate --config ../sample/sqlcj.yaml)
 
-[ -f "${generated_package}/AuthorRepository.java" ] \
-    || fail "generating with --config did not write ${generated_package}/AuthorRepository.java"
+[ -f "${generated_package}/repositories/AuthorRepository.java" ] \
+    || fail "generating with --config did not write \
+${generated_package}/repositories/AuthorRepository.java"
 
 [ -f "${manifest_file}" ] \
     || fail "generating with --config did not write ${manifest_file}"
@@ -276,7 +279,8 @@ YAML
 (cd "${elsewhere_dir}" && java -jar "${cli_jar}" generate \
     --config ../regeneration/author-and-library.yaml)
 
-for generated in AuthorRepository LibraryRepository AuthorsRow BooksRow BookFormat; do
+for generated in repositories/AuthorRepository repositories/LibraryRepository \
+    rows/AuthorsRow rows/BooksRow enums/BookFormat; do
     [ -f "${generated_package}/${generated}.java" ] \
         || fail "the renamed-entry setup is missing ${generated_package}/${generated}.java"
 done
@@ -295,8 +299,9 @@ shared_enum_count=$(find "${generated_root}" -type f -name 'BookFormat.java' | w
     --config ../regeneration/writer.yaml)
 
 for repository in AuthorRepository LibraryRepository; do
-    if [ -e "${generated_package}/${repository}.java" ]; then
-        fail "regenerating left the stale ${generated_package}/${repository}.java behind"
+    if [ -e "${generated_package}/repositories/${repository}.java" ]; then
+        fail "regenerating left the stale \
+${generated_package}/repositories/${repository}.java behind"
     fi
 done
 
@@ -305,13 +310,14 @@ stale_count=$(find "${generated_root}" -type f -name '*.java' | wc -l)
 [ "${stale_count}" -eq 4 ] \
     || fail "expected 4 generated sources after the rename but found ${stale_count}"
 
-for generated in WriterRepository AuthorsRow BooksRow BookFormat; do
+for generated in repositories/WriterRepository rows/AuthorsRow rows/BooksRow \
+    enums/BookFormat; do
     [ -f "${generated_package}/${generated}.java" ] \
         || fail "the surviving generated sources are missing ${generated_package}/${generated}.java"
 done
 
 expected_manifest="${workspace}/expected-manifest.txt"
-printf 'com/example/app/db/AuthorsRow.java\ncom/example/app/db/BookFormat.java\ncom/example/app/db/BooksRow.java\ncom/example/app/db/WriterRepository.java\n' \
+printf 'com/example/app/db/enums/BookFormat.java\ncom/example/app/db/repositories/WriterRepository.java\ncom/example/app/db/rows/AuthorsRow.java\ncom/example/app/db/rows/BooksRow.java\n' \
     > "${expected_manifest}"
 
 cmp "${expected_manifest}" "${manifest_file}" \
@@ -321,7 +327,8 @@ log "Generating sources with the packaged CLI"
 
 (cd "${sample_dir}" && java -jar "${cli_jar}" generate)
 
-for generated in AuthorRepository AuthorsRow BooksRow BookFormat; do
+for generated in repositories/AuthorRepository rows/AuthorsRow rows/BooksRow \
+    enums/BookFormat; do
     [ -f "${generated_package}/${generated}.java" ] \
         || fail "the expected generated source is missing: ${generated_package}/${generated}.java"
 done
@@ -335,14 +342,14 @@ for method in createAuthor getAuthor findAuthor listAuthors updateAuthorBio dele
     searchAuthors countAuthors listAuthorPage createBook listAuthorBooks \
     createCatalogedBook listBooksByFormat filterAuthors renameAuthor \
     countBooksByAuthor upsertAuthor listAuthorsByIds; do
-    grep -q " ${method}(" "${generated_package}/AuthorRepository.java" \
+    grep -q " ${method}(" "${generated_package}/repositories/AuthorRepository.java" \
         || fail "the generated repository is missing the ${method} method"
 done
 
-grep -q "LocalDateTime createdAt" "${generated_package}/AuthorsRow.java" \
+grep -q "LocalDateTime createdAt" "${generated_package}/rows/AuthorsRow.java" \
     || fail "the generated row is missing the column the second migration adds"
 
-grep -q "LocalDateTime updatedAt" "${generated_package}/AuthorsRow.java" \
+grep -q "LocalDateTime updatedAt" "${generated_package}/rows/AuthorsRow.java" \
     || fail "the generated row is missing the column the fourth migration adds"
 
 diff -r "${first_generation}" "${generated_root}" \
@@ -413,7 +420,8 @@ for spring_boot_version in 4.0.9 4.1.2; do
 
     (cd "${spring_sample_dir}" && java -jar "${cli_jar}" generate)
 
-    for generated in AuthorRepository BookRepository AuthorsRow BooksRow; do
+    for generated in repositories/AuthorRepository repositories/BookRepository \
+        rows/AuthorsRow rows/BooksRow; do
         [ -f "${spring_generated_package}/${generated}.java" ] \
             || fail "the Spring Boot sample is missing ${spring_generated_package}/${generated}.java"
     done
@@ -428,7 +436,8 @@ for spring_boot_version in 4.0.9 4.1.2; do
     # The marker is printed rather than matched quietly, so the run records
     # that both repositories carry the annotation the starter scans for.
     for repository in AuthorRepository BookRepository; do
-        grep -H '@org.sqlcj.runtime.GeneratedRepository' "${spring_generated_package}/${repository}.java" \
+        grep -H '@org.sqlcj.runtime.GeneratedRepository' \
+            "${spring_generated_package}/repositories/${repository}.java" \
             || fail "the generated ${repository} does not carry the marker the starter scans for"
     done
 

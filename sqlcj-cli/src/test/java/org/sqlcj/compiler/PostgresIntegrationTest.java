@@ -1271,7 +1271,7 @@ class PostgresIntegrationTest {
 
         try (URLClassLoader classLoader = classLoader(classesDirectory)) {
             Object[] constants = Class
-                .forName("generated.StageSetting", true, classLoader)
+                .forName("generated.enums.StageSetting", true, classLoader)
                 .getEnumConstants();
 
             Object repository = newRepository(classLoader);
@@ -2919,7 +2919,7 @@ class PostgresIntegrationTest {
 
         try (URLClassLoader classLoader = classLoader(classesDirectory)) {
             Class<?> stageSetting = Class.forName(
-                "generated.StageSetting",
+                "generated.enums.StageSetting",
                 true,
                 classLoader
             );
@@ -3038,7 +3038,7 @@ class PostgresIntegrationTest {
 
         try (URLClassLoader classLoader = classLoader(classesDirectory)) {
             Class<?> stageSetting = Class.forName(
-                "generated.StageSetting",
+                "generated.enums.StageSetting",
                 true,
                 classLoader
             );
@@ -3128,7 +3128,7 @@ class PostgresIntegrationTest {
 
         try (URLClassLoader classLoader = classLoader(classesDirectory)) {
             Class<?> stageSetting = Class.forName(
-                "generated.StageSetting",
+                "generated.enums.StageSetting",
                 true,
                 classLoader
             );
@@ -3863,7 +3863,7 @@ class PostgresIntegrationTest {
         );
 
         try (URLClassLoader classLoader = classLoader(classesDirectory)) {
-            Class<?> stageSetting = Class.forName("generated.StageSetting", true, classLoader);
+            Class<?> stageSetting = Class.forName("generated.enums.StageSetting", true, classLoader);
 
             Object outdoor = stageSetting.getEnumConstants()[1];
 
@@ -4005,7 +4005,7 @@ class PostgresIntegrationTest {
         );
 
         try (URLClassLoader classLoader = classLoader(classesDirectory)) {
-            Class<?> albumKind = Class.forName("generated.AlbumKind", true, classLoader);
+            Class<?> albumKind = Class.forName("generated.enums.AlbumKind", true, classLoader);
 
             assertTrue(albumKind.isEnum());
 
@@ -7062,7 +7062,7 @@ class PostgresIntegrationTest {
             assertNotNull(component(stage, "openedAt"));
 
             Class<?> stageSetting = Class.forName(
-                "generated.StageSetting",
+                "generated.enums.StageSetting",
                 true,
                 classLoader
             );
@@ -7267,8 +7267,9 @@ class PostgresIntegrationTest {
             )
         );
 
-        try (Stream<Path> generatedFiles = Files.list(generatedDirectory.resolve("generated"))) {
+        try (Stream<Path> generatedFiles = Files.walk(generatedDirectory.resolve("generated"))) {
             generatedFiles
+                .filter(Files::isRegularFile)
                 .map(Path::toString)
                 .sorted()
                 .forEach(arguments::add);
@@ -7302,7 +7303,7 @@ class PostgresIntegrationTest {
         QueryExecutor executor
     ) throws Exception {
         Class<?> generatedClass = Class.forName(
-            "generated." + GROUP + "Repository",
+            "generated.repositories." + GROUP + "Repository",
             true,
             classLoader
         );
