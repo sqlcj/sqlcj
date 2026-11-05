@@ -51,3 +51,13 @@ SELECT *
 FROM articles
 WHERE id = ANY (:ids)
 ORDER BY id;
+
+-- name: CreateArticle :one
+INSERT INTO articles (slug, title, status, published_at)
+VALUES (:slug, :title, :status, :publishedAt)
+RETURNING *;
+
+-- name: SetArticleStatus :exec
+UPDATE articles
+SET status = :status
+WHERE id = :id;

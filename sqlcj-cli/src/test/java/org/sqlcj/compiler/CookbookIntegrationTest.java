@@ -7,11 +7,21 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
 import org.junit.jupiter.api.io.TempDir;
 import org.postgresql.ds.PGSimpleDataSource;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
 import org.sqlcj.config.Config;
 import org.sqlcj.config.JavaConfig;
 import org.sqlcj.config.SqlConfig;
 import org.sqlcj.runtime.JdbcQueryExecutor;
+import org.sqlcj.runtime.JdbcTransactions;
 import org.sqlcj.runtime.QueryExecutor;
+import org.sqlcj.runtime.TransactionCallback;
+import org.sqlcj.runtime.TransactionConflictException;
+import org.sqlcj.runtime.UniqueViolationException;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -19,6 +29,7 @@ import org.testcontainers.utility.DockerImageName;
 import javax.sql.DataSource;
 import javax.tools.JavaCompiler;
 import javax.tools.ToolProvider;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
@@ -33,6 +44,8 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -40,6 +53,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -51,7 +65,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  * database.
  *
  * <p>The fixture under {@code src/test/resources/cookbook} is the cookbook's
- * single source: its migration, its named SQL, and the six recipe classes,
+ * single source: its migration, its named SQL, and the ten recipe classes,
  * which live in the hand-written root package and import the generated
  * repository, row records, and enum from its subpackages.
  *
@@ -86,6 +100,17 @@ class CookbookIntegrationTest {
 
     /** The moment the batch recipe records its views at. */
     private static final OffsetDateTime VIEWED_AT = OffsetDateTime.of(2026, 5, 1, 12, 0, 0, 0, ZoneOffset.UTC);
+
+    /** The moment every article the transaction and draft recipes write is published at. */
+    private static final OffsetDateTime MAY = OffsetDateTime.of(2026, 5, 20, 9, 0, 0, 0, ZoneOffset.UTC);
+
+    /** The slug the replacement of both transaction recipes is stored under. */
+    private static final String REPLACEMENT_SLUG = "the-cost-of-indexes-revisited";
+
+    private static final String REPLACEMENT_TITLE = "The Cost of Indexes, Revisited";
+
+    /** The title the rival transaction of the retry test commits. */
+    private static final String RIVAL_TITLE = "The Cost of Indexes, Edited";
 
     /**
      * The seeded articles, in the order they are inserted, so that the
@@ -410,6 +435,204 @@ class CookbookIntegrationTest {
     }
 
     /**
+     * The plain transaction recipe archives an article and publishes its
+     * replacement as one unit of work: a replacement whose slug another article
+     * holds fails with the unique violation its caller sees and leaves the
+     * archiving undone, while a free slug commits both writes.
+     */
+    @Test
+    void shouldReplaceAnArticleInOneTransaction() throws Exception {
+        Object recipe = recipe("ArticleReplacement");
+        JdbcTransactions transactions = new JdbcTransactions(dataSource);
+
+        long articleId = articleId("the-cost-of-indexes");
+
+        UniqueViolationException failure = assertThrows(
+            UniqueViolationException.class,
+            () -> invokeUnwrapped(
+                recipe,
+                "replace",
+                transactions,
+                articleId,
+                "keyset-pagination",
+                REPLACEMENT_TITLE,
+                MAY
+            )
+        );
+
+        assertEquals("23505", failure.sqlState());
+
+        assertRolledBackReplacement();
+
+        assertCommittedReplacement(
+            invokeUnwrapped(
+                recipe,
+                "replace",
+                transactions,
+                articleId,
+                REPLACEMENT_SLUG,
+                REPLACEMENT_TITLE,
+                MAY
+            )
+        );
+    }
+
+    /**
+     * The Spring recipe makes the same two writes in one
+     * {@code @Transactional} method: the generated repository bean, built over
+     * the executor on the transaction-aware data source, takes part in the
+     * transaction Spring opens, so the taken slug rolls the archiving back and
+     * the free slug commits both writes.
+     */
+    @Test
+    void shouldReplaceAnArticleInASpringTransaction() throws Exception {
+        long articleId = articleId("the-cost-of-indexes");
+
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.setClassLoader(classLoader);
+            context.register(
+                TransactionConfiguration.class,
+                fixtureClass("repositories." + GROUP + "Repository"),
+                fixtureClass("ArticleReplacementService")
+            );
+            context.refresh();
+
+            Object service = context.getBean(fixtureClass("ArticleReplacementService"));
+
+            UniqueViolationException failure = assertThrows(
+                UniqueViolationException.class,
+                () -> invokeUnwrapped(
+                    service,
+                    "replace",
+                    articleId,
+                    "keyset-pagination",
+                    REPLACEMENT_TITLE,
+                    MAY
+                )
+            );
+
+            assertEquals("23505", failure.sqlState());
+
+            assertRolledBackReplacement();
+
+            assertCommittedReplacement(
+                invokeUnwrapped(service, "replace", articleId, REPLACEMENT_SLUG, REPLACEMENT_TITLE, MAY)
+            );
+        }
+    }
+
+    /**
+     * The duplicate key recipe stores the draft of a free slug and reports a
+     * slug the newsletter already uses as an empty result, leaving the article
+     * that holds the slug as it was.
+     */
+    @Test
+    void shouldReportATakenSlugAsAnEmptyDraft() throws Exception {
+        Object recipe = recipe("ArticleDrafts");
+        Object repository = repository();
+
+        Optional<?> draft = (Optional<?>) invoke(
+            recipe,
+            "createDraft",
+            repository,
+            "indexes-in-practice",
+            "Indexes in Practice",
+            MAY
+        );
+
+        assertTrue(draft.isPresent(), "the free slug stored a draft");
+
+        assertEquals(articleStatus("DRAFT"), component(draft.get(), "status"));
+
+        assertEquals("Indexes in Practice", component(draft.get(), "title"));
+
+        assertEquals(
+            Optional.empty(),
+            invoke(
+                recipe,
+                "createDraft",
+                repository,
+                "indexes-in-practice",
+                "Indexes in Practice, Again",
+                MAY
+            ),
+            "the taken slug is reported instead of raised"
+        );
+
+        assertEquals(
+            "Indexes in Practice",
+            storedTitle("indexes-in-practice"),
+            "the second draft stored nothing"
+        );
+
+        assertEquals(6L, articleCount());
+    }
+
+    /**
+     * The retry recipe runs its unit of work again after the serialization
+     * failure a rival transaction causes, and gives up after its last attempt:
+     * with three attempts allowed and one rival, the work succeeds on its
+     * second attempt; with a rival on every attempt and two allowed, the
+     * conflict of the second attempt reaches the caller and no attempt's write
+     * survives.
+     */
+    @Test
+    void shouldRetryAConflictingTransactionUpToItsBound() throws Exception {
+        Object recipe = recipe("RetryingTransactions");
+        JdbcTransactions transactions = new JdbcTransactions(serializableDataSource());
+
+        AtomicInteger attempts = new AtomicInteger();
+
+        assertEquals(
+            1,
+            (int) invokeUnwrapped(
+                recipe,
+                "inTransaction",
+                transactions,
+                3,
+                archiving(articleId("the-cost-of-indexes"), 1, attempts)
+            ),
+            "the attempt that survived archived the article"
+        );
+
+        assertEquals(2, attempts.get(), "the work was run again exactly once");
+
+        assertEquals("archived", storedStatus("the-cost-of-indexes"));
+
+        assertEquals(
+            RIVAL_TITLE,
+            storedTitle("the-cost-of-indexes"),
+            "the retried attempt read the title the rival committed"
+        );
+
+        // The exhausted retry is asserted against the published article again.
+        seedDatabase();
+
+        attempts.set(0);
+
+        TransactionConflictException failure = assertThrows(
+            TransactionConflictException.class,
+            () -> invokeUnwrapped(
+                recipe,
+                "inTransaction",
+                transactions,
+                2,
+                archiving(articleId("the-cost-of-indexes"), 2, attempts)
+            )
+        );
+
+        assertEquals("40001", failure.sqlState());
+
+        assertEquals(2, attempts.get(), "the retry stopped after its last attempt");
+
+        assertEquals(
+            "published",
+            storedStatus("the-cost-of-indexes"),
+            "every attempt of the exhausted retry was rolled back"
+        );
+    }
+
+    /**
      * Generates the fixture's query group from its migration directory, then
      * compiles the generated tree and the recipes together into an isolated
      * temporary classes directory.
@@ -490,23 +713,48 @@ class CookbookIntegrationTest {
         return Paths.get(url.toURI());
     }
 
+    /**
+     * A data source whose connections open {@code SERIALIZABLE} transactions,
+     * which is the isolation the conflict the retry recipe survives needs.
+     */
+    private static DataSource serializableDataSource() {
+        PGSimpleDataSource serializable = new PGSimpleDataSource();
+
+        serializable.setUrl(postgres.getJdbcUrl());
+        serializable.setUser(postgres.getUsername());
+        serializable.setPassword(postgres.getPassword());
+        serializable.setOptions("-c default_transaction_isolation=serializable");
+
+        return serializable;
+    }
+
+    /** One class of the compiled fixture, named relative to its root package. */
+    private static Class<?> fixtureClass(String name) throws Exception {
+        return Class.forName(PACKAGE + "." + name, true, classLoader);
+    }
+
     /** The generated repository, bound to the database the recipes run against. */
     private Object repository() throws Exception {
-        return Class.forName(PACKAGE + ".repositories." + GROUP + "Repository", true, classLoader)
+        return repository(new JdbcQueryExecutor(dataSource));
+    }
+
+    /** The generated repository, bound to the given executor. */
+    private Object repository(QueryExecutor executor) throws Exception {
+        return fixtureClass("repositories." + GROUP + "Repository")
             .getConstructor(QueryExecutor.class)
-            .newInstance(new JdbcQueryExecutor(dataSource));
+            .newInstance(executor);
     }
 
     /** One hand-written recipe of the fixture, loaded from the compiled output. */
     private Object recipe(String simpleName) throws Exception {
-        return Class.forName(PACKAGE + "." + simpleName, true, classLoader)
+        return fixtureClass(simpleName)
             .getConstructor()
             .newInstance();
     }
 
     /** One constant of the generated enum, loaded from the compiled output. */
     private Object articleStatus(String constant) throws Exception {
-        return Class.forName(PACKAGE + ".enums.ArticleStatus", true, classLoader)
+        return fixtureClass("enums.ArticleStatus")
             .getField(constant)
             .get(null);
     }
@@ -520,6 +768,109 @@ class CookbookIntegrationTest {
         }
 
         return fail("missing recipe method: " + methodName);
+    }
+
+    /**
+     * Calls one method of the compiled fixture and rethrows a runtime failure
+     * of it unchanged, so a test asserts the exception a caller of the recipe
+     * sees rather than the wrapper the reflective call adds.
+     */
+    private Object invokeUnwrapped(Object target, String methodName, Object... arguments) throws Exception {
+        try {
+            return invoke(target, methodName, arguments);
+        } catch (InvocationTargetException e) {
+            if (e.getCause() instanceof RuntimeException failure) {
+                throw failure;
+            }
+
+            throw e;
+        }
+    }
+
+    /**
+     * The unit of work the retry recipe runs: inside its own transaction it
+     * reads the article, lets a rival transaction commit a new title of that
+     * article on the first {@code rivalAttempts} attempts, so that its own
+     * write of the same row raises the serialization failure, and archives the
+     * article.
+     */
+    private TransactionCallback<Object, Exception> archiving(
+        long articleId,
+        int rivalAttempts,
+        AtomicInteger attempts
+    ) {
+        return connection -> {
+            int attempt = attempts.incrementAndGet();
+
+            Object newsletter = repository(new JdbcQueryExecutor(connection));
+
+            // The read takes the transaction's snapshot, which the update the
+            // rival commits next leaves behind.
+            assertEquals(
+                1,
+                ((List<?>) invokeUnwrapped(newsletter, "listArticlesByIds", List.of(articleId))).size(),
+                "the attempt read the article it archives"
+            );
+
+            if (attempt <= rivalAttempts) {
+                commitRivalTitle(articleId);
+            }
+
+            return invokeUnwrapped(newsletter, "setArticleStatus", articleStatus("ARCHIVED"), articleId);
+        };
+    }
+
+    /**
+     * Commits a new title of one article on a separate connection of its own,
+     * which the retried transaction's update of that article conflicts with.
+     */
+    private void commitRivalTitle(long articleId) throws Exception {
+        try (
+            Connection connection = dataSource.getConnection();
+            PreparedStatement statement = connection.prepareStatement(
+                "UPDATE articles SET title = ? WHERE id = ?"
+            )
+        ) {
+            statement.setString(1, RIVAL_TITLE);
+            statement.setLong(2, articleId);
+
+            assertEquals(1, statement.executeUpdate());
+        }
+    }
+
+    /**
+     * Asserts the state a committed replacement leaves: the returned row is the
+     * published replacement, the article it replaces is archived, and the
+     * replacement is the newsletter's sixth article.
+     */
+    private void assertCommittedReplacement(Object replacement) throws Exception {
+        assertEquals(REPLACEMENT_SLUG, component(replacement, "slug"));
+
+        assertEquals(articleStatus("PUBLISHED"), component(replacement, "status"));
+
+        assertEquals("published", storedStatus(REPLACEMENT_SLUG));
+
+        assertEquals(
+            "archived",
+            storedStatus("the-cost-of-indexes"),
+            "the same transaction committed the archiving too"
+        );
+
+        assertEquals(6L, articleCount());
+    }
+
+    /**
+     * Asserts the state a rolled back replacement leaves: the article it would
+     * have replaced is still published and no replacement was stored.
+     */
+    private void assertRolledBackReplacement() throws Exception {
+        assertEquals(
+            "published",
+            storedStatus("the-cost-of-indexes"),
+            "the rolled back transaction left the archiving undone"
+        );
+
+        assertEquals(5L, articleCount(), "the rolled back transaction stored no replacement");
     }
 
     private Object search(
@@ -588,6 +939,32 @@ class CookbookIntegrationTest {
         }
     }
 
+    /** The stored status of one article, read outside the generated repository. */
+    private String storedStatus(String slug) throws Exception {
+        return storedColumn("SELECT status::text FROM articles WHERE slug = ?", slug);
+    }
+
+    /** The stored title of one article, read outside the generated repository. */
+    private String storedTitle(String slug) throws Exception {
+        return storedColumn("SELECT title FROM articles WHERE slug = ?", slug);
+    }
+
+    /** One text column of the article one slug names. */
+    private String storedColumn(String sql, String slug) throws Exception {
+        try (
+            Connection connection = dataSource.getConnection();
+            PreparedStatement statement = connection.prepareStatement(sql)
+        ) {
+            statement.setString(1, slug);
+
+            try (ResultSet rows = statement.executeQuery()) {
+                assertTrue(rows.next(), "missing article: " + slug);
+
+                return rows.getString(1);
+            }
+        }
+    }
+
     /** The stored views, as the slug and moment of each, in article id order. */
     private List<String> recordedViews() throws Exception {
         List<String> views = new ArrayList<>();
@@ -614,11 +991,19 @@ class CookbookIntegrationTest {
         return views;
     }
 
+    private long articleCount() throws Exception {
+        return count("SELECT COUNT(*) FROM articles");
+    }
+
     private long subscriberCount() throws Exception {
+        return count("SELECT COUNT(*) FROM subscribers");
+    }
+
+    private long count(String sql) throws Exception {
         try (
             Connection connection = dataSource.getConnection();
             Statement statement = connection.createStatement();
-            ResultSet rows = statement.executeQuery("SELECT COUNT(*) FROM subscribers")
+            ResultSet rows = statement.executeQuery(sql)
         ) {
             assertTrue(rows.next());
 
@@ -637,5 +1022,28 @@ class CookbookIntegrationTest {
 
     /** One article the fixture seeds before each test. */
     private record SeededArticle(String slug, String title, String status, OffsetDateTime publishedAt) {
+    }
+
+    /**
+     * The plain Spring context the {@code @Transactional} recipe runs in: a
+     * transaction manager over the test's data source, and the one executor
+     * every generated repository bean is built over, which runs its statements
+     * on a transaction-aware view of the same data source, as the sqlcj Spring
+     * Boot starter configures it. The recipe's own service and repository are
+     * registered by the test.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @EnableTransactionManagement
+    static class TransactionConfiguration {
+
+        @Bean
+        DataSourceTransactionManager transactionManager() {
+            return new DataSourceTransactionManager(dataSource);
+        }
+
+        @Bean
+        QueryExecutor queryExecutor() {
+            return new JdbcQueryExecutor(new TransactionAwareDataSourceProxy(dataSource));
+        }
     }
 }
