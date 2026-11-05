@@ -54,7 +54,7 @@ class JavaCodeGeneratorNamingTest {
 
         String source = file.content();
 
-        assertEquals(Path.of("generated", "UsersRepository.java"), file.path());
+        assertEquals(Path.of("generated", "repositories", "UsersRepository.java"), file.path());
         assertTrue(source.contains("public final class UsersRepository {"));
         assertTrue(source.contains("public UsersRepository(QueryExecutor executor)"));
         assertTrue(source.contains("public record ClassResult("));
@@ -75,7 +75,7 @@ class JavaCodeGeneratorNamingTest {
 
         String source = file.content();
 
-        assertEquals(Path.of("generated", "UsersRepository.java"), file.path());
+        assertEquals(Path.of("generated", "repositories", "UsersRepository.java"), file.path());
         assertTrue(source.contains("public final class UsersRepository {"));
         assertTrue(source.contains("public record GetUserResult("));
         assertTrue(source.contains("public List<GetUserResult> getUser()"));
@@ -97,7 +97,7 @@ class JavaCodeGeneratorNamingTest {
 
         String source = file.content();
 
-        assertEquals(Path.of("generated", "UsersRepository.java"), file.path());
+        assertEquals(Path.of("generated", "repositories", "UsersRepository.java"), file.path());
         assertTrue(source.contains("import java.util.List;"));
         assertTrue(source.contains("public final class UsersRepository {"));
         assertTrue(source.contains("public record ListResult("));
@@ -119,7 +119,7 @@ class JavaCodeGeneratorNamingTest {
 
         String source = file.content();
 
-        assertEquals(Path.of("generated", "UsersRepository.java"), file.path());
+        assertEquals(Path.of("generated", "repositories", "UsersRepository.java"), file.path());
         assertTrue(source.contains("import java.util.UUID;"));
         assertTrue(source.contains("public final class UsersRepository {"));
         assertTrue(source.contains("public record UuidResult("));
@@ -378,7 +378,7 @@ class JavaCodeGeneratorNamingTest {
             )
         ) {
             Class<?> generatedClass = classLoader.loadClass(
-                "generated." + file.path().getFileName().toString().replace(".java", "")
+                "generated.repositories." + file.path().getFileName().toString().replace(".java", "")
             );
 
             RecordingQueryExecutor executor = new RecordingQueryExecutor();

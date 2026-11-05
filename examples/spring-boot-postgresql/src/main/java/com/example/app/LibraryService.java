@@ -1,8 +1,8 @@
 package com.example.app;
 
-import com.example.app.db.AuthorRepository;
-import com.example.app.db.AuthorsRow;
-import com.example.app.db.BookRepository;
+import com.example.app.db.repositories.AuthorRepository;
+import com.example.app.db.repositories.BookRepository;
+import com.example.app.db.rows.AuthorsRow;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 

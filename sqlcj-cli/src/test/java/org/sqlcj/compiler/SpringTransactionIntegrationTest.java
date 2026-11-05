@@ -410,7 +410,7 @@ class SpringTransactionIntegrationTest {
     private static Object repository(DataSource repositoryDataSource) {
         try {
             Class<?> generatedClass = Class.forName(
-                "generated." + GROUP + "Repository",
+                "generated.repositories." + GROUP + "Repository",
                 true,
                 classLoader
             );
@@ -443,7 +443,7 @@ class SpringTransactionIntegrationTest {
     private static Object insertAuthorsParams(long id, String name) {
         try {
             Class<?> paramsType = Class.forName(
-                "generated." + GROUP + "Repository$InsertAuthorsParams",
+                "generated.repositories." + GROUP + "Repository$InsertAuthorsParams",
                 true,
                 classLoader
             );
@@ -533,8 +533,9 @@ class SpringTransactionIntegrationTest {
             )
         );
 
-        try (Stream<Path> generatedFiles = Files.list(generatedDirectory.resolve("generated"))) {
+        try (Stream<Path> generatedFiles = Files.walk(generatedDirectory.resolve("generated"))) {
             generatedFiles
+                .filter(Files::isRegularFile)
                 .map(Path::toString)
                 .sorted()
                 .forEach(arguments::add);

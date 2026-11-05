@@ -84,7 +84,11 @@ public abstract class PostgresApplicationScenarios {
      */
     private static final String REQUIRE_DOCKER_PROPERTY = "sqlcj.test.requireDocker";
 
-    /** The package the repositories are generated into, below the application's. */
+    /**
+     * The configured package of the generated code, below the application's.
+     * The repositories themselves are generated into its {@code repositories}
+     * subpackage.
+     */
     private static final String GENERATED_PACKAGE = ".generated";
 
     private static final String AUTHORS_GROUP = "Authors";
@@ -211,8 +215,8 @@ public abstract class PostgresApplicationScenarios {
             parentClassLoader()
         );
 
-        authorsRepositoryClass = generatedClass(AUTHORS_GROUP + "Repository");
-        booksRepositoryClass = generatedClass(BOOKS_GROUP + "Repository");
+        authorsRepositoryClass = generatedRepositoryClass(AUTHORS_GROUP + "Repository");
+        booksRepositoryClass = generatedRepositoryClass(BOOKS_GROUP + "Repository");
 
         context = start();
     }
@@ -515,7 +519,7 @@ public abstract class PostgresApplicationScenarios {
     /** One row of the generated batch write. */
     private Object authorRow(long id, String name) {
         try {
-            return generatedClass(AUTHORS_GROUP + "Repository$InsertAuthorsParams")
+            return generatedRepositoryClass(AUTHORS_GROUP + "Repository$InsertAuthorsParams")
                 .getConstructor(Long.class, String.class)
                 .newInstance(id, name);
         } catch (ReflectiveOperationException failure) {
@@ -608,8 +612,16 @@ public abstract class PostgresApplicationScenarios {
             );
     }
 
-    private Class<?> generatedClass(String simpleName) throws ClassNotFoundException {
-        return Class.forName(generatedPackage() + "." + simpleName, true, classLoader);
+    /**
+     * One generated repository class, loaded from the repositories subpackage
+     * of the configured package, which is where the generator writes it.
+     */
+    private Class<?> generatedRepositoryClass(String simpleName) throws ClassNotFoundException {
+        return Class.forName(
+            generatedPackage() + ".repositories." + simpleName,
+            true,
+            classLoader
+        );
     }
 
     private String generatedPackage() {
@@ -659,8 +671,9 @@ public abstract class PostgresApplicationScenarios {
 
         Path packageDirectory = generatedDirectory.resolve(generatedPackage().replace('.', '/'));
 
-        try (Stream<Path> generatedFiles = Files.list(packageDirectory)) {
+        try (Stream<Path> generatedFiles = Files.walk(packageDirectory)) {
             generatedFiles
+                .filter(Files::isRegularFile)
                 .map(Path::toString)
                 .sorted()
                 .forEach(arguments::add);
