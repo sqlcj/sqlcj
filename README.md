@@ -126,10 +126,16 @@ Spring Boot starter, which declares no sqlcj bean of its own and commits and
 rolls back its generated writes with `@Transactional`; see
 [Spring](docs/spring.md) for the Spring configurations in full.
 
+From there, the [Cookbook](docs/cookbook.md) holds one tested recipe per
+everyday task, each with its SQL, the generated method it calls, and its Java.
+
 ## Documentation
 
 - [Quickstart](docs/quickstart.md) — an end-to-end PostgreSQL project from an
   empty directory.
+- [Cookbook](docs/cookbook.md) — tested recipes for pagination, criteria
+  search, upserts, batch writes, id lists, transactions, duplicate keys, and
+  retried conflicts.
 - [Queries](docs/queries.md) — query annotations, the supported SQL shapes,
   parameter and binding order, the generated API, and what is not supported.
 - [Configuration](docs/configuration.md) — the `sqlcj.yaml` format, query-group
