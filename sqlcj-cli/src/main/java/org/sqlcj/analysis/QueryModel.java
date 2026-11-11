@@ -15,8 +15,12 @@ import java.util.List;
  *                                 is replaced by {@code ?}, written
  *                                 {@code ?::<type>} where the occurrence takes
  *                                 its type from another occurrence of the same
- *                                 logical parameter, and every other character
- *                                 is preserved
+ *                                 logical parameter, every wildcard select item
+ *                                 this query was analyzed with is replaced by
+ *                                 the delimited column list it was analyzed as,
+ *                                 so that a column the database gains later
+ *                                 never shifts a value the mapper reads, and
+ *                                 every other character is preserved
  * @param bindingParameterIndexes  the logical parameter number of each
  *                                 {@code ?} position in
  *                                 {@link #executableSql()}, in textual order

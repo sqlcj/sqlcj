@@ -943,7 +943,8 @@ public class DefaultSchemaParser implements SchemaParser {
                     column.unsupportedType(),
                     newName,
                     column.array(),
-                    column.blankPadded()
+                    column.blankPadded(),
+                    column.sqlName()
                 )
             );
         }
@@ -2064,7 +2065,8 @@ public class DefaultSchemaParser implements SchemaParser {
                 column.unsupportedType(),
                 column.enumType(),
                 column.array(),
-                column.blankPadded()
+                column.blankPadded(),
+                SchemaNamespace.storedName(expression.getColumnName())
             )
         );
 
@@ -2139,7 +2141,8 @@ public class DefaultSchemaParser implements SchemaParser {
                     retyped.unsupportedType(),
                     retyped.enumType(),
                     retyped.array(),
-                    retyped.blankPadded()
+                    retyped.blankPadded(),
+                    column.sqlName()
                 )
             );
         }
@@ -2175,7 +2178,8 @@ public class DefaultSchemaParser implements SchemaParser {
                     column.unsupportedType(),
                     column.enumType(),
                     column.array(),
-                    column.blankPadded()
+                    column.blankPadded(),
+                    column.sqlName()
                 )
             );
         }
@@ -2503,7 +2507,8 @@ public class DefaultSchemaParser implements SchemaParser {
             mappedType.unsupportedType(),
             mappedType.enumType(),
             mappedType.array(),
-            mappedType.blankPadded()
+            mappedType.blankPadded(),
+            SchemaNamespace.storedName(definition.getColumnName())
         );
     }
 

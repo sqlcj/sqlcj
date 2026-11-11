@@ -75,6 +75,7 @@ import org.sqlcj.schema.parser.ColumnTypeMapping;
 import org.sqlcj.schema.parser.SchemaNamespace;
 import org.sqlcj.sql.ParsedSql;
 import org.sqlcj.sql.PlaceholderOccurrence;
+import org.sqlcj.sql.WildcardOccurrence;
 import org.sqlcj.type.DefaultTypeResolver;
 import org.sqlcj.type.TypeResolver;
 
@@ -198,6 +199,18 @@ public final class QueryAnalyzer {
     private static final String WILDCARD_COLUMN_TYPE_REJECTION = """
         Column '%s' has unsupported type %s; a wildcard selects it, so list the columns the \
         query needs instead.""";
+
+    /**
+     * The rejection of a bare {@code *} that lists a merged column of a
+     * {@code USING} or {@code NATURAL} join another source of the same
+     * {@code FROM} clause also has a column of that name in. The merged column
+     * belongs to no one source, so the executed statement can only write it
+     * unqualified, which PostgreSQL would read as an ambiguous reference.
+     */
+    private static final String AMBIGUOUS_MERGED_WILDCARD_COLUMN_REJECTION = """
+        A bare * cannot list the merged column '%s' of a USING or NATURAL join, because another \
+        source of the same FROM clause also has a column '%s'; list the columns the query needs \
+        instead.""";
 
     /**
      * The rejection of a returned item that is neither a column of the write
@@ -591,9 +604,15 @@ public final class QueryAnalyzer {
      * qualifier can reach. Each member records the names a join merged away
      * from it, in {@code mergedAway}, which an unqualified reference and a
      * bare {@code *} read from the merged source instead.
+     *
+     * <p>{@code sqlName} is the name PostgreSQL stores for the name this source
+     * exposes, which an expanded wildcard writes as the qualifier of every
+     * column it reads through this source. A merged source and an unreadable
+     * name expose no qualifier at all, so neither carries one.
      */
     private record Source(
         String name,
+        String sqlName,
         org.sqlcj.schema.Table table,
         boolean derived,
         boolean nullable,
@@ -605,22 +624,24 @@ public final class QueryAnalyzer {
         /** One readable source, which every analyzed query resolves against. */
         private Source(
             String name,
+            String sqlName,
             org.sqlcj.schema.Table table,
             boolean derived,
             boolean nullable
         ) {
-            this(name, table, derived, nullable, null);
+            this(name, sqlName, table, derived, nullable, null);
         }
 
         /** One source under the diagnostic or the absence of one it carries. */
         private Source(
             String name,
+            String sqlName,
             org.sqlcj.schema.Table table,
             boolean derived,
             boolean nullable,
             String unreadable
         ) {
-            this(name, table, derived, nullable, unreadable, List.of(), List.of());
+            this(name, sqlName, table, derived, nullable, unreadable, List.of(), List.of());
         }
 
         /**
@@ -628,7 +649,7 @@ public final class QueryAnalyzer {
          * states why.
          */
         private static Source unreadable(String name, String rejection) {
-            return new Source(name, null, true, false, rejection);
+            return new Source(name, null, null, true, false, rejection);
         }
 
         /**
@@ -646,6 +667,7 @@ public final class QueryAnalyzer {
 
             return new Source(
                 name,
+                null,
                 new org.sqlcj.schema.Table(name, columns, List.of()),
                 true,
                 false,
@@ -662,7 +684,16 @@ public final class QueryAnalyzer {
          * earlier one null-extended.
          */
         private Source nullExtended() {
-            return new Source(name, table, derived, true, unreadable, groupSources, mergedAway);
+            return new Source(
+                name,
+                sqlName,
+                table,
+                derived,
+                true,
+                unreadable,
+                groupSources,
+                mergedAway
+            );
         }
 
         /**
@@ -696,6 +727,7 @@ public final class QueryAnalyzer {
 
             return new Source(
                 name,
+                sqlName,
                 table,
                 derived,
                 nullable,
@@ -778,10 +810,20 @@ public final class QueryAnalyzer {
 
     /**
      * The inputs every analyzed {@code SELECT} of one statement shares: the
-     * parsed source, the schema it resolves against, and the placeholders its
-     * clauses type.
+     * parsed source, the schema it resolves against, the placeholders its
+     * clauses type, and the wildcards its projections expand.
      */
-    private record Analysis(ParsedSql parsedSql, Schema schema, Placeholders placeholders) {
+    private record Analysis(
+        ParsedSql parsedSql,
+        Schema schema,
+        Placeholders placeholders,
+        Wildcards wildcards
+    ) {
+
+        /** The analysis of one statement, before any clause is analyzed. */
+        private Analysis(ParsedSql parsedSql, Schema schema, Placeholders placeholders) {
+            this(parsedSql, schema, placeholders, new Wildcards());
+        }
     }
 
     /**
@@ -1039,6 +1081,47 @@ public final class QueryAnalyzer {
         }
     }
 
+    /**
+     * The columns each analyzed wildcard of one statement selects, written as
+     * the executed statement lists them, recorded against the select item the
+     * SQL parser reported, which is how the expansion of a clause's analysis
+     * meets the wildcard span that parser reported.
+     *
+     * <p>A wildcard this analyzer never expands — one of a predicate subquery,
+     * whose items reach the database as written — is recorded by no clause and
+     * therefore stays in the executed statement as the query writes it.
+     */
+    private static final class Wildcards {
+
+        /** The columns one wildcard selects, by its own select item. */
+        private final Map<SelectItem<?>, String> columnLists = new IdentityHashMap<>();
+
+        /**
+         * Records the columns one wildcard select item selects. The same item
+         * is analyzed twice where two clauses of one statement read the same
+         * query, so recording it again states the same columns, and stating
+         * other columns for it is a defect of this analyzer.
+         */
+        private void record(SelectItem<?> selectItem, String columnList) {
+            String recorded = columnLists.putIfAbsent(selectItem, columnList);
+
+            if (recorded != null && !recorded.equals(columnList)) {
+                throw new IllegalStateException(
+                    "Wildcard %s was expanded as both '%s' and '%s'."
+                        .formatted(selectItem, recorded, columnList)
+                );
+            }
+        }
+
+        /**
+         * The columns one wildcard select item selects, and {@code null} when no
+         * clause of the statement expanded it.
+         */
+        private String columnList(SelectItem<?> selectItem) {
+            return columnLists.get(selectItem);
+        }
+    }
+
     public QueryModel analyze(Query query, ParsedSql parsedSql, Schema schema) {
         requireSupportedPlaceholders(parsedSql);
 
@@ -1092,7 +1175,7 @@ public final class QueryAnalyzer {
 
         return toReadQueryModel(
             query,
-            parsedSql,
+            analysis,
             analyzePlainSelect(
                 plainSelect,
                 analysis,
@@ -1100,8 +1183,7 @@ public final class QueryAnalyzer {
                 true,
                 0,
                 null
-            ),
-            analysis.placeholders()
+            )
         );
     }
 
@@ -1131,7 +1213,7 @@ public final class QueryAnalyzer {
             null
         );
 
-        return toReadQueryModel(query, parsedSql, analyzed, analysis.placeholders());
+        return toReadQueryModel(query, analysis, analyzed);
     }
 
     /**
@@ -1141,20 +1223,18 @@ public final class QueryAnalyzer {
      */
     private QueryModel toReadQueryModel(
         Query query,
-        ParsedSql parsedSql,
-        AnalyzedSelect analyzed,
-        Placeholders placeholders
+        Analysis analysis,
+        AnalyzedSelect analyzed
     ) {
         String rowTable = analyzed.rowTable();
 
         return toQueryModel(
             query,
-            parsedSql,
+            analysis,
             analyzed.table(),
             rowTable == null
                 ? analyzed.projection().resultColumns()
                 : toQueryColumns(analyzed.columns()),
-            placeholders,
             rowTable
         );
     }
@@ -1534,7 +1614,8 @@ public final class QueryAnalyzer {
             null,
             resolved.enumType(),
             resolved.array(),
-            resolved.blankPadded()
+            resolved.blankPadded(),
+            first.sqlName()
         );
     }
 
@@ -2073,6 +2154,7 @@ public final class QueryAnalyzer {
 
         Select body = requireSelectBody(withItem);
         String name = withItem.getUnquotedAliasName();
+        String sqlName = SchemaNamespace.storedName(withItem.getAliasName());
         List<SelectItem<?>> columnList = withItem.getWithItemList();
         int listedColumns = columnList == null ? 0 : columnList.size();
 
@@ -2081,6 +2163,7 @@ public final class QueryAnalyzer {
         if (recursiveList && readsItselfRecursively(levels, name)) {
             return analyzeRecursiveCommonTableExpression(
                 name,
+                sqlName,
                 columnList,
                 levels,
                 analysis,
@@ -2098,6 +2181,7 @@ public final class QueryAnalyzer {
 
         return toDerivedSource(
             name,
+            sqlName,
             renamedDerivedColumns(name, columnList, analyzed.columns()),
             false
         );
@@ -2192,6 +2276,7 @@ public final class QueryAnalyzer {
      */
     private Source analyzeRecursiveCommonTableExpression(
         String name,
+        String sqlName,
         List<SelectItem<?>> columnList,
         List<Select> levels,
         Analysis analysis,
@@ -2234,7 +2319,7 @@ public final class QueryAnalyzer {
 
         List<Source> recursiveScope = new ArrayList<>(scope);
 
-        recursiveScope.add(toDerivedSource(name, firstColumns, false));
+        recursiveScope.add(toDerivedSource(name, sqlName, firstColumns, false));
 
         AnalyzedSelect recursiveTerm = analyzeSetOperationBranch(
             branches.get(last),
@@ -2261,7 +2346,7 @@ public final class QueryAnalyzer {
 
         resolvePaginationParameters(setOperation, analysis.placeholders());
 
-        return toDerivedSource(name, columns, false);
+        return toDerivedSource(name, sqlName, columns, false);
     }
 
     /**
@@ -2300,7 +2385,8 @@ public final class QueryAnalyzer {
                     null,
                     first.enumType(),
                     first.array(),
-                    first.blankPadded()
+                    first.blankPadded(),
+                    first.sqlName()
                 )
             );
         }
@@ -2384,7 +2470,10 @@ public final class QueryAnalyzer {
                     column.unsupportedType(),
                     column.enumType(),
                     column.array(),
-                    column.blankPadded()
+                    column.blankPadded(),
+                    SchemaNamespace.storedName(
+                        ((net.sf.jsqlparser.schema.Column) listed).getColumnName()
+                    )
                 )
             );
         }
@@ -2424,8 +2513,7 @@ public final class QueryAnalyzer {
         Table table = insert.getTable();
         Source source = toSource(table, schema);
 
-        Placeholders placeholders = toPlaceholders(parsedSql, schema);
-        Analysis analysis = new Analysis(parsedSql, schema, placeholders);
+        Analysis analysis = new Analysis(parsedSql, schema, toPlaceholders(parsedSql, schema));
 
         List<Source> commonTableExpressions = analyzeCommonTableExpressions(
             insert.getWithItemsList(),
@@ -2438,7 +2526,11 @@ public final class QueryAnalyzer {
         String rowTable = null;
 
         if (returningClause != null) {
-            columns = resolveReturningColumns(returningClause, List.of(source));
+            columns = resolveReturningColumns(
+                returningClause,
+                List.of(source),
+                analysis.wildcards()
+            );
             rowTable = resolveReturningRowTable(returningClause, List.of(source));
         }
 
@@ -2446,10 +2538,9 @@ public final class QueryAnalyzer {
 
         return toQueryModel(
             query,
-            parsedSql,
+            analysis,
             table.getUnquotedName(),
             columns,
-            placeholders,
             rowTable
         );
     }
@@ -2485,7 +2576,7 @@ public final class QueryAnalyzer {
         String rowTable = null;
 
         if (returningClause != null) {
-            columns = resolveReturningColumns(returningClause, sources);
+            columns = resolveReturningColumns(returningClause, sources, analysis.wildcards());
             rowTable = resolveReturningRowTable(returningClause, sources);
         }
 
@@ -2499,10 +2590,9 @@ public final class QueryAnalyzer {
 
         return toQueryModel(
             query,
-            parsedSql,
+            analysis,
             table.getUnquotedName(),
             columns,
-            placeholders,
             rowTable
         );
     }
@@ -2516,8 +2606,7 @@ public final class QueryAnalyzer {
         Table table = delete.getTable();
         Source target = toSource(table, schema);
 
-        Placeholders placeholders = toPlaceholders(parsedSql, schema);
-        Analysis analysis = new Analysis(parsedSql, schema, placeholders);
+        Analysis analysis = new Analysis(parsedSql, schema, toPlaceholders(parsedSql, schema));
 
         List<Source> commonTableExpressions = analyzeCommonTableExpressions(
             delete.getWithItemsList(),
@@ -2536,7 +2625,7 @@ public final class QueryAnalyzer {
         String rowTable = null;
 
         if (returningClause != null) {
-            columns = resolveReturningColumns(returningClause, sources);
+            columns = resolveReturningColumns(returningClause, sources, analysis.wildcards());
             rowTable = resolveReturningRowTable(returningClause, sources);
         }
 
@@ -2550,10 +2639,9 @@ public final class QueryAnalyzer {
 
         return toQueryModel(
             query,
-            parsedSql,
+            analysis,
             table.getUnquotedName(),
             columns,
-            placeholders,
             rowTable
         );
     }
@@ -2614,7 +2702,8 @@ public final class QueryAnalyzer {
      */
     private List<QueryColumn> resolveReturningColumns(
         ReturningClause returningClause,
-        List<Source> sources
+        List<Source> sources,
+        Wildcards wildcards
     ) {
         if (
             returningClause.getKeyword() != ReturningClause.Keyword.RETURNING
@@ -2632,10 +2721,10 @@ public final class QueryAnalyzer {
         for (SelectItem<?> returningItem : returningClause) {
             columns.addAll(
                 resolveReturningItem(
-                    returningItem.getExpression(),
-                    returningItem.getAlias(),
+                    returningItem,
                     sources,
-                    !wholeRow
+                    !wholeRow,
+                    wildcards
                 )
             );
         }
@@ -2686,13 +2775,23 @@ public final class QueryAnalyzer {
      * {@code NULL}.
      */
     private List<QueryColumn> resolveReturningItem(
-        Expression expression,
-        Alias alias,
+        SelectItem<?> returningItem,
         List<Source> sources,
-        boolean embedRow
+        boolean embedRow,
+        Wildcards wildcards
     ) {
+        Expression expression = returningItem.getExpression();
+        Alias alias = returningItem.getAlias();
+
         if (expression instanceof AllColumns allColumns) {
-            return resolveReturningWildcard(allColumns, alias, sources, embedRow);
+            return resolveReturningWildcard(
+                returningItem,
+                allColumns,
+                alias,
+                sources,
+                embedRow,
+                wildcards
+            );
         }
 
         net.sf.jsqlparser.schema.Column returnedColumn = directColumn(expression);
@@ -2733,10 +2832,12 @@ public final class QueryAnalyzer {
      * qualified wildcard.
      */
     private List<QueryColumn> resolveReturningWildcard(
+        SelectItem<?> returningItem,
         AllColumns allColumns,
         Alias alias,
         List<Source> sources,
-        boolean embedRow
+        boolean embedRow,
+        Wildcards wildcards
     ) {
         String written = writtenReturningWildcard(allColumns);
 
@@ -2761,7 +2862,11 @@ public final class QueryAnalyzer {
                 );
             }
 
-            return returningWildcardColumns(target, embedRow);
+            List<QueryColumn> columns = returningWildcardColumns(target, embedRow);
+
+            recordWildcardColumns(wildcards, returningItem, null, sources);
+
+            return columns;
         }
 
         Source source = findSource(sources, returningQualifier(qualified));
@@ -2772,7 +2877,11 @@ public final class QueryAnalyzer {
             );
         }
 
-        return returningWildcardColumns(target, embedRow);
+        List<QueryColumn> columns = returningWildcardColumns(target, embedRow);
+
+        recordWildcardColumns(wildcards, returningItem, target, sources);
+
+        return columns;
     }
 
     /**
@@ -3007,7 +3116,7 @@ public final class QueryAnalyzer {
 
         Scope scope = Scope.of(sources, commonTableExpressions);
 
-        List<Expression> items = resolveInsertSelectItems(plainSelect, sources);
+        List<Expression> items = resolveInsertSelectItems(plainSelect, sources, analysis);
 
         if (items.size() != columns.size()) {
             throw new UnsupportedOperationException(INSERT_COUNT_REJECTION);
@@ -3040,7 +3149,8 @@ public final class QueryAnalyzer {
      */
     private List<Expression> resolveInsertSelectItems(
         PlainSelect plainSelect,
-        List<Source> sources
+        List<Source> sources,
+        Analysis analysis
     ) {
         List<Expression> items = new ArrayList<>();
 
@@ -3048,9 +3158,18 @@ public final class QueryAnalyzer {
             Expression expression = selectItem.getExpression();
 
             if (expression instanceof AllTableColumns allTableColumns) {
-                addWildcardItems(
-                    items,
-                    findSource(sources, allTableColumns.getTable().getUnquotedName())
+                Source qualified = findSource(
+                    sources,
+                    allTableColumns.getTable().getUnquotedName()
+                );
+
+                addWildcardItems(items, qualified);
+
+                recordWildcardColumns(
+                    analysis.wildcards(),
+                    selectItem,
+                    qualified,
+                    sources
                 );
 
                 continue;
@@ -3060,6 +3179,8 @@ public final class QueryAnalyzer {
                 for (WildcardSource wildcardSource : bareWildcardSources(sources)) {
                     addWildcardItems(items, wildcardSource.columns().size());
                 }
+
+                recordWildcardColumns(analysis.wildcards(), selectItem, null, sources);
 
                 continue;
             }
@@ -3198,7 +3319,16 @@ public final class QueryAnalyzer {
         List<UpdateSet> updateSets = action.getUpdateSets();
 
         Scope scope = Scope.of(
-            List.of(source, new Source(EXCLUDED_QUALIFIER, source.table(), false, false)),
+            List.of(
+                source,
+                new Source(
+                    EXCLUDED_QUALIFIER,
+                    SchemaNamespace.storedName(EXCLUDED_QUALIFIER),
+                    source.table(),
+                    false,
+                    false
+                )
+            ),
             commonTableExpressions
         );
 
@@ -3281,13 +3411,14 @@ public final class QueryAnalyzer {
      */
     private QueryModel toQueryModel(
         Query query,
-        ParsedSql parsedSql,
+        Analysis analysis,
         String tableName,
         List<QueryColumn> columns,
-        Placeholders placeholders,
         String rowTable
     ) {
-        ResolvedOccurrences resolved = resolveOccurrences(parsedSql, placeholders);
+        ParsedSql parsedSql = analysis.parsedSql();
+
+        ResolvedOccurrences resolved = resolveOccurrences(parsedSql, analysis.placeholders());
 
         List<QueryParameter> occurrences = resolved.occurrences();
 
@@ -3297,7 +3428,7 @@ public final class QueryAnalyzer {
             query.name(),
             query.type(),
             tableName,
-            toExecutableSql(parsedSql, resolved),
+            toExecutableSql(parsedSql, resolved, analysis.wildcards()),
             bindingParameterIndexes,
             columns,
             toParameters(occurrences, parsedSql.parameters().names()),
@@ -3385,38 +3516,98 @@ public final class QueryAnalyzer {
 
     /**
      * The JDBC-executable SQL of one analyzed query, which is the compiled SQL
-     * with {@code ::<type>} written directly after the {@code ?} of each
-     * occurrence typed from another occurrence of its parameter, so that
-     * PostgreSQL types the bound value where the query itself states no type.
-     * Every other character stays as the compiler wrote it, so a query whose
-     * every occurrence a clause or a cast types executes its compiled SQL
-     * unchanged.
+     * with each wildcard this analysis expanded replaced by the columns it
+     * selects and with {@code ::<type>} written directly after the {@code ?} of
+     * each occurrence typed from another occurrence of its parameter, so that
+     * PostgreSQL reads the columns this analysis resolved and types the bound
+     * value where the query itself states no type.
+     *
+     * <p>Every other character stays as the compiler wrote it, so a query that
+     * expands no wildcard and whose every occurrence a clause or a cast types
+     * executes its compiled SQL unchanged, and a wildcard no clause expanded
+     * stays as the query writes it.
+     *
+     * <p>The whole wildcard item is replaced, its alias included, because
+     * PostgreSQL ignores an alias on a wildcard and would read one written
+     * after a column list as the name of its last column.
      */
-    private String toExecutableSql(ParsedSql parsedSql, ResolvedOccurrences resolved) {
+    private String toExecutableSql(
+        ParsedSql parsedSql,
+        ResolvedOccurrences resolved,
+        Wildcards wildcards
+    ) {
         String sql = parsedSql.parameters().executableSql();
 
-        if (resolved.writtenTypes().isEmpty()) {
+        List<WrittenSpan> spans = writtenSpans(parsedSql, resolved, wildcards);
+
+        if (spans.isEmpty()) {
             return sql;
         }
 
-        List<Integer> offsets = parsedSql.parameters().offsets();
         StringBuilder executableSql = new StringBuilder();
         int copied = 0;
 
-        for (int position : resolved.writtenTypes()) {
-            int marker = offsets.get(position) + 1;
-
+        for (WrittenSpan span : spans) {
             executableSql
-                .append(sql, copied, marker)
-                .append("::")
-                .append(sqlTypeName(resolved.occurrences().get(position)));
+                .append(sql, copied, span.begin())
+                .append(span.text());
 
-            copied = marker;
+            copied = span.end();
         }
 
         return executableSql
             .append(sql, copied, sql.length())
             .toString();
+    }
+
+    /**
+     * One span of the compiled SQL the executable SQL writes its own text at: a
+     * type hint, which stands directly after one {@code ?} and replaces no
+     * character of it, and the columns of one expanded wildcard, which replace
+     * the whole wildcard item.
+     */
+    private record WrittenSpan(int begin, int end, String text) {
+    }
+
+    /**
+     * The spans the executable SQL of one query writes, in ascending order of
+     * where they stand in the compiled SQL, which is the order they are written
+     * in. A type hint and a wildcard never share a position, because a
+     * wildcard item spells no placeholder.
+     */
+    private List<WrittenSpan> writtenSpans(
+        ParsedSql parsedSql,
+        ResolvedOccurrences resolved,
+        Wildcards wildcards
+    ) {
+        List<Integer> offsets = parsedSql.parameters().offsets();
+        List<WrittenSpan> spans = new ArrayList<>();
+
+        for (int position : resolved.writtenTypes()) {
+            int marker = offsets.get(position) + 1;
+
+            spans.add(
+                new WrittenSpan(
+                    marker,
+                    marker,
+                    "::" + sqlTypeName(resolved.occurrences().get(position))
+                )
+            );
+        }
+
+        for (WildcardOccurrence occurrence : parsedSql.wildcards()) {
+            String columnList = wildcards.columnList(occurrence.item());
+
+            if (columnList != null) {
+                spans.add(
+                    new WrittenSpan(occurrence.begin(), occurrence.end(), columnList)
+                );
+            }
+        }
+
+        spans.sort(Comparator.comparingInt(WrittenSpan::begin));
+
+        return spans;
     }
 
     /**
@@ -3724,6 +3915,7 @@ public final class QueryAnalyzer {
                 table.getAlias() == null
                     ? commonTableExpression.name()
                     : table.getAlias().getUnquotedName(),
+                sourceSqlName(table),
                 commonTableExpression.table().columns(),
                 nullable
             );
@@ -3783,6 +3975,7 @@ public final class QueryAnalyzer {
 
         return toDerivedSource(
             name,
+            SchemaNamespace.storedName(alias.getName()),
             analyzeNestedSelect(
                 subquery.getSelect(),
                 analysis,
@@ -3824,9 +4017,13 @@ public final class QueryAnalyzer {
      * under the name the query exposes it as, whose columns are the result
      * columns of its own {@code SELECT}. A join that null-extends the source
      * makes every one of them nullable, as it does for a table source.
+     *
+     * <p>{@code sqlName} is the name PostgreSQL stores for the name the source
+     * is exposed under, which a wildcard of it writes as its qualifier.
      */
     private Source toDerivedSource(
         String name,
+        String sqlName,
         List<org.sqlcj.schema.Column> columns,
         boolean nullable
     ) {
@@ -3834,6 +4031,7 @@ public final class QueryAnalyzer {
 
         return new Source(
             name,
+            sqlName,
             new org.sqlcj.schema.Table(name, columns, List.of()),
             true,
             nullable
@@ -4355,7 +4553,8 @@ public final class QueryAnalyzer {
             null,
             resolved.enumType(),
             resolved.array(),
-            resolved.blankPadded()
+            resolved.blankPadded(),
+            leftColumn.sqlName()
         );
     }
 
@@ -4553,10 +4752,23 @@ public final class QueryAnalyzer {
             table.getAlias() == null
                 ? table.getUnquotedName()
                 : table.getAlias().getUnquotedName(),
+            sourceSqlName(table),
             findSourceTable(schema, table),
             false,
             nullable
         );
+    }
+
+    /**
+     * The name PostgreSQL stores for the name one {@code FROM} item exposes,
+     * which is its alias where it writes one and its own name otherwise. The
+     * qualifier reaches only the source itself, so a schema qualifier the item
+     * writes is no part of it.
+     */
+    private String sourceSqlName(Table table) {
+        return table.getAlias() == null
+            ? SchemaNamespace.storedName(table.getName())
+            : SchemaNamespace.storedName(table.getAlias().getName());
     }
 
     /**
@@ -5836,13 +6048,18 @@ public final class QueryAnalyzer {
             Expression expression = selectItem.getExpression();
 
             if (expression instanceof AllTableColumns allTableColumns) {
-                addWildcardColumns(
-                    columns,
-                    resultColumns,
-                    findSource(
-                        sources,
-                        allTableColumns.getTable().getUnquotedName()
-                    )
+                Source qualified = findSource(
+                    sources,
+                    allTableColumns.getTable().getUnquotedName()
+                );
+
+                addWildcardColumns(columns, resultColumns, qualified);
+
+                recordWildcardColumns(
+                    analysis.wildcards(),
+                    selectItem,
+                    qualified,
+                    sources
                 );
 
                 continue;
@@ -5864,6 +6081,8 @@ public final class QueryAnalyzer {
 
                     addWildcardColumns(columns, resultColumns, wildcardSource.source());
                 }
+
+                recordWildcardColumns(analysis.wildcards(), selectItem, null, sources);
 
                 continue;
             }
@@ -5925,6 +6144,93 @@ public final class QueryAnalyzer {
         }
 
         return List.copyOf(wildcardSources);
+    }
+
+    /**
+     * Records the columns one analyzed wildcard selects, written as the
+     * executed statement lists them, so that the statement reads the columns
+     * this analysis resolved and a column the database gains later shifts no
+     * value the generated mapper reads.
+     *
+     * <p>{@code qualified} is the source a {@code qualifier.*} names, every
+     * column of whose own table it lists under that qualifier, the names a join
+     * merged away from the source included, because PostgreSQL exposes each of
+     * them there. A bare {@code *} is {@code null} instead and lists the
+     * columns of its level's sources exactly as {@link #bareWildcardSources}
+     * expands them: a join group's merged columns unqualified, because they
+     * belong to no one source of the group, and every other column under the
+     * name its own source exposes.
+     *
+     * <p>Every name is written as a delimited identifier, so a stored name of
+     * any spelling reads the column it names and no keyword is read as one.
+     */
+    private void recordWildcardColumns(
+        Wildcards wildcards,
+        SelectItem<?> selectItem,
+        Source qualified,
+        List<Source> sources
+    ) {
+        List<String> columns = new ArrayList<>();
+
+        if (qualified != null) {
+            for (org.sqlcj.schema.Column column : qualified.table().columns()) {
+                columns.add(qualifiedColumn(qualified, column));
+            }
+        } else {
+            for (WildcardSource wildcardSource : bareWildcardSources(sources)) {
+                for (org.sqlcj.schema.Column column : wildcardSource.columns()) {
+                    columns.add(
+                        wildcardSource.source().merged()
+                            ? mergedWildcardColumn(column, sources)
+                            : qualifiedColumn(wildcardSource.source(), column)
+                    );
+                }
+            }
+        }
+
+        wildcards.record(selectItem, String.join(", ", columns));
+    }
+
+    /**
+     * One column a wildcard lists, written under the name its source exposes,
+     * which is the only name a qualified reference reads it through.
+     */
+    private String qualifiedColumn(Source source, org.sqlcj.schema.Column column) {
+        return delimited(source.sqlName()) + "." + delimited(column.sqlName());
+    }
+
+    /**
+     * One merged column a bare {@code *} lists, written unqualified, because
+     * the join merged it away from every source of its group.
+     *
+     * <p>Another source of the same {@code FROM} clause may have a column of
+     * that name, which PostgreSQL would read the unqualified name as ambiguous
+     * between, so such a wildcard is rejected naming the fix of listing the
+     * columns the query needs.
+     */
+    private String mergedWildcardColumn(
+        org.sqlcj.schema.Column column,
+        List<Source> sources
+    ) {
+        boolean ambiguous = sources.stream()
+            .filter(source -> exposes(source, column.name()))
+            .count() > 1;
+
+        if (ambiguous) {
+            throw new UnsupportedOperationException(
+                AMBIGUOUS_MERGED_WILDCARD_COLUMN_REJECTION.formatted(column.name(), column.name())
+            );
+        }
+
+        return delimited(column.sqlName());
+    }
+
+    /**
+     * One name PostgreSQL stores, written as a delimited SQL identifier, with
+     * each quote of the name itself doubled.
+     */
+    private String delimited(String storedName) {
+        return '"' + storedName.replace("\"", "\"\"") + '"';
     }
 
     /**
@@ -6026,7 +6332,8 @@ public final class QueryAnalyzer {
                 null,
                 schemaColumn.enumType(),
                 schemaColumn.array(),
-                schemaColumn.blankPadded()
+                schemaColumn.blankPadded(),
+                selectedColumnSqlName(selectItem.getAlias(), schemaColumn)
             );
         }
 
@@ -6069,7 +6376,12 @@ public final class QueryAnalyzer {
                     ? written(exists)
                     : alias.getUnquotedName(),
                 ColumnType.BOOLEAN,
-                false
+                false,
+                null,
+                null,
+                false,
+                false,
+                aliasSqlName(alias, written(exists))
             );
         }
 
@@ -6163,7 +6475,8 @@ public final class QueryAnalyzer {
                     null,
                     column.enumType(),
                     column.array(),
-                    column.blankPadded()
+                    column.blankPadded(),
+                    aliasSqlName(alias, written(function))
                 )
                 : null;
         }
@@ -6177,7 +6490,12 @@ public final class QueryAnalyzer {
             : new org.sqlcj.schema.Column(
                 aggregateName(function, alias, namesResultColumns),
                 aggregated,
-                true
+                true,
+                null,
+                null,
+                false,
+                false,
+                aliasSqlName(alias, written(function))
             );
     }
 
@@ -6228,7 +6546,12 @@ public final class QueryAnalyzer {
         return new org.sqlcj.schema.Column(
             aggregateName(function, alias, namesResultColumns),
             ColumnType.BIGINT,
-            false
+            false,
+            null,
+            null,
+            false,
+            false,
+            aliasSqlName(alias, written(function))
         );
     }
 
@@ -6306,7 +6629,8 @@ public final class QueryAnalyzer {
             null,
             type.enumType(),
             type.array(),
-            type.blankPadded()
+            type.blankPadded(),
+            aliasSqlName(alias, name)
         );
     }
 
@@ -6385,6 +6709,26 @@ public final class QueryAnalyzer {
         return alias == null
             ? schemaColumn.name()
             : alias.getUnquotedName();
+    }
+
+    /**
+     * The name PostgreSQL stores for one selected direct column, which is the
+     * explicit alias of the projection where it declares one and the stored
+     * name of the schema column otherwise.
+     */
+    private String selectedColumnSqlName(Alias alias, org.sqlcj.schema.Column schemaColumn) {
+        return aliasSqlName(alias, schemaColumn.sqlName());
+    }
+
+    /**
+     * The name PostgreSQL stores for one result column an alias names, and
+     * {@code storedName} for a column written without one, which only a
+     * projection that names no result column may write.
+     */
+    private String aliasSqlName(Alias alias, String storedName) {
+        return alias == null
+            ? storedName
+            : SchemaNamespace.storedName(alias.getName());
     }
 
     /**
@@ -6639,7 +6983,8 @@ public final class QueryAnalyzer {
                     null,
                     column.enumType(),
                     column.array(),
-                    column.blankPadded()
+                    column.blankPadded(),
+                    column.sqlName()
                 )
             )
             .toList();

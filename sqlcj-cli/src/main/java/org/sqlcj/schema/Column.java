@@ -19,6 +19,13 @@ package org.sqlcj.schema;
  * spelling carries {@link ColumnType#VARCHAR} with {@code blankPadded} set,
  * which keeps PostgreSQL's own name of the type, {@code bpchar}, knowable where
  * that name is bound. The spelling does not change the column's Java type.
+ *
+ * <p>{@code sqlName} is the name PostgreSQL stores for the column, which is the
+ * written name folded as PostgreSQL folds an identifier. It is the name an
+ * executed statement writes to read this column, while {@code name} is the name
+ * every generated Java name is derived from. A column declared with an
+ * undelimited name carries both, because the two differ only where the written
+ * name is delimited or holds a letter PostgreSQL folds.
  */
 public record Column(
     String name,
@@ -27,8 +34,31 @@ public record Column(
     String unsupportedType,
     String enumType,
     boolean array,
-    boolean blankPadded
+    boolean blankPadded,
+    String sqlName
 ) {
+
+    /** A column PostgreSQL stores under the name it is known by. */
+    public Column(
+        String name,
+        ColumnType type,
+        boolean nullable,
+        String unsupportedType,
+        String enumType,
+        boolean array,
+        boolean blankPadded
+    ) {
+        this(
+            name,
+            type,
+            nullable,
+            unsupportedType,
+            enumType,
+            array,
+            blankPadded,
+            name
+        );
+    }
 
     /** A column of a mapped type. */
     public Column(String name, ColumnType type, boolean nullable) {
