@@ -184,6 +184,57 @@ class PostgresIntegrationTest {
         """;
 
     /**
+     * A snapshot whose {@code orders} rows name the {@code customers} row they
+     * belong to, which is the shape a column added to {@code orders} after
+     * generation would otherwise shift the email of.
+     */
+    private static final String PROBE_SCHEMA = """
+        CREATE TABLE customers
+        (
+            id    BIGINT PRIMARY KEY,
+            email VARCHAR(255)
+        );
+
+        CREATE TABLE orders
+        (
+            id          BIGINT PRIMARY KEY,
+            customer_id BIGINT NOT NULL,
+            total       DECIMAL(10, 2)
+        );
+        """;
+
+    /**
+     * A snapshot of a table whose database copy holds one column it does not
+     * state, which the test creates itself.
+     */
+    private static final String DRIFTED_ITEM_SCHEMA = """
+        CREATE TABLE drifted_items
+        (
+            id    BIGINT PRIMARY KEY,
+            label VARCHAR(255)
+        );
+        """;
+
+    /**
+     * A snapshot whose names PostgreSQL stores differently from their
+     * declaration: the undelimited ones folded to lower case and the delimited
+     * ones as they are written.
+     */
+    private static final String FOLDED_NAME_SCHEMA = """
+        CREATE TABLE MixedItems
+        (
+            Item_Id BIGINT PRIMARY KEY,
+            "Label" VARCHAR(255)
+        );
+
+        CREATE TABLE "DelimitedItems"
+        (
+            "Item Id" BIGINT PRIMARY KEY,
+            Note      VARCHAR(255)
+        );
+        """;
+
+    /**
      * A snapshot whose two tables share the {@code team_id} join column in two
      * widths, so a merged column takes the wider of them, as PostgreSQL
      * resolves it.
@@ -905,6 +956,7 @@ class PostgresIntegrationTest {
         execute("DROP TABLE IF EXISTS studios");
         execute("DROP TYPE IF EXISTS album_kind");
         execute("DROP FUNCTION IF EXISTS greet_listener(text)");
+        execute("DROP TABLE IF EXISTS orders");
         execute("DROP TABLE IF EXISTS customer_orders");
         execute("DROP TABLE IF EXISTS customers");
         execute("DROP TABLE IF EXISTS memberships");
@@ -917,6 +969,9 @@ class PostgresIntegrationTest {
         execute("DROP TABLE IF EXISTS duration_values");
         execute("DROP TABLE IF EXISTS drifted");
         execute("DROP TYPE IF EXISTS drift_setting");
+        execute("DROP TABLE IF EXISTS drifted_items");
+        execute("DROP TABLE IF EXISTS MixedItems");
+        execute("DROP TABLE IF EXISTS \"DelimitedItems\"");
         execute("DROP TABLE IF EXISTS user_aliases");
         execute("DROP TABLE IF EXISTS users");
         execute(SCHEMA);
@@ -4518,7 +4573,8 @@ class PostgresIntegrationTest {
      * columns each source still exposes, in PostgreSQL's own order and with
      * the merged column's wider type, and a {@code FULL JOIN ... USING} reads
      * the merged column of an unmatched row on each side as the value the
-     * present side holds.
+     * present side holds, through a listed column list and through a bare
+     * {@code *} alike.
      */
     @Test
     void shouldExecuteGeneratedMergedJoinColumnsAgainstPostgres() throws Exception {
@@ -4533,6 +4589,12 @@ class PostgresIntegrationTest {
 
             -- name: ListEveryTeamMembership :many
             SELECT team_id, t.name, m.role
+            FROM teams t
+            FULL JOIN memberships m USING (team_id)
+            ORDER BY team_id;
+
+            -- name: ListEveryTeamMembershipRow :many
+            SELECT *
             FROM teams t
             FULL JOIN memberships m USING (team_id)
             ORDER BY team_id;
@@ -4577,6 +4639,28 @@ class PostgresIntegrationTest {
                 Arrays.asList("owner", null, "ghost"),
                 components(everyMembership, "role"),
                 "the full join reads no role for a team without memberships"
+            );
+
+            List<?> everyMembershipRow = (List<?>) repository.getClass()
+                .getMethod("listEveryTeamMembershipRow")
+                .invoke(repository);
+
+            assertEquals(
+                List.of("teamId", "name", "role"),
+                recordComponentNames(everyMembershipRow.get(0)),
+                "the wildcard reads the merged column of the full join once"
+            );
+
+            assertEquals(List.of(1L, 2L, 3L), components(everyMembershipRow, "teamId"));
+
+            assertEquals(
+                Arrays.asList("Platform", "Billing", null),
+                components(everyMembershipRow, "name")
+            );
+
+            assertEquals(
+                Arrays.asList("owner", null, "ghost"),
+                components(everyMembershipRow, "role")
             );
         }
     }
@@ -5210,6 +5294,163 @@ class PostgresIntegrationTest {
             widened.getMessage().contains("in non-recursive term but type bigint overall"),
             widened.getMessage()
         );
+    }
+
+    /**
+     * Covers against PostgreSQL the column a wildcard's table gains after
+     * generation: the probe reads the row of the joined table through the
+     * wildcard and the email of the other source after it, and still reads
+     * that email once {@code orders} holds one more column than the analyzed
+     * schema states.
+     */
+    @Test
+    void shouldReadTheWildcardColumnsAfterTheDatabaseGainsAColumn() throws Exception {
+        execute(PROBE_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(PROBE_SCHEMA, """
+            -- name: ListOrderCustomerEmails :many
+            SELECT o.*, c.email
+            FROM orders o
+            JOIN customers c ON c.id = o.customer_id
+            ORDER BY o.id;
+            """);
+
+        execute("INSERT INTO customers (id, email) VALUES (1, 'alice@example.test')");
+
+        execute("INSERT INTO orders (id, customer_id, total) VALUES (10, 1, 20.50)");
+
+        execute("ALTER TABLE orders ADD COLUMN note text NOT NULL DEFAULT 'internal note'");
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            List<?> rows = (List<?>) repository.getClass()
+                .getMethod("listOrderCustomerEmails")
+                .invoke(repository);
+
+            assertEquals(1, rows.size());
+
+            assertEquals(
+                "alice@example.test",
+                component(rows.get(0), "email"),
+                "the email is read after the columns the wildcard was analyzed as"
+            );
+
+            Object order = component(rows.get(0), "o");
+
+            assertEquals(10L, component(order, "id"));
+            assertEquals(1L, component(order, "customerId"));
+            assertEquals(new BigDecimal("20.50"), component(order, "total"));
+        }
+    }
+
+    /**
+     * Covers against PostgreSQL a table whose database copy holds one column
+     * the analyzed schema does not state, written between two it does: both
+     * {@code SELECT *} and {@code RETURNING *} read the analyzed columns
+     * rather than the values the unmodeled column shifted.
+     */
+    @Test
+    void shouldReadTheWildcardColumnsOfATableWithAnUnmodeledColumn() throws Exception {
+        Path classesDirectory = generateAndCompile(DRIFTED_ITEM_SCHEMA, """
+            -- name: CreateDriftedItem :one
+            INSERT INTO drifted_items (id, label)
+            VALUES ($1, $2)
+            RETURNING *;
+
+            -- name: ListDriftedItems :many
+            SELECT *
+            FROM drifted_items
+            ORDER BY id;
+            """);
+
+        execute("""
+            CREATE TABLE drifted_items
+            (
+                id    BIGINT PRIMARY KEY,
+                note  TEXT NOT NULL DEFAULT 'unmodeled',
+                label VARCHAR(255)
+            )
+            """);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Object created = repository.getClass()
+                .getMethod("createDriftedItem", Long.class, String.class)
+                .invoke(repository, 1L, "first");
+
+            assertEquals(List.of("id", "label"), recordComponentNames(created));
+
+            assertEquals(1L, component(created, "id"));
+
+            assertEquals(
+                "first",
+                component(created, "label"),
+                "RETURNING * reads the analyzed column rather than the one beside it"
+            );
+
+            List<?> items = (List<?>) repository.getClass()
+                .getMethod("listDriftedItems")
+                .invoke(repository);
+
+            assertEquals(List.of(1L), components(items, "id"));
+
+            assertEquals(
+                List.of("first"),
+                components(items, "label"),
+                "SELECT * reads the analyzed column rather than the one beside it"
+            );
+        }
+    }
+
+    /**
+     * Covers against PostgreSQL the names PostgreSQL stores for a wildcard's
+     * source and columns: an undelimited name reads folded, a delimited one
+     * reads as it was declared, and a column whose name holds a space reads
+     * through its own delimiters.
+     */
+    @Test
+    void shouldReadTheWildcardColumnsOfFoldedAndDelimitedNames() throws Exception {
+        execute(FOLDED_NAME_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(FOLDED_NAME_SCHEMA, """
+            -- name: ListMixedItems :many
+            SELECT *
+            FROM MixedItems
+            ORDER BY Item_Id;
+
+            -- name: ListDelimitedItems :many
+            SELECT *
+            FROM "DelimitedItems"
+            ORDER BY "Item Id";
+            """);
+
+        execute("INSERT INTO MixedItems (Item_Id, \"Label\") VALUES (1, 'folded')");
+
+        execute("INSERT INTO \"DelimitedItems\" (\"Item Id\", Note) VALUES (2, 'delimited')");
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            List<?> mixedItems = (List<?>) repository.getClass()
+                .getMethod("listMixedItems")
+                .invoke(repository);
+
+            assertEquals(List.of("itemId", "label"), recordComponentNames(mixedItems.get(0)));
+
+            assertEquals(List.of(1L), components(mixedItems, "itemId"));
+            assertEquals(List.of("folded"), components(mixedItems, "label"));
+
+            List<?> delimitedItems = (List<?>) repository.getClass()
+                .getMethod("listDelimitedItems")
+                .invoke(repository);
+
+            assertEquals(List.of("itemId", "note"), recordComponentNames(delimitedItems.get(0)));
+
+            assertEquals(List.of(2L), components(delimitedItems, "itemId"));
+            assertEquals(List.of("delimited"), components(delimitedItems, "note"));
+        }
     }
 
     /** The values of one component of the rows a generated query returned. */

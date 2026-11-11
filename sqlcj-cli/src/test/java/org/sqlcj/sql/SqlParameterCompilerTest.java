@@ -233,7 +233,7 @@ class SqlParameterCompilerTest {
     }
 
     private SqlParameters compile(String sql, Token... tokens) {
-        return compiler.compile(sql, node(tokens), new ArrayList<>());
+        return compiler.compile(sql, node(tokens), new ArrayList<>(), new ArrayList<>());
     }
 
     /**
@@ -252,7 +252,7 @@ class SqlParameterCompilerTest {
             root.jjtAddChild(child, index);
         }
 
-        return compiler.compile(sql, root, new ArrayList<>());
+        return compiler.compile(sql, root, new ArrayList<>(), new ArrayList<>());
     }
 
     private Node node(Token... tokens) {

@@ -302,6 +302,91 @@ class QueryAnalyzerTest {
     );
 
     /**
+     * A schema whose {@code orders} rows name the {@code customers} row they
+     * belong to, which is the shape a column added to {@code orders} would
+     * otherwise shift the email of.
+     */
+    private static final Schema probeSchema = new Schema(
+        List.of(
+            new Table(
+                "orders",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("customer_id", ColumnType.BIGINT, false),
+                    new Column("total", ColumnType.DECIMAL, true)
+                ),
+                List.of()
+            ),
+            new Table(
+                "customers",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("email", ColumnType.VARCHAR, true)
+                ),
+                List.of()
+            )
+        )
+    );
+
+    /**
+     * A schema whose names PostgreSQL stores differently from the names sqlcj
+     * knows them by: {@code Mixed} was declared undelimited, so PostgreSQL
+     * folded it to {@code mixed}, while {@code Delimited}, {@code two words},
+     * and {@code select} were declared delimited, so PostgreSQL stores each of
+     * them as it is written.
+     */
+    private static final Schema foldingSchema = new Schema(
+        List.of(
+            new Table(
+                "Items",
+                List.of(
+                    new Column(
+                        "Mixed",
+                        ColumnType.BIGINT,
+                        false,
+                        null,
+                        null,
+                        false,
+                        false,
+                        "mixed"
+                    ),
+                    new Column(
+                        "Delimited",
+                        ColumnType.VARCHAR,
+                        true,
+                        null,
+                        null,
+                        false,
+                        false,
+                        "Delimited"
+                    ),
+                    new Column(
+                        "two words",
+                        ColumnType.VARCHAR,
+                        true,
+                        null,
+                        null,
+                        false,
+                        false,
+                        "two words"
+                    ),
+                    new Column(
+                        "select",
+                        ColumnType.BOOLEAN,
+                        true,
+                        null,
+                        null,
+                        false,
+                        false,
+                        "select"
+                    )
+                ),
+                List.of()
+            )
+        )
+    );
+
+    /**
      * A schema that records a view, a materialized view, and a view of the name
      * of its one modeled table.
      */
@@ -4229,6 +4314,403 @@ class QueryAnalyzerTest {
         assertNull(model.rowTable());
     }
 
+    /**
+     * The executed statement lists the columns a wildcard was analyzed as,
+     * each under the name PostgreSQL stores for it, so a column the database
+     * gains after generation shifts no value the generated mapper reads.
+     */
+    @Test
+    void shouldWriteTheColumnsOfASingleSourceWildcard() {
+        String sql = "SELECT * FROM users";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            "SELECT \"users\".\"id\", \"users\".\"name\", \"users\".\"active\" FROM users",
+            model.executableSql()
+        );
+    }
+
+    /**
+     * A wildcard of a joined read lists its columns under the name each source
+     * exposes: {@code qualifier.*} the columns of that one source, and a bare
+     * {@code *} the columns of every source of the level, in the order
+     * PostgreSQL expands them.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT u.* FROM users u JOIN profiles p ON p.user_id = u.id"
+                + "|SELECT \"u\".\"id\", \"u\".\"name\""
+                + " FROM users u JOIN profiles p ON p.user_id = u.id",
+            "SELECT u.*, p.* FROM users u JOIN profiles p ON p.user_id = u.id"
+                + "|SELECT \"u\".\"id\", \"u\".\"name\","
+                + " \"p\".\"id\", \"p\".\"user_id\", \"p\".\"nickname\""
+                + " FROM users u JOIN profiles p ON p.user_id = u.id",
+            "SELECT * FROM users u JOIN profiles p ON p.user_id = u.id"
+                + "|SELECT \"u\".\"id\", \"u\".\"name\","
+                + " \"p\".\"id\", \"p\".\"user_id\", \"p\".\"nickname\""
+                + " FROM users u JOIN profiles p ON p.user_id = u.id",
+            "SELECT users.* FROM users JOIN profiles p ON p.user_id = users.id"
+                + "|SELECT \"users\".\"id\", \"users\".\"name\""
+                + " FROM users JOIN profiles p ON p.user_id = users.id"
+        }
+    )
+    void shouldWriteTheColumnsOfAJoinedWildcard(String sql, String executableSql) {
+        QueryModel model = analyzer.analyze(
+            new Query("ListUserProfiles", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(executableSql, model.executableSql());
+    }
+
+    /**
+     * The query a column added to a joined table would otherwise shift: the
+     * wildcard of the joined source lists that source's own columns, so the
+     * item written after it keeps its own position in the result.
+     */
+    @Test
+    void shouldWriteTheColumnsOfAWildcardBesideAColumnOfAnotherSource() {
+        String sql = "SELECT o.*, c.email FROM orders o JOIN customers c ON c.id = o.customer_id";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListOrderCustomerEmails", QueryType.MANY, sql),
+            parser.parse(sql),
+            probeSchema
+        );
+
+        assertEquals(
+            "SELECT \"o\".\"id\", \"o\".\"customer_id\", \"o\".\"total\", c.email"
+                + " FROM orders o JOIN customers c ON c.id = o.customer_id",
+            model.executableSql()
+        );
+
+        assertEquals(
+            List.of(
+                QueryColumn.row(
+                    "o",
+                    "orders",
+                    List.of(
+                        new QueryColumn("id", ColumnType.BIGINT, false),
+                        new QueryColumn("customer_id", ColumnType.BIGINT, false),
+                        new QueryColumn("total", ColumnType.DECIMAL, true)
+                    )
+                ),
+                new QueryColumn("email", ColumnType.VARCHAR, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A bare {@code *} over a join group that merges columns writes each merged
+     * column unqualified, as PostgreSQL exposes it, and every other column
+     * under the name its own source exposes, while
+     * {@code qualifier.*} of a member of such a group lists that source's own
+     * columns, the merged name included.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT * FROM tasks t JOIN counters c USING (project_id)"
+                + "|SELECT \"project_id\","
+                + " \"t\".\"id\", \"t\".\"owner_id\", \"t\".\"sprint_id\", \"t\".\"title\","
+                + " \"c\".\"owner_id\", \"c\".\"sprint_id\", \"c\".\"total\""
+                + " FROM tasks t JOIN counters c USING (project_id)",
+            "SELECT * FROM tasks t FULL JOIN counters c USING (project_id)"
+                + "|SELECT \"project_id\","
+                + " \"t\".\"id\", \"t\".\"owner_id\", \"t\".\"sprint_id\", \"t\".\"title\","
+                + " \"c\".\"owner_id\", \"c\".\"sprint_id\", \"c\".\"total\""
+                + " FROM tasks t FULL JOIN counters c USING (project_id)",
+            "SELECT * FROM tasks t NATURAL JOIN counters c"
+                + "|SELECT \"project_id\", \"owner_id\", \"sprint_id\","
+                + " \"t\".\"id\", \"t\".\"title\", \"c\".\"total\""
+                + " FROM tasks t NATURAL JOIN counters c",
+            "SELECT t.* FROM tasks t JOIN counters c USING (project_id)"
+                + "|SELECT \"t\".\"id\", \"t\".\"project_id\", \"t\".\"owner_id\","
+                + " \"t\".\"sprint_id\", \"t\".\"title\""
+                + " FROM tasks t JOIN counters c USING (project_id)"
+        }
+    )
+    void shouldWriteTheColumnsOfAWildcardOverAMergingGroup(String sql, String executableSql) {
+        QueryModel model = analyzer.analyze(
+            new Query("ListTaskCounters", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(executableSql, model.executableSql());
+    }
+
+    /**
+     * A bare {@code *} whose merged column another source of the same
+     * {@code FROM} clause also has is rejected, because the executed statement
+     * can only write that column unqualified, which PostgreSQL would read as
+     * an ambiguous reference. A source that is joined into the group with the
+     * same name merges its own column away instead, so it is accepted.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "SELECT * FROM tasks t JOIN counters c USING (project_id)"
+                + " JOIN sprints s ON s.project_id = t.project_id",
+            "SELECT * FROM tasks t JOIN counters c USING (project_id), sprints s"
+        }
+    )
+    void shouldRejectABareWildcardWhoseMergedColumnIsAmbiguous(String sql) {
+        Query query = new Query("ListTaskCounters", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, mergeSchema)
+        );
+
+        assertEquals(
+            "A bare * cannot list the merged column 'project_id' of a USING or NATURAL join,"
+                + " because another source of the same FROM clause also has a column"
+                + " 'project_id'; list the columns the query needs instead.",
+            exception.getMessage()
+        );
+    }
+
+    @Test
+    void shouldWriteTheColumnsOfABareWildcardOverTwoMergingJoinsOfOneName() {
+        String sql = "SELECT * FROM tasks t JOIN counters c USING (project_id)"
+            + " JOIN sprints s USING (project_id)";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListTaskCounters", QueryType.MANY, sql),
+            parser.parse(sql),
+            mergeSchema
+        );
+
+        assertEquals(
+            "SELECT \"project_id\","
+                + " \"t\".\"id\", \"t\".\"owner_id\", \"t\".\"sprint_id\", \"t\".\"title\","
+                + " \"c\".\"owner_id\", \"c\".\"sprint_id\", \"c\".\"total\","
+                + " \"s\".\"sprint_name\""
+                + " FROM tasks t JOIN counters c USING (project_id)"
+                + " JOIN sprints s USING (project_id)",
+            model.executableSql()
+        );
+    }
+
+    /**
+     * A wildcard of a derived source lists the columns that source exposes
+     * under the name it is read through: the name a {@code WITH} clause
+     * declares, the alias a source of it writes, and the alias a subquery
+     * source requires. The body of such a source expands its own wildcard
+     * where it is written.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent"
+                + "|WITH recent AS"
+                + " (SELECT \"orders\".\"id\", \"orders\".\"user_id\", \"orders\".\"total\""
+                + " FROM orders)"
+                + " SELECT \"recent\".\"id\", \"recent\".\"user_id\", \"recent\".\"total\""
+                + " FROM recent",
+            "WITH recent AS (SELECT * FROM orders) SELECT r.* FROM recent r"
+                + "|WITH recent AS"
+                + " (SELECT \"orders\".\"id\", \"orders\".\"user_id\", \"orders\".\"total\""
+                + " FROM orders)"
+                + " SELECT \"r\".\"id\", \"r\".\"user_id\", \"r\".\"total\""
+                + " FROM recent r",
+            "SELECT * FROM (SELECT id, name FROM users) s"
+                + "|SELECT \"s\".\"id\", \"s\".\"name\" FROM (SELECT id, name FROM users) s",
+            "SELECT s.* FROM (SELECT * FROM users) s"
+                + "|SELECT \"s\".\"id\", \"s\".\"name\""
+                + " FROM (SELECT \"users\".\"id\", \"users\".\"name\" FROM users) s"
+        }
+    )
+    void shouldWriteTheColumnsOfAWildcardOfADerivedSource(String sql, String executableSql) {
+        QueryModel model = analyzer.analyze(
+            new Query("ListRecentOrders", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(executableSql, model.executableSql());
+    }
+
+    /** Each branch of a set operation expands its own wildcard. */
+    @Test
+    void shouldWriteTheColumnsOfEachSetOperationBranchWildcard() {
+        String sql = "SELECT * FROM users WHERE id = $1 UNION ALL SELECT * FROM users";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            "SELECT \"users\".\"id\", \"users\".\"name\", \"users\".\"active\""
+                + " FROM users WHERE id = ?"
+                + " UNION ALL"
+                + " SELECT \"users\".\"id\", \"users\".\"name\", \"users\".\"active\" FROM users",
+            model.executableSql()
+        );
+    }
+
+    /**
+     * A wildcard of a predicate subquery is analyzed by no projection rule, so
+     * it reaches the database as the query writes it, as every other item
+     * there does.
+     */
+    @Test
+    void shouldLeaveTheWildcardOfAPredicateSubqueryAsWritten() {
+        String sql = "SELECT u.id FROM users u WHERE EXISTS (SELECT * FROM profiles p"
+            + " WHERE p.user_id = u.id)";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(sql, model.executableSql());
+    }
+
+    /**
+     * A returned wildcard lists the target's columns under the name the write
+     * exposes it as, which is its alias where it writes one, and an item
+     * written beside it reaches the database as written.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "INSERT INTO users (id, name) VALUES ($1, $2) RETURNING *"
+                + "|INSERT INTO users (id, name) VALUES (?, ?)"
+                + " RETURNING \"users\".\"id\", \"users\".\"name\", \"users\".\"active\"",
+            "INSERT INTO users AS u (id, name) VALUES ($1, $2) RETURNING *"
+                + "|INSERT INTO users AS u (id, name) VALUES (?, ?)"
+                + " RETURNING \"u\".\"id\", \"u\".\"name\", \"u\".\"active\"",
+            "INSERT INTO users AS u (id, name) VALUES ($1, $2) RETURNING u.*"
+                + "|INSERT INTO users AS u (id, name) VALUES (?, ?)"
+                + " RETURNING \"u\".\"id\", \"u\".\"name\", \"u\".\"active\"",
+            "UPDATE users SET name = $2 WHERE id = $1 RETURNING *"
+                + "|UPDATE users SET name = ? WHERE id = ?"
+                + " RETURNING \"users\".\"id\", \"users\".\"name\", \"users\".\"active\"",
+            "UPDATE users u SET name = $2 WHERE u.id = $1 RETURNING u.*"
+                + "|UPDATE users u SET name = ? WHERE u.id = ?"
+                + " RETURNING \"u\".\"id\", \"u\".\"name\", \"u\".\"active\"",
+            "DELETE FROM users WHERE id = $1 RETURNING *"
+                + "|DELETE FROM users WHERE id = ?"
+                + " RETURNING \"users\".\"id\", \"users\".\"name\", \"users\".\"active\"",
+            "DELETE FROM users u WHERE u.id = $1 RETURNING u.*"
+                + "|DELETE FROM users u WHERE u.id = ?"
+                + " RETURNING \"u\".\"id\", \"u\".\"name\", \"u\".\"active\""
+        }
+    )
+    void shouldWriteTheColumnsOfAReturnedWildcard(String sql, String executableSql) {
+        QueryModel model = analyzer.analyze(
+            new Query("WriteUser", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(executableSql, model.executableSql());
+    }
+
+    @Test
+    void shouldWriteTheColumnsOfAReturnedWildcardBesideAnotherItem() {
+        String sql = "UPDATE users u SET bio = $2 WHERE u.id = $1 RETURNING u.*, nickname";
+
+        QueryModel model = analyzer.analyze(
+            new Query("UpdateUserBio", QueryType.MANY, sql),
+            parser.parse(sql),
+            writeSchema
+        );
+
+        assertEquals(
+            "UPDATE users u SET bio = ? WHERE u.id = ?"
+                + " RETURNING \"u\".\"id\", \"u\".\"name\", \"u\".\"nickname\", \"u\".\"bio\","
+                + " \"u\".\"active\", \"u\".\"version\", \"u\".\"updated_at\", nickname",
+            model.executableSql()
+        );
+    }
+
+    /**
+     * Expanding a wildcard moves every character written after it, so the type
+     * hints the query writes itself stay where they are written, the hints
+     * sqlcj writes at an occurrence typed from another occurrence stay at their
+     * own {@code ?}, and the binding order is the order the query writes its
+     * placeholders.
+     */
+    @Test
+    void shouldWriteTypeHintsAroundAnExpandedWildcard() {
+        String sql = """
+            SELECT $1::text AS label, *, $2::text AS note
+            FROM users
+            WHERE ($3 IS NULL OR name = $3)
+              AND id = $4
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(List.of(1, 2, 3, 3, 4), model.bindingParameterIndexes());
+
+        assertEquals(
+            """
+                SELECT ?::text AS label, "users"."id", "users"."name", "users"."active", ?::text AS note
+                FROM users
+                WHERE (?::varchar IS NULL OR name = ?)
+                  AND id = ?
+                """,
+            model.executableSql()
+        );
+    }
+
+    /**
+     * Every name of an expanded wildcard is the name PostgreSQL stores, so an
+     * undelimited name is written folded, a delimited name as it was declared,
+     * and a name holding a space or a keyword reads the column it names.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT * FROM Items"
+                + "|SELECT \"items\".\"mixed\", \"items\".\"Delimited\","
+                + " \"items\".\"two words\", \"items\".\"select\" FROM Items",
+            "SELECT * FROM \"Items\""
+                + "|SELECT \"Items\".\"mixed\", \"Items\".\"Delimited\","
+                + " \"Items\".\"two words\", \"Items\".\"select\" FROM \"Items\"",
+            "SELECT I.* FROM Items I"
+                + "|SELECT \"i\".\"mixed\", \"i\".\"Delimited\","
+                + " \"i\".\"two words\", \"i\".\"select\" FROM Items I",
+            "SELECT \"I\".* FROM Items AS \"I\""
+                + "|SELECT \"I\".\"mixed\", \"I\".\"Delimited\","
+                + " \"I\".\"two words\", \"I\".\"select\" FROM Items AS \"I\""
+        }
+    )
+    void shouldWriteTheStoredNameOfEachExpandedColumn(String sql, String executableSql) {
+        QueryModel model = analyzer.analyze(
+            new Query("ListItems", QueryType.MANY, sql),
+            parser.parse(sql),
+            foldingSchema
+        );
+
+        assertEquals(executableSql, model.executableSql());
+    }
+
     @Test
     void shouldResolveUniqueUnqualifiedColumnInJoinedQuery() {
         String sql = """
@@ -5877,7 +6359,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             """
-                SELECT *
+                SELECT "users"."id", "users"."name", "users"."active"
                 FROM users
                 WHERE name = ?
                   AND (id = ? OR id = ?)
@@ -6044,7 +6526,7 @@ class QueryAnalyzerTest {
         assertEquals(List.of(1), model.bindingParameterIndexes());
 
         assertEquals(
-            "SELECT * FROM users WHERE id = ?",
+            "SELECT \"users\".\"id\", \"users\".\"name\", \"users\".\"active\" FROM users WHERE id = ?",
             model.executableSql()
         );
     }
@@ -8940,13 +9422,18 @@ class QueryAnalyzerTest {
      * counts as one item per column and types nothing.
      */
     @ParameterizedTest
-    @ValueSource(
-        strings = {
-            "INSERT INTO memberships (project_id, user_id) SELECT * FROM invitations",
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "INSERT INTO memberships (project_id, user_id) SELECT * FROM invitations"
+                + "|INSERT INTO memberships (project_id, user_id)"
+                + " SELECT \"invitations\".\"project_id\", \"invitations\".\"user_id\" FROM invitations",
             "INSERT INTO memberships (project_id, user_id) SELECT i.* FROM invitations i"
+                + "|INSERT INTO memberships (project_id, user_id)"
+                + " SELECT \"i\".\"project_id\", \"i\".\"user_id\" FROM invitations i"
         }
     )
-    void shouldCountOneInsertSelectItemPerWildcardColumn(String sql) {
+    void shouldCountOneInsertSelectItemPerWildcardColumn(String sql, String executableSql) {
         QueryModel model = analyzer.analyze(
             new Query("CreateMemberships", QueryType.EXEC, sql),
             parser.parse(sql),
@@ -8954,7 +9441,7 @@ class QueryAnalyzerTest {
         );
 
         assertTrue(model.parameters().isEmpty());
-        assertEquals(sql, model.executableSql());
+        assertEquals(executableSql, model.executableSql());
     }
 
     /**

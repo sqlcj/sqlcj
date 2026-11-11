@@ -7,7 +7,9 @@ import java.util.List;
  *
  * @param executableSql the source SQL in which every parsed {@code $N} and
  *                      {@code :name} parameter token is replaced by a JDBC
- *                      {@code ?} and every other character is preserved
+ *                      {@code ?} and every other character is preserved, a
+ *                      wildcard select item included, which semantic analysis
+ *                      replaces by the columns it selects
  * @param indexes       the logical parameter number of each {@code ?} position
  *                      in {@link #executableSql()}, in textual order, which is
  *                      the index of a {@code $N} placeholder and the

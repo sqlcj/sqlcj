@@ -2235,10 +2235,148 @@ class DefaultSchemaParserTest {
         assertEquals(
             List.of(
                 new Column("id", ColumnType.BIGINT, false),
-                new Column("Mail", ColumnType.VARCHAR, true),
+                new Column(
+                    "Mail",
+                    ColumnType.VARCHAR,
+                    true,
+                    null,
+                    null,
+                    false,
+                    false,
+                    "mail"
+                ),
                 new Column("name", ColumnType.VARCHAR, false)
             ),
-            table(schema, "users").columns()
+            table(schema, "users").columns(),
+            "an undelimited rename stores the folded name"
+        );
+    }
+
+    /**
+     * Beside the name sqlcj knows a column by, which every generated name is
+     * derived from, each column carries the name PostgreSQL stores for it: an
+     * undelimited declaration folded to lower case, and a delimited one as it
+     * is written, whatever letters, spaces, or keywords it holds.
+     */
+    @Test
+    void shouldStoreTheFoldedNameOfEachCreatedColumn() {
+        Schema schema = parser.parse("""
+            CREATE TABLE "Items" (
+                Mixed       BIGINT NOT NULL,
+                "Delimited" VARCHAR(255),
+                "two words" VARCHAR(255),
+                "select"    BOOLEAN
+            );
+            """);
+
+        assertEquals(
+            List.of("Mixed", "Delimited", "two words", "select"),
+            columnNames(schema, "Items")
+        );
+
+        assertEquals(
+            List.of("mixed", "Delimited", "two words", "select"),
+            columnSqlNames(schema, "Items")
+        );
+    }
+
+    @Test
+    void shouldStoreTheFoldedNameOfAnAddedColumn() {
+        Schema schema = applied("""
+            ALTER TABLE users ADD COLUMN Nickname VARCHAR(255);
+            ALTER TABLE users ADD COLUMN "Handle" VARCHAR(255);
+            """);
+
+        assertEquals(
+            List.of("id", "email", "name", "Nickname", "Handle"),
+            columnNames(schema, "users")
+        );
+
+        assertEquals(
+            List.of("id", "email", "name", "nickname", "Handle"),
+            columnSqlNames(schema, "users")
+        );
+    }
+
+    @Test
+    void shouldStoreTheFoldedNameOfARenamedColumn() {
+        Schema schema = applied("""
+            ALTER TABLE users RENAME COLUMN email TO Mail;
+            ALTER TABLE users RENAME COLUMN name TO "Full Name";
+            """);
+
+        assertEquals(
+            List.of("id", "Mail", "Full Name"),
+            columnNames(schema, "users")
+        );
+
+        assertEquals(
+            List.of("id", "mail", "Full Name"),
+            columnSqlNames(schema, "users")
+        );
+    }
+
+    /**
+     * A statement that changes a column in its position keeps the name
+     * PostgreSQL stores for it, because none of them renames the column: a
+     * type change, a nullability change, and a rename of the column's enum
+     * type alike.
+     */
+    @Test
+    void shouldKeepTheStoredNameOfEachChangedColumn() {
+        Schema schema = parser.parse(
+            parser.parse(
+                enumSchema(),
+                """
+                    CREATE TABLE Notes (
+                        Body    VARCHAR(255),
+                        Feeling stage_setting NOT NULL,
+                        Amount  INTEGER
+                    );
+                    """
+            ),
+            """
+                ALTER TABLE Notes ALTER COLUMN Body TYPE TEXT;
+                ALTER TABLE Notes ALTER COLUMN Amount SET NOT NULL;
+                ALTER TABLE Notes ALTER COLUMN Feeling DROP NOT NULL;
+                ALTER TYPE stage_setting RENAME TO Stage_Mood;
+                """
+        );
+
+        assertEquals(
+            List.of(
+                new Column(
+                    "Body",
+                    ColumnType.TEXT,
+                    true,
+                    null,
+                    null,
+                    false,
+                    false,
+                    "body"
+                ),
+                new Column(
+                    "Feeling",
+                    ColumnType.ENUM,
+                    true,
+                    null,
+                    "Stage_Mood",
+                    false,
+                    false,
+                    "feeling"
+                ),
+                new Column(
+                    "Amount",
+                    ColumnType.INTEGER,
+                    false,
+                    null,
+                    null,
+                    false,
+                    false,
+                    "amount"
+                )
+            ),
+            table(schema, "Notes").columns()
         );
     }
 
@@ -4516,6 +4654,12 @@ class DefaultSchemaParserTest {
     private List<String> columnNames(Schema schema, String tableName) {
         return table(schema, tableName).columns().stream()
             .map(Column::name)
+            .toList();
+    }
+
+    private List<String> columnSqlNames(Schema schema, String tableName) {
+        return table(schema, tableName).columns().stream()
+            .map(Column::sqlName)
             .toList();
     }
 

@@ -15,7 +15,8 @@ public final class SqlParser {
 
     /**
      * Parses one SQL source into its statement, its compiled positional
-     * parameters, and its placeholder occurrences in textual order.
+     * parameters, its placeholder occurrences in textual order, and its
+     * wildcard select items with their spans in the compiled SQL.
      *
      * <p>The parser used for the returned statement is captured while parsing.
      * {@link CCJSqlParserUtil} hands a newly created parser to the consumer
@@ -38,13 +39,15 @@ public final class SqlParser {
         }
 
         List<PlaceholderOccurrence> placeholders = new ArrayList<>();
+        List<WildcardOccurrence> wildcards = new ArrayList<>();
 
         SqlParameters parameters = parameterCompiler.compile(
             sql,
             parser.get().getASTRoot(),
-            placeholders
+            placeholders,
+            wildcards
         );
 
-        return new ParsedSql(statement, parameters, placeholders);
+        return new ParsedSql(statement, parameters, placeholders, wildcards);
     }
 }

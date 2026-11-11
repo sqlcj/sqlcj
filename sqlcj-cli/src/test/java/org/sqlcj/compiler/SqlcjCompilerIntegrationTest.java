@@ -344,9 +344,13 @@ class SqlcjCompilerIntegrationTest {
 
         JdbcDataSource dataSource = new JdbcDataSource();
 
+        // The executed statement writes the name PostgreSQL stores for every
+        // column a wildcard selects, so this database stores the undelimited
+        // names of its own DDL as PostgreSQL does.
         dataSource.setURL(
             "jdbc:h2:mem:" + UUID.randomUUID()
                 + ";DB_CLOSE_DELAY=-1"
+                + ";DATABASE_TO_LOWER=TRUE"
         );
 
         try (
@@ -1500,6 +1504,76 @@ class SqlcjCompilerIntegrationTest {
                 "@org.jspecify.annotations.Nullable Long userId", "@org.jspecify.annotations.Nullable String nickname"
             ),
             recordComponents(source, "ListUserProfileColumnsResult")
+        );
+
+        assertCompiles(generatedDirectory, classesDirectory);
+
+        assertTrue(Files.exists(classesDirectory.resolve("generated/repositories/UsersRepository.class")));
+    }
+
+    /**
+     * The generated statement of a wildcard beside a column of another source
+     * lists the columns the wildcard was analyzed as, each under the name
+     * PostgreSQL stores for it, so a column added to the joined table shifts
+     * no value the generated mapper reads. The repository that embeds the row
+     * and reads the column after it compiles.
+     */
+    @Test
+    void shouldGenerateTheAnalyzedColumnsOfAWildcard() throws IOException {
+        Path schemaFile = tempDir.resolve("schema.sql");
+        Path queriesFile = tempDir.resolve("queries.sql");
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path classesDirectory = tempDir.resolve("classes");
+
+        Files.writeString(
+            schemaFile,
+            """
+                CREATE TABLE customers
+                (
+                    id    BIGINT NOT NULL,
+                    email VARCHAR(255)
+                );
+
+                CREATE TABLE orders
+                (
+                    id          BIGINT NOT NULL,
+                    customer_id BIGINT NOT NULL,
+                    total       DECIMAL(10, 2)
+                );
+                """
+        );
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: ListOrderCustomerEmails :many
+                SELECT o.*, c.email
+                FROM orders o
+                JOIN customers c ON c.id = o.customer_id;
+                """
+        );
+
+        new SqlcjCompiler().compile(
+            usersConfig(schemaFile, queriesFile, generatedDirectory)
+        );
+
+        String source = Files.readString(
+            generatedDirectory.resolve("generated/repositories/UsersRepository.java")
+        );
+
+        assertTrue(
+            source.contains(
+                "                \"\"\"\n"
+                    + "                SELECT \"o\".\"id\", \"o\".\"customer_id\", \"o\".\"total\", c.email\n"
+                    + "                FROM orders o\n"
+                    + "                JOIN customers c ON c.id = o.customer_id;\"\"\""
+            ),
+            source
+        );
+
+        assertEquals(
+            List.of("OrdersRow o", "@org.jspecify.annotations.Nullable String email"),
+            recordComponents(source, "ListOrderCustomerEmailsResult")
         );
 
         assertCompiles(generatedDirectory, classesDirectory);
@@ -3822,7 +3896,12 @@ class SqlcjCompilerIntegrationTest {
         assertTrue(repository.contains("private static final RowMapper<UsersRow> usersRowMapper"));
         assertTrue(repository.contains("return executor.queryOne("));
         assertTrue(repository.contains("VALUES (?, ?)"));
-        assertTrue(repository.contains("RETURNING *"));
+        assertTrue(
+            repository.contains(
+                "RETURNING \"users\".\"id\", \"users\".\"name\", \"users\".\"active\""
+            ),
+            "the executed statement lists the columns the wildcard was analyzed as"
+        );
 
         assertTrue(
             repository.contains(

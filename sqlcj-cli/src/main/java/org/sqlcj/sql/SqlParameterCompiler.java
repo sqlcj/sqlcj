@@ -8,11 +8,15 @@ import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
 import net.sf.jsqlparser.parser.CCJSqlParserConstants;
 import net.sf.jsqlparser.parser.Node;
 import net.sf.jsqlparser.parser.Token;
+import net.sf.jsqlparser.statement.select.AllColumns;
 import net.sf.jsqlparser.statement.select.Select;
+import net.sf.jsqlparser.statement.select.SelectItem;
 
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -37,6 +41,12 @@ import java.util.regex.Pattern;
  * textual order, each with the cast that casts it and with where it stands as
  * the source writes it, which is the syntax-level order in which semantic
  * analysis binds them.
+ *
+ * <p>It also reports each wildcard select item of the source with the span the
+ * item takes in the compiled SQL, so that the replacements made for the
+ * placeholders are already accounted for and a later stage can write the
+ * columns one wildcard selects at its own span without parsing the source
+ * again.
  */
 final class SqlParameterCompiler {
 
@@ -100,11 +110,18 @@ final class SqlParameterCompiler {
     private static final int SOURCE_OFFSET = 1;
 
     /**
-     * Compiles the parameters of one parsed source and collects its placeholder
+     * Compiles the parameters of one parsed source, collects its placeholder
      * occurrences into {@code placeholders}, in the textual order of the
-     * {@code ?} positions of the compiled SQL.
+     * {@code ?} positions of the compiled SQL, and collects its wildcard select
+     * items into {@code wildcards}, each with the span it takes in that same
+     * compiled SQL.
      */
-    SqlParameters compile(String sql, Node astRoot, List<PlaceholderOccurrence> placeholders) {
+    SqlParameters compile(
+        String sql,
+        Node astRoot,
+        List<PlaceholderOccurrence> placeholders,
+        List<WildcardOccurrence> wildcards
+    ) {
         if (astRoot == null) {
             throw new SqlParseException("SQL parse tree is unavailable.");
         }
@@ -124,7 +141,23 @@ final class SqlParameterCompiler {
         boolean positional = false;
         int copied = 0;
 
+        Map<Token, SelectItem<?>> wildcardFirstTokens = new IdentityHashMap<>();
+        Map<Token, SelectItem<?>> wildcardLastTokens = new IdentityHashMap<>();
+        Map<SelectItem<?>, Integer> wildcardBegins = new IdentityHashMap<>();
+
+        collectWildcardItems(astRoot, wildcardFirstTokens, wildcardLastTokens);
+
         for (Token token = firstToken; token != null; token = token.next) {
+            collectWildcardSpan(
+                token,
+                wildcardFirstTokens,
+                wildcardLastTokens,
+                wildcardBegins,
+                wildcards,
+                executableSql.length(),
+                copied
+            );
+
             if (isAnonymousParameter(token)) {
                 anonymous = true;
             }
@@ -192,6 +225,83 @@ final class SqlParameterCompiler {
             positional,
             anonymous
         );
+    }
+
+    /**
+     * Walks the parse tree in pre-order, collecting the select items whose
+     * expression is a wildcard, each by the first and the last token of the
+     * item, which are the tokens the span of the whole item reaches from and
+     * to. A {@code RETURNING} item is such a select item too, so a wildcard of
+     * a write is collected here as one of a read is.
+     *
+     * <p>One select item can hang under more than one parse-tree node, so an
+     * item is collected once, under the node that reports it first, which is
+     * the outermost node of the item and therefore the one spelling all of it.
+     */
+    private void collectWildcardItems(
+        Node node,
+        Map<Token, SelectItem<?>> firstTokens,
+        Map<Token, SelectItem<?>> lastTokens
+    ) {
+        if (
+            node.jjtGetValue() instanceof SelectItem<?> item
+                && item.getExpression() instanceof AllColumns
+                && node.jjtGetFirstToken() != null
+                && node.jjtGetLastToken() != null
+                && !firstTokens.containsValue(item)
+        ) {
+            firstTokens.putIfAbsent(node.jjtGetFirstToken(), item);
+            lastTokens.putIfAbsent(node.jjtGetLastToken(), item);
+        }
+
+        for (int child = 0; child < node.jjtGetNumChildren(); child++) {
+            collectWildcardItems(node.jjtGetChild(child), firstTokens, lastTokens);
+        }
+    }
+
+    /**
+     * Records the compiled span of one wildcard select item while the token
+     * walk reaches the item's first and last token, so the span accounts for
+     * every placeholder replacement written before it.
+     *
+     * <p>The source text from the last replacement to the end of the token
+     * being read is copied character for character, so a source offset there
+     * stands in the compiled SQL at the length written so far plus its distance
+     * from the first character not yet copied. A wildcard item spells no
+     * placeholder, so both of its own offsets are read that way.
+     */
+    private void collectWildcardSpan(
+        Token token,
+        Map<Token, SelectItem<?>> firstTokens,
+        Map<Token, SelectItem<?>> lastTokens,
+        Map<SelectItem<?>, Integer> begins,
+        List<WildcardOccurrence> wildcards,
+        int written,
+        int copied
+    ) {
+        SelectItem<?> starting = firstTokens.get(token);
+
+        if (starting != null) {
+            begins.put(starting, written + token.absoluteBegin - SOURCE_OFFSET - copied);
+        }
+
+        SelectItem<?> ending = lastTokens.get(token);
+
+        if (ending == null) {
+            return;
+        }
+
+        Integer begin = begins.remove(ending);
+
+        if (begin != null) {
+            wildcards.add(
+                new WildcardOccurrence(
+                    ending,
+                    begin,
+                    written + token.absoluteEnd - SOURCE_OFFSET - copied
+                )
+            );
+        }
     }
 
     /**

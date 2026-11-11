@@ -58,6 +58,42 @@ public final class SchemaNamespace {
     }
 
     /**
+     * The name PostgreSQL stores for one written identifier, which is the name
+     * an executed statement must write to read the object again: a delimited
+     * name keeps its own letters, with every doubled quote read as one quote,
+     * and every other name is folded to lower case, as PostgreSQL folds an
+     * undelimited identifier.
+     *
+     * <p>Only the ASCII letters are folded, because that is the folding
+     * PostgreSQL performs on the identifiers sqlcj models.
+     */
+    public static String storedName(String writtenName) {
+        if (
+            writtenName.length() >= 2
+                && writtenName.charAt(0) == '"'
+                && writtenName.charAt(writtenName.length() - 1) == '"'
+        ) {
+            return writtenName
+                .substring(1, writtenName.length() - 1)
+                .replace("\"\"", "\"");
+        }
+
+        StringBuilder folded = new StringBuilder(writtenName.length());
+
+        for (int index = 0; index < writtenName.length(); index++) {
+            char character = writtenName.charAt(index);
+
+            folded.append(
+                character >= 'A' && character <= 'Z'
+                    ? (char) (character - 'A' + 'a')
+                    : character
+            );
+        }
+
+        return folded.toString();
+    }
+
+    /**
      * The modeled name a declared type name states, or {@code null} when it is
      * qualified with a schema sqlcj does not model.
      *
