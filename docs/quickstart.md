@@ -845,6 +845,10 @@ docker rm -f sqlcj-quickstart
 - [Cookbook](cookbook.md) — tested recipes for pagination, criteria search,
   upserts, batch writes, id lists, transactions, duplicate keys, and retried
   conflicts.
+- [Testing](testing.md) — testing the two projects above: integration tests
+  with Testcontainers and Flyway, in plain JUnit and in Spring Boot, unit tests
+  with Mockito and with a hand-written `QueryExecutor`, and coverage with
+  JaCoCo.
 - [Queries](queries.md) — annotations, supported SQL shapes, parameters, and
   the generated API.
 - [Configuration](configuration.md) — `sqlcj.yaml`, multiple source entries, and

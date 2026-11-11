@@ -129,6 +129,11 @@ rolls back its generated writes with `@Transactional`; see
 From there, the [Cookbook](docs/cookbook.md) holds one tested recipe per
 everyday task, each with its SQL, the generated method it calls, and its Java.
 
+[Testing](docs/testing.md) then tests the quickstart's two projects: an
+integration test against PostgreSQL through Testcontainers in plain JUnit and
+in Spring Boot, unit tests of a service over a mocked repository and over a
+hand-written `QueryExecutor`, and what JaCoCo reports.
+
 ## Documentation
 
 - [Quickstart](docs/quickstart.md) — an end-to-end PostgreSQL project from an
@@ -136,6 +141,9 @@ everyday task, each with its SQL, the generated method it calls, and its Java.
 - [Cookbook](docs/cookbook.md) — tested recipes for pagination, criteria
   search, upserts, batch writes, id lists, transactions, duplicate keys, and
   retried conflicts.
+- [Testing](docs/testing.md) — integration tests with Testcontainers and
+  Flyway, in plain JUnit and in Spring Boot, unit tests with Mockito and with a
+  hand-written `QueryExecutor`, and coverage with JaCoCo.
 - [Queries](docs/queries.md) — query annotations, the supported SQL shapes,
   parameter and binding order, the generated API, and what is not supported.
 - [Configuration](docs/configuration.md) — the `sqlcj.yaml` format, query-group
