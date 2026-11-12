@@ -655,7 +655,7 @@ class CookbookIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, tempDir.resolve("sqlcj.yaml"));
 
         Files.createDirectories(classesDirectory);
 

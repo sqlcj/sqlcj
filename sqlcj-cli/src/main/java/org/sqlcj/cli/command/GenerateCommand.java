@@ -50,7 +50,7 @@ public class GenerateCommand implements Callable<Integer> {
 
             Config config = configLoader.load(file);
             SqlcjCompiler compiler = new SqlcjCompiler();
-            compiler.compile(config);
+            compiler.compile(config, file);
             return CommandLine.ExitCode.OK;
         } catch (ConfigurationException e) {
             spec.commandLine()

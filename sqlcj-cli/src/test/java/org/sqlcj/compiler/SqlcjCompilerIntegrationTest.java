@@ -94,6 +94,17 @@ class SqlcjCompilerIntegrationTest {
     @TempDir
     Path tempDir;
 
+    /** The owner line the manifest of every compilation of one test carries. */
+    private static final String CONFIG_LINE = "# config: ../sqlcj.yaml\n";
+
+    /**
+     * The configuration file every compilation of one test is attributed to.
+     * It need not exist: the compiler records its path alone.
+     */
+    private Path configFile() {
+        return tempDir.resolve("sqlcj.yaml");
+    }
+
     @Test
     void shouldGenerateCompilableJavaFiles() throws IOException {
         Path schemaFile = tempDir.resolve("schema.sql");
@@ -153,7 +164,7 @@ class SqlcjCompilerIntegrationTest {
 
         SqlcjCompiler compiler = new SqlcjCompiler();
 
-        compiler.compile(config);
+        compiler.compile(config, configFile());
 
         Path repositoryFile = generatedDirectory.resolve("generated/repositories/UsersRepository.java");
 
@@ -334,7 +345,7 @@ class SqlcjCompilerIntegrationTest {
 
         SqlcjCompiler compiler = new SqlcjCompiler();
 
-        compiler.compile(config);
+        compiler.compile(config, configFile());
 
         Path repositoryFile = generatedDirectory.resolve("generated/repositories/UsersRepository.java");
 
@@ -480,7 +491,7 @@ class SqlcjCompilerIntegrationTest {
 
         SqlcjCompiler compiler = new SqlcjCompiler();
 
-        compiler.compile(config);
+        compiler.compile(config, configFile());
 
         Path repositoryFile = generatedDirectory.resolve("generated/repositories/UsersRepository.java");
 
@@ -1394,7 +1405,8 @@ class SqlcjCompilerIntegrationTest {
         );
 
         new SqlcjCompiler().compile(
-            usersConfig(schemaFile, queriesFile, generatedDirectory)
+            usersConfig(schemaFile, queriesFile, generatedDirectory),
+            configFile()
         );
 
         String source = Files.readString(
@@ -1468,7 +1480,8 @@ class SqlcjCompilerIntegrationTest {
         );
 
         new SqlcjCompiler().compile(
-            usersConfig(schemaFile, queriesFile, generatedDirectory)
+            usersConfig(schemaFile, queriesFile, generatedDirectory),
+            configFile()
         );
 
         String source = Files.readString(
@@ -1554,7 +1567,8 @@ class SqlcjCompilerIntegrationTest {
         );
 
         new SqlcjCompiler().compile(
-            usersConfig(schemaFile, queriesFile, generatedDirectory)
+            usersConfig(schemaFile, queriesFile, generatedDirectory),
+            configFile()
         );
 
         String source = Files.readString(
@@ -1648,7 +1662,8 @@ class SqlcjCompilerIntegrationTest {
         );
 
         new SqlcjCompiler().compile(
-            usersConfig(schemaFile, queriesFile, generatedDirectory)
+            usersConfig(schemaFile, queriesFile, generatedDirectory),
+            configFile()
         );
 
         String source = Files.readString(
@@ -1754,7 +1769,8 @@ class SqlcjCompilerIntegrationTest {
         );
 
         new SqlcjCompiler().compile(
-            usersConfig(schemaFile, queriesFile, generatedDirectory)
+            usersConfig(schemaFile, queriesFile, generatedDirectory),
+            configFile()
         );
 
         String source = Files.readString(
@@ -1869,7 +1885,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
 
         Path usersFile = generatedDirectory.resolve("dev/example/generated/repositories/UsersRepository.java");
 
@@ -2007,7 +2023,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
 
         Path usersRepository = generatedDirectory
             .resolve("dev/example/generated")
@@ -2063,7 +2079,8 @@ class SqlcjCompilerIntegrationTest {
             new Config(
                 List.of(new SqlConfig("Users", usersSchema.toString(), usersQueries.toString())),
                 new JavaConfig(generatedDirectory.toString(), "dev.example.generated")
-            )
+            ),
+            configFile()
         );
 
         Path generatedFile = generatedDirectory
@@ -2077,7 +2094,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         byte[] previousManifest = Files.readAllBytes(
-            generatedDirectory.resolve("sqlcj-manifest.txt")
+            generatedDirectory.resolve("dev/example/generated/sqlcj-manifest.txt")
         );
 
         Files.writeString(
@@ -2126,7 +2143,7 @@ class SqlcjCompilerIntegrationTest {
 
         CompilationException exception = assertThrows(
             CompilationException.class,
-            () -> compiler.compile(config)
+            () -> compiler.compile(config, configFile())
         );
 
         assertEquals(
@@ -2140,7 +2157,7 @@ class SqlcjCompilerIntegrationTest {
 
         assertArrayEquals(
             previousManifest,
-            Files.readAllBytes(generatedDirectory.resolve("sqlcj-manifest.txt"))
+            Files.readAllBytes(generatedDirectory.resolve("dev/example/generated/sqlcj-manifest.txt"))
         );
 
         assertFalse(
@@ -2170,7 +2187,8 @@ class SqlcjCompilerIntegrationTest {
                 migrations,
                 queriesFile,
                 generatedDirectory
-            )
+            ),
+            configFile()
         );
 
         Path packageDirectory = generatedDirectory.resolve("dev/example/generated");
@@ -2183,18 +2201,19 @@ class SqlcjCompilerIntegrationTest {
             Set.of(
                 "repositories/AuthorRepository.java",
                 "repositories/LibraryRepository.java",
-                "rows/AuthorsRow.java"
+                "rows/AuthorsRow.java",
+                "sqlcj-manifest.txt"
             ),
             generatedFiles(packageDirectory).keySet()
         );
 
         assertEquals(
-            """
+            CONFIG_LINE + """
                 dev/example/generated/repositories/AuthorRepository.java
                 dev/example/generated/repositories/LibraryRepository.java
                 dev/example/generated/rows/AuthorsRow.java
                 """,
-            Files.readString(generatedDirectory.resolve("sqlcj-manifest.txt"))
+            Files.readString(generatedDirectory.resolve("dev/example/generated/sqlcj-manifest.txt"))
         );
 
         Path classesDirectory = tempDir.resolve("classes");
@@ -2287,7 +2306,8 @@ class SqlcjCompilerIntegrationTest {
                 schemaFile,
                 libraryQueries,
                 generatedDirectory
-            )
+            ),
+            configFile()
         );
 
         Path packageDirectory = generatedDirectory.resolve("dev/example/generated");
@@ -2297,7 +2317,8 @@ class SqlcjCompilerIntegrationTest {
                 "repositories/AuthorRepository.java",
                 "repositories/LibraryRepository.java",
                 "rows/AuthorsRow.java",
-                "rows/BooksRow.java"
+                "rows/BooksRow.java",
+                "sqlcj-manifest.txt"
             ),
             List.copyOf(generatedFiles(packageDirectory).keySet())
         );
@@ -2405,7 +2426,8 @@ class SqlcjCompilerIntegrationTest {
                 schemaFile,
                 libraryQueries,
                 generatedDirectory
-            )
+            ),
+            configFile()
         );
 
         Path packageDirectory = generatedDirectory.resolve("dev/example/generated");
@@ -2415,7 +2437,8 @@ class SqlcjCompilerIntegrationTest {
                 "repositories/AuthorRepository.java",
                 "repositories/LibraryRepository.java",
                 "rows/AuthorsRow.java",
-                "rows/BooksRow.java"
+                "rows/BooksRow.java",
+                "sqlcj-manifest.txt"
             ),
             List.copyOf(generatedFiles(packageDirectory).keySet())
         );
@@ -2480,7 +2503,7 @@ class SqlcjCompilerIntegrationTest {
             new JavaConfig(generatedDirectory.toString(), "dev.example.generated")
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
 
         Path rowFile = generatedDirectory.resolve("dev/example/generated/rows/AuthorsRow.java");
 
@@ -2496,13 +2519,13 @@ class SqlcjCompilerIntegrationTest {
                 """
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
 
         assertFalse(Files.exists(rowFile));
 
         assertEquals(
-            "dev/example/generated/repositories/AuthorRepository.java\n",
-            Files.readString(generatedDirectory.resolve("sqlcj-manifest.txt"))
+            CONFIG_LINE + "dev/example/generated/repositories/AuthorRepository.java\n",
+            Files.readString(generatedDirectory.resolve("dev/example/generated/sqlcj-manifest.txt"))
         );
     }
 
@@ -2551,7 +2574,7 @@ class SqlcjCompilerIntegrationTest {
 
         CompilationException exception = assertThrows(
             CompilationException.class,
-            () -> new SqlcjCompiler().compile(config)
+            () -> new SqlcjCompiler().compile(config, configFile())
         );
 
         assertEquals(
@@ -2627,7 +2650,7 @@ class SqlcjCompilerIntegrationTest {
 
         CompilationException exception = assertThrows(
             CompilationException.class,
-            () -> new SqlcjCompiler().compile(config)
+            () -> new SqlcjCompiler().compile(config, configFile())
         );
 
         assertEquals(
@@ -2702,7 +2725,8 @@ class SqlcjCompilerIntegrationTest {
                 migrations,
                 queriesFile,
                 generatedDirectory
-            )
+            ),
+            configFile()
         );
 
         Path packageDirectory = generatedDirectory.resolve("dev/example/generated");
@@ -2710,12 +2734,12 @@ class SqlcjCompilerIntegrationTest {
         assertTrue(Files.exists(packageDirectory.resolve("enums/StageSetting.java")));
 
         assertEquals(
-            """
+            CONFIG_LINE + """
                 dev/example/generated/enums/StageSetting.java
                 dev/example/generated/repositories/AuthorRepository.java
                 dev/example/generated/repositories/LibraryRepository.java
                 """,
-            Files.readString(generatedDirectory.resolve("sqlcj-manifest.txt"))
+            Files.readString(generatedDirectory.resolve("dev/example/generated/sqlcj-manifest.txt"))
         );
 
         Path classesDirectory = tempDir.resolve("classes");
@@ -2769,12 +2793,13 @@ class SqlcjCompilerIntegrationTest {
                 migrations,
                 queriesFile,
                 generatedDirectory
-            )
+            ),
+            configFile()
         );
 
         assertEquals(
             Set.of(
-                "sqlcj-manifest.txt",
+                "dev/example/generated/sqlcj-manifest.txt",
                 "dev/example/generated/enums/StageSetting.java",
                 "dev/example/generated/repositories/AuthorRepository.java",
                 "dev/example/generated/repositories/LibraryRepository.java",
@@ -2784,13 +2809,13 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            """
+            CONFIG_LINE + """
                 dev/example/generated/enums/StageSetting.java
                 dev/example/generated/repositories/AuthorRepository.java
                 dev/example/generated/repositories/LibraryRepository.java
                 dev/example/generated/rows/StagesRow.java
                 """,
-            Files.readString(generatedDirectory.resolve("sqlcj-manifest.txt"))
+            Files.readString(generatedDirectory.resolve("dev/example/generated/sqlcj-manifest.txt"))
         );
 
         Path packageDirectory = generatedDirectory.resolve("dev/example/generated");
@@ -2816,41 +2841,40 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
-     * An output directory written by the flat layout needs no migration step:
-     * the next ordinary run deletes the files its manifest lists in the package
-     * directory, writes the new files into the subpackages, and leaves the
-     * emptied package directory alone, because no run deletes a directory.
+     * The root manifest an earlier sqlcj wrote is neither read nor deleted: it
+     * names no owning configuration, and the notice-bearing file it lists is
+     * replaced only where this run generates that path again.
      */
     @Test
-    void shouldDeleteTheFlatFilesOfAPreviousLayout() throws IOException {
+    void shouldNeitherReadNorDeleteTheRootManifest() throws IOException {
         Path generatedDirectory = tempDir.resolve("generated");
         Path packageDirectory = generatedDirectory.resolve("dev/example/generated");
 
         Files.createDirectories(packageDirectory);
 
-        Path flatRepository = packageDirectory.resolve("UsersRepository.java");
+        Path rootManifest = generatedDirectory.resolve("sqlcj-manifest.txt");
+
+        String rootContent = """
+            dev/example/generated/UsersRepository.java
+            dev/example/generated/UsersRow.java
+            """;
+
+        Files.writeString(rootManifest, rootContent);
+
         Path flatRow = packageDirectory.resolve("UsersRow.java");
 
-        Files.writeString(flatRepository, "// written by the flat layout\n");
-        Files.writeString(flatRow, "// written by the flat layout\n");
-
-        Files.writeString(
-            generatedDirectory.resolve("sqlcj-manifest.txt"),
-            """
-                dev/example/generated/UsersRepository.java
-                dev/example/generated/UsersRow.java
-                """
-        );
+        Files.writeString(flatRow, JavaCodeGenerator.GENERATED_NOTICE + "\n");
 
         compileGroups(generatedDirectory, "dev.example.generated", "Users");
 
-        assertFalse(Files.exists(flatRepository));
-        assertFalse(Files.exists(flatRow));
-        assertTrue(Files.isDirectory(packageDirectory));
+        assertEquals(rootContent, Files.readString(rootManifest));
+        assertEquals(JavaCodeGenerator.GENERATED_NOTICE + "\n", Files.readString(flatRow));
 
         assertEquals(
             Set.of(
                 "sqlcj-manifest.txt",
+                "dev/example/generated/UsersRow.java",
+                "dev/example/generated/sqlcj-manifest.txt",
                 "dev/example/generated/repositories/UsersRepository.java"
             ),
             generatedFiles(generatedDirectory).keySet()
@@ -2869,7 +2893,7 @@ class SqlcjCompilerIntegrationTest {
             new JavaConfig(generatedDirectory.toString(), "dev.example.generated")
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
 
         Path enumFile = generatedDirectory.resolve("dev/example/generated/enums/StageSetting.java");
 
@@ -2885,13 +2909,13 @@ class SqlcjCompilerIntegrationTest {
                 """
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
 
         assertFalse(Files.exists(enumFile));
 
         assertEquals(
-            "dev/example/generated/repositories/AuthorRepository.java\n",
-            Files.readString(generatedDirectory.resolve("sqlcj-manifest.txt"))
+            CONFIG_LINE + "dev/example/generated/repositories/AuthorRepository.java\n",
+            Files.readString(generatedDirectory.resolve("dev/example/generated/sqlcj-manifest.txt"))
         );
     }
 
@@ -2919,7 +2943,7 @@ class SqlcjCompilerIntegrationTest {
 
         CompilationException exception = assertThrows(
             CompilationException.class,
-            () -> new SqlcjCompiler().compile(config)
+            () -> new SqlcjCompiler().compile(config, configFile())
         );
 
         assertEquals(
@@ -3031,14 +3055,18 @@ class SqlcjCompilerIntegrationTest {
         assertTrue(Files.exists(packageDirectory.resolve("repositories/CustomersRepository.java")));
 
         assertEquals(
-            "dev/example/generated/repositories/CustomersRepository.java\n",
-            Files.readString(generatedDirectory.resolve("sqlcj-manifest.txt"))
+            CONFIG_LINE + "dev/example/generated/repositories/CustomersRepository.java\n",
+            Files.readString(generatedDirectory.resolve("dev/example/generated/sqlcj-manifest.txt"))
         );
     }
 
-    /** A changed package leaves the previous package directory in place. */
+    /**
+     * A changed package leaves the previous package's files and manifest
+     * alone, as a changed output directory does, because cleanup reads the
+     * manifest of the package it generates.
+     */
     @Test
-    void shouldDeleteTheStaleRepositoryOfAChangedPackage() throws IOException {
+    void shouldKeepThePreviousPackageOfAChangedPackage() throws IOException {
         Path generatedDirectory = tempDir.resolve("generated");
 
         compileGroups(generatedDirectory, "dev.example.generated", "Users");
@@ -3049,8 +3077,12 @@ class SqlcjCompilerIntegrationTest {
 
         compileGroups(generatedDirectory, "dev.other.generated", "Users");
 
-        assertFalse(Files.exists(previousPackageDirectory.resolve("repositories/UsersRepository.java")));
-        assertTrue(Files.isDirectory(previousPackageDirectory));
+        assertTrue(Files.exists(previousPackageDirectory.resolve("repositories/UsersRepository.java")));
+
+        assertEquals(
+            CONFIG_LINE + "dev/example/generated/repositories/UsersRepository.java\n",
+            Files.readString(previousPackageDirectory.resolve("sqlcj-manifest.txt"))
+        );
 
         assertTrue(
             Files.exists(
@@ -3059,8 +3091,8 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            "dev/other/generated/repositories/UsersRepository.java\n",
-            Files.readString(generatedDirectory.resolve("sqlcj-manifest.txt"))
+            CONFIG_LINE + "dev/other/generated/repositories/UsersRepository.java\n",
+            Files.readString(generatedDirectory.resolve("dev/other/generated/sqlcj-manifest.txt"))
         );
     }
 
@@ -3096,13 +3128,207 @@ class SqlcjCompilerIntegrationTest {
         );
     }
 
+    /**
+     * Two configurations with different packages may share one output
+     * directory: each run cleans up its own package alone, so the files and
+     * the manifest of the other package survive every run.
+     */
+    @Test
+    void shouldKeepThePackageOfAnotherConfigurationSharingTheOutputDirectory()
+        throws IOException {
+        Path generatedDirectory = tempDir.resolve("gen");
+        Path firstConfigFile = tempDir.resolve("a/sqlcj.yaml");
+        Path secondConfigFile = tempDir.resolve("b/sqlcj.yaml");
+
+        SqlcjCompiler compiler = new SqlcjCompiler();
+
+        compiler.compile(groupsConfig(generatedDirectory, "com.x.a", "Users"), firstConfigFile);
+        compiler.compile(groupsConfig(generatedDirectory, "com.x.b", "Users"), secondConfigFile);
+        compiler.compile(groupsConfig(generatedDirectory, "com.x.a", "Users"), firstConfigFile);
+
+        assertEquals(
+            Set.of(
+                "com/x/a/sqlcj-manifest.txt",
+                "com/x/a/repositories/UsersRepository.java",
+                "com/x/b/sqlcj-manifest.txt",
+                "com/x/b/repositories/UsersRepository.java"
+            ),
+            generatedFiles(generatedDirectory).keySet()
+        );
+
+        assertEquals(
+            """
+                # config: ../a/sqlcj.yaml
+                com/x/a/repositories/UsersRepository.java
+                """,
+            Files.readString(generatedDirectory.resolve("com/x/a/sqlcj-manifest.txt"))
+        );
+
+        assertEquals(
+            """
+                # config: ../b/sqlcj.yaml
+                com/x/b/repositories/UsersRepository.java
+                """,
+            Files.readString(generatedDirectory.resolve("com/x/b/sqlcj-manifest.txt"))
+        );
+    }
+
+    /**
+     * One package of one output directory belongs to one configuration file,
+     * because two configurations would share its row and enum subpackages. The
+     * owning configuration's output is left untouched.
+     */
+    @Test
+    void shouldRejectAPackageAnotherConfigurationGenerates() throws IOException {
+        Path generatedDirectory = tempDir.resolve("gen");
+        Path ownerConfigFile = tempDir.resolve("a/sqlcj.yaml");
+        Path otherConfigFile = tempDir.resolve("c/sqlcj.yaml");
+
+        new SqlcjCompiler().compile(
+            groupsConfig(generatedDirectory, "com.x.a", "Users"),
+            ownerConfigFile
+        );
+
+        Map<String, byte[]> previous = generatedFiles(generatedDirectory);
+
+        Config config = groupsConfig(generatedDirectory, "com.x.a", "Orders");
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> new SqlcjCompiler().compile(config, otherConfigFile)
+        );
+
+        assertEquals(
+            "Package 'com.x.a' in output directory %s is generated by configuration %s; "
+                .formatted(generatedDirectory, ownerConfigFile)
+                + "give this configuration another java.package or java.out",
+            exception.getMessage()
+        );
+
+        assertGeneratedFilesAre(previous, generatedDirectory);
+    }
+
+    /**
+     * The same configuration file is accepted however it is spelled, so a run
+     * from another working directory regenerates its own package.
+     */
+    @Test
+    void shouldAcceptTheOwningConfigurationFileSpelledDifferently() throws IOException {
+        Path generatedDirectory = tempDir.resolve("gen");
+
+        SqlcjCompiler compiler = new SqlcjCompiler();
+
+        compiler.compile(
+            groupsConfig(generatedDirectory, "com.x.a", "Users"),
+            tempDir.resolve("a/sqlcj.yaml")
+        );
+
+        compiler.compile(
+            groupsConfig(generatedDirectory, "com.x.a", "Users"),
+            tempDir.resolve("a/../a/./sqlcj.yaml")
+        );
+
+        assertEquals(
+            """
+                # config: ../a/sqlcj.yaml
+                com/x/a/repositories/UsersRepository.java
+                """,
+            Files.readString(generatedDirectory.resolve("com/x/a/sqlcj-manifest.txt"))
+        );
+    }
+
+    /**
+     * A file no manifest lists and that sqlcj did not write is never
+     * overwritten: the run ends at the first such path, in generation order,
+     * and writes nothing at all.
+     */
+    @Test
+    void shouldRejectAHandWrittenFileAtAGeneratedPath() throws IOException {
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path packageDirectory = generatedDirectory.resolve("dev/example/generated/repositories");
+
+        Files.createDirectories(packageDirectory);
+
+        Path handWritten = packageDirectory.resolve("UsersRepository.java");
+        Path alsoHandWritten = packageDirectory.resolve("OrdersRepository.java");
+
+        Files.writeString(handWritten, "// hand written\n");
+        Files.writeString(alsoHandWritten, "// hand written too\n");
+
+        Map<String, byte[]> previous = generatedFiles(generatedDirectory);
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> compileGroups(generatedDirectory, "dev.example.generated", "Users", "Orders")
+        );
+
+        assertEquals(
+            "Cannot overwrite a file sqlcj did not generate: %s; "
+                .formatted(handWritten)
+                + "delete it to let sqlcj generate it",
+            exception.getMessage()
+        );
+
+        assertGeneratedFilesAre(previous, generatedDirectory);
+
+        Files.delete(handWritten);
+        Files.delete(alsoHandWritten);
+
+        compileGroups(generatedDirectory, "dev.example.generated", "Users", "Orders");
+
+        assertTrue(
+            Files.readString(handWritten).contains("public final class UsersRepository {")
+        );
+    }
+
+    /**
+     * Output written before any manifest existed carries the generated-code
+     * notice, so it is replaced without a diagnostic.
+     */
+    @Test
+    void shouldReplaceAnUnlistedFileCarryingTheGeneratedNotice() throws IOException {
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path packageDirectory = generatedDirectory.resolve("dev/example/generated/repositories");
+
+        Files.createDirectories(packageDirectory);
+
+        Path previouslyGenerated = packageDirectory.resolve("UsersRepository.java");
+
+        Files.writeString(
+            previouslyGenerated,
+            JavaCodeGenerator.GENERATED_NOTICE + "\n\n// generated before any manifest\n"
+        );
+
+        compileGroups(generatedDirectory, "dev.example.generated", "Users");
+
+        assertTrue(
+            Files.readString(previouslyGenerated)
+                .contains("public final class UsersRepository {")
+        );
+    }
+
+    /** Every file of one output directory, with its bytes, is still there. */
+    private void assertGeneratedFilesAre(
+        Map<String, byte[]> expected,
+        Path generatedDirectory
+    ) throws IOException {
+        Map<String, byte[]> actual = generatedFiles(generatedDirectory);
+
+        assertEquals(expected.keySet(), actual.keySet());
+
+        for (Map.Entry<String, byte[]> file : expected.entrySet()) {
+            assertArrayEquals(file.getValue(), actual.get(file.getKey()), file.getKey());
+        }
+    }
+
     @Test
     void shouldGenerateByteIdenticalRepositoriesAndManifestForTwoRuns() throws IOException {
         Path generatedDirectory = tempDir.resolve("generated");
 
         compileGroups(generatedDirectory, "dev.example.generated", "Users", "Orders");
 
-        Path manifestFile = generatedDirectory.resolve("sqlcj-manifest.txt");
+        Path manifestFile = generatedDirectory
+            .resolve("dev/example/generated/sqlcj-manifest.txt");
         Path usersFile = generatedDirectory.resolve("dev/example/generated/repositories/UsersRepository.java");
         Path ordersFile = generatedDirectory.resolve("dev/example/generated/repositories/OrdersRepository.java");
 
@@ -3117,7 +3343,7 @@ class SqlcjCompilerIntegrationTest {
         assertArrayEquals(firstOrders, Files.readAllBytes(ordersFile));
 
         assertEquals(
-            """
+            CONFIG_LINE + """
                 dev/example/generated/repositories/OrdersRepository.java
                 dev/example/generated/repositories/UsersRepository.java
                 """,
@@ -3128,7 +3354,8 @@ class SqlcjCompilerIntegrationTest {
     @Test
     void shouldReportTheOutputManifestItCannotRead() throws IOException {
         Path generatedDirectory = tempDir.resolve("generated");
-        Path manifestFile = generatedDirectory.resolve("sqlcj-manifest.txt");
+        Path manifestFile = generatedDirectory
+            .resolve("dev/example/generated/sqlcj-manifest.txt");
 
         Files.createDirectories(manifestFile);
 
@@ -3191,7 +3418,7 @@ class SqlcjCompilerIntegrationTest {
 
         CompilationException exception = assertThrows(
             CompilationException.class,
-            () -> compiler.compile(config)
+            () -> compiler.compile(config, configFile())
         );
 
         assertEquals(
@@ -3772,7 +3999,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
 
         Path generatedFile = generatedDirectory
             .resolve("generated")
@@ -3869,7 +4096,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
 
         Path repositoryFile = generatedDirectory.resolve("generated/repositories/UsersRepository.java");
 
@@ -3991,7 +4218,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
 
         String repository = Files.readString(
             generatedDirectory.resolve("generated/repositories/UsersRepository.java")
@@ -4055,7 +4282,7 @@ class SqlcjCompilerIntegrationTest {
         Files.writeString(schemaFile, JOIN_SCHEMA);
         Files.writeString(queriesFile, queries);
 
-        new SqlcjCompiler().compile(usersConfig(schemaFile, queriesFile, generatedDirectory));
+        new SqlcjCompiler().compile(usersConfig(schemaFile, queriesFile, generatedDirectory), configFile());
     }
 
     /**
@@ -4094,7 +4321,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         new SqlcjCompiler(schemaParser, queryAnalysis, codeGenerators)
-            .compile(usersConfig(schemaFile, queriesFile, generatedDirectory));
+            .compile(usersConfig(schemaFile, queriesFile, generatedDirectory), configFile());
     }
 
     /** The one {@code Users} entry of one schema and query source. */
@@ -4145,7 +4372,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
     }
 
     /**
@@ -4153,6 +4380,21 @@ class SqlcjCompilerIntegrationTest {
      * source into one configured package.
      */
     private void compileGroups(
+        Path generatedDirectory,
+        String packageName,
+        String... groupNames
+    ) throws IOException {
+        new SqlcjCompiler().compile(
+            groupsConfig(generatedDirectory, packageName, groupNames),
+            configFile()
+        );
+    }
+
+    /**
+     * The configuration of the named query groups of one shared users schema
+     * and query source, generated into one configured package.
+     */
+    private Config groupsConfig(
         Path generatedDirectory,
         String packageName,
         String... groupNames
@@ -4193,11 +4435,9 @@ class SqlcjCompilerIntegrationTest {
             );
         }
 
-        new SqlcjCompiler().compile(
-            new Config(
-                List.copyOf(sql),
-                new JavaConfig(generatedDirectory.toString(), packageName)
-            )
+        return new Config(
+            List.copyOf(sql),
+            new JavaConfig(generatedDirectory.toString(), packageName)
         );
     }
 
@@ -4242,7 +4482,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
     }
 
     private Path generateAndCompile(String queries) throws IOException {
@@ -4612,7 +4852,7 @@ class SqlcjCompilerIntegrationTest {
 
         assertEquals(
             Set.of(
-                "sqlcj-manifest.txt",
+                "generated/sqlcj-manifest.txt",
                 "generated/rows/AuthorsRow.java",
                 "generated/enums/BookFormat.java",
                 "generated/rows/BooksRow.java",
@@ -5053,7 +5293,8 @@ class SqlcjCompilerIntegrationTest {
         CompilationException exception = assertThrows(
             CompilationException.class,
             () -> new SqlcjCompiler().compile(
-                twoEntryConfig(usersQueries, ordersQueries, generatedDirectory)
+                twoEntryConfig(usersQueries, ordersQueries, generatedDirectory),
+                configFile()
             )
         );
 
@@ -5068,7 +5309,9 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals("// from an earlier run\n", Files.readString(existing));
-        assertFalse(Files.exists(generatedDirectory.resolve("sqlcj-manifest.txt")));
+        assertFalse(
+            Files.exists(generatedDirectory.resolve("generated/sqlcj-manifest.txt"))
+        );
     }
 
     /**
@@ -5126,7 +5369,7 @@ class SqlcjCompilerIntegrationTest {
 
         CompilationException exception = assertThrows(
             CompilationException.class,
-            () -> new SqlcjCompiler().compile(config)
+            () -> new SqlcjCompiler().compile(config, configFile())
         );
 
         assertEquals(
@@ -5234,7 +5477,8 @@ class SqlcjCompilerIntegrationTest {
                         )
                     ),
                     new JavaConfig(generatedDirectory.toString(), "generated")
-                )
+                ),
+                configFile()
             )
         );
 
@@ -5297,7 +5541,7 @@ class SqlcjCompilerIntegrationTest {
 
         CompilationException exception = assertThrows(
             CompilationException.class,
-            () -> new SqlcjCompiler().compile(config)
+            () -> new SqlcjCompiler().compile(config, configFile())
         );
 
         assertEquals(
@@ -6285,7 +6529,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
 
         return generatedDirectory
             .resolve("generated")
@@ -6317,7 +6561,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, configFile());
 
         Path generatedFile = generatedDirectory.resolve("generated").resolve("repositories/UsersRepository.java");
 

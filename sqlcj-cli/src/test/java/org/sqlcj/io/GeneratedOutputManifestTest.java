@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -21,41 +22,69 @@ class GeneratedOutputManifestTest {
     private final GeneratedOutputManifest manifest = new GeneratedOutputManifest();
 
     @Test
-    void shouldReadNoEntryWithoutAManifest() throws IOException {
-        assertEquals(List.of(), manifest.read(tempDir.resolve("generated")));
+    void shouldReadNoContentsWithoutAManifest() throws IOException {
+        assertEquals(
+            Optional.empty(),
+            manifest.read(tempDir.resolve("generated"), "dev.example.generated")
+        );
     }
 
+    /** The manifest of one package sits in that package's own directory. */
     @Test
-    void shouldReadTheEntriesOfAPreviousManifest() throws IOException {
+    void shouldReadTheManifestOfThePackageDirectory() throws IOException {
         Path outputDirectory = tempDir.resolve("generated");
 
-        Files.createDirectories(outputDirectory);
+        Files.createDirectories(outputDirectory.resolve("dev/example/generated"));
 
         Files.writeString(
-            outputDirectory.resolve("sqlcj-manifest.txt"),
+            outputDirectory.resolve("dev/example/generated/sqlcj-manifest.txt"),
             """
-                dev/example/generated/OrdersRepository.java
-                dev/example/generated/UsersRepository.java
+                # config: ../sqlcj.yaml
+                dev/example/generated/repositories/OrdersRepository.java
+                dev/example/generated/repositories/UsersRepository.java
                 """
         );
 
         assertEquals(
-            List.of(
-                "dev/example/generated/OrdersRepository.java",
-                "dev/example/generated/UsersRepository.java"
+            Optional.of(
+                new GeneratedOutputManifest.Contents(
+                    "../sqlcj.yaml",
+                    List.of(
+                        "dev/example/generated/repositories/OrdersRepository.java",
+                        "dev/example/generated/repositories/UsersRepository.java"
+                    )
+                )
             ),
-            manifest.read(outputDirectory)
+            manifest.read(outputDirectory, "dev.example.generated")
+        );
+    }
+
+    /** A manifest of another package in the same output directory is not read. */
+    @Test
+    void shouldReadNoContentsForAnotherPackage() throws IOException {
+        Path outputDirectory = tempDir.resolve("generated");
+
+        manifest.write(
+            outputDirectory,
+            "dev.example.generated",
+            "../sqlcj.yaml",
+            List.of(Path.of("dev", "example", "generated", "UsersRepository.java"))
+        );
+
+        assertEquals(
+            Optional.empty(),
+            manifest.read(outputDirectory, "dev.other.generated")
         );
     }
 
     @Test
-    void shouldWriteSortedEntriesTerminatedByNewlines() throws IOException {
+    void shouldWriteTheConfigurationAndSortedEntriesTerminatedByNewlines() throws IOException {
         Path outputDirectory = tempDir.resolve("generated");
-
-        Files.createDirectories(outputDirectory);
 
         manifest.write(
             outputDirectory,
+            "dev.example.generated",
+            "../sqlcj.yaml",
             List.of(
                 Path.of("dev", "example", "generated", "UsersRepository.java"),
                 Path.of("dev", "example", "generated", "OrdersRepository.java")
@@ -64,23 +93,102 @@ class GeneratedOutputManifestTest {
 
         assertEquals(
             """
+                # config: ../sqlcj.yaml
                 dev/example/generated/OrdersRepository.java
                 dev/example/generated/UsersRepository.java
                 """,
-            Files.readString(outputDirectory.resolve("sqlcj-manifest.txt"))
+            Files.readString(
+                outputDirectory.resolve("dev/example/generated/sqlcj-manifest.txt")
+            )
+        );
+    }
+
+    /** What one run writes, the next run of the same package reads back. */
+    @Test
+    void shouldReadBackTheConfigurationAndEntriesItWrote() throws IOException {
+        Path outputDirectory = tempDir.resolve("generated");
+
+        manifest.write(
+            outputDirectory,
+            "dev.example.generated",
+            manifest.configuration(outputDirectory, tempDir.resolve("sqlcj.yaml")),
+            List.of(Path.of("dev", "example", "generated", "UsersRepository.java"))
+        );
+
+        assertEquals(
+            Optional.of(
+                new GeneratedOutputManifest.Contents(
+                    "../sqlcj.yaml",
+                    List.of("dev/example/generated/UsersRepository.java")
+                )
+            ),
+            manifest.read(outputDirectory, "dev.example.generated")
+        );
+    }
+
+    /**
+     * The owning configuration is the configuration file relative to the output
+     * directory, with {@code /} between its name elements, so the same file run
+     * from another working directory names the same configuration.
+     */
+    @Test
+    void shouldStateTheConfigurationRelativeToTheOutputDirectory() {
+        Path outputDirectory = tempDir.resolve("target/generated-sources/sqlcj");
+
+        assertEquals(
+            "../../../sqlcj.yaml",
+            manifest.configuration(outputDirectory, tempDir.resolve("sqlcj.yaml"))
+        );
+
+        assertEquals(
+            "../../../config/sqlcj.yaml",
+            manifest.configuration(
+                outputDirectory,
+                tempDir.resolve("config").resolve("sqlcj.yaml")
+            )
+        );
+
+        assertEquals(
+            "../../../sqlcj.yaml",
+            manifest.configuration(
+                outputDirectory,
+                tempDir.resolve("config/../sqlcj.yaml")
+            )
+        );
+    }
+
+    /** An entry the previous manifest lists names a path this run generates. */
+    @Test
+    void shouldReportWhetherTheEntriesListAGeneratedPath() {
+        List<String> entries = List.of("dev/example/generated/repositories/UsersRepository.java");
+
+        assertTrue(
+            manifest.lists(
+                entries,
+                Path.of("dev", "example", "generated", "repositories", "UsersRepository.java")
+            )
+        );
+
+        assertFalse(
+            manifest.lists(
+                entries,
+                Path.of("dev", "example", "generated", "repositories", "OrdersRepository.java")
+            )
         );
     }
 
     @Test
     void shouldReportTheManifestItCannotRead() throws IOException {
         Path outputDirectory = tempDir.resolve("generated");
-        Path manifestFile = outputDirectory.resolve("sqlcj-manifest.txt");
+        Path manifestFile = outputDirectory
+            .resolve("dev/example/generated")
+            .resolve("sqlcj-manifest.txt");
 
         Files.createDirectories(manifestFile);
 
         IOException failure = assertThrows(
             IOException.class,
-            () -> manifest.read(outputDirectory)
+            () -> manifest.read(outputDirectory, "dev.example.generated")
         );
 
         assertEquals(
@@ -92,7 +200,9 @@ class GeneratedOutputManifestTest {
     @Test
     void shouldReportTheManifestItCannotWrite() throws IOException {
         Path outputDirectory = tempDir.resolve("generated");
-        Path manifestFile = outputDirectory.resolve("sqlcj-manifest.txt");
+        Path manifestFile = outputDirectory
+            .resolve("dev/example/generated")
+            .resolve("sqlcj-manifest.txt");
 
         Files.createDirectories(manifestFile);
 
@@ -100,6 +210,8 @@ class GeneratedOutputManifestTest {
             IOException.class,
             () -> manifest.write(
                 outputDirectory,
+                "dev.example.generated",
+                "../sqlcj.yaml",
                 List.of(Path.of("generated", "UsersRepository.java"))
             )
         );

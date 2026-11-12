@@ -516,7 +516,7 @@ class SpringTransactionIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, tempDir.resolve("sqlcj.yaml"));
 
         Files.createDirectories(classesDirectory);
 
@@ -537,6 +537,7 @@ class SpringTransactionIntegrationTest {
             generatedFiles
                 .filter(Files::isRegularFile)
                 .map(Path::toString)
+                .filter(path -> path.endsWith(".java"))
                 .sorted()
                 .forEach(arguments::add);
         }
