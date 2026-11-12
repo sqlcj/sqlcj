@@ -469,12 +469,12 @@ mvn exec:java
 Generation writes one repository per configured entry into the `repositories`
 subpackage of `java.package`, one row record per table whose complete row an
 entry returns into its `rows` subpackage, plus the manifest that records what it
-wrote, at the root of `java.out`:
+wrote, in the directory of `java.package`:
 
 ```text
 target/generated-sources/sqlcj/com/example/app/db/repositories/AuthorRepository.java
 target/generated-sources/sqlcj/com/example/app/db/rows/AuthorsRow.java
-target/generated-sources/sqlcj/sqlcj-manifest.txt
+target/generated-sources/sqlcj/com/example/app/db/sqlcj-manifest.txt
 ```
 
 `mvn exec:java` prints:
@@ -553,9 +553,10 @@ mvn compile
 ```
 
 Regeneration cleans up after itself. The previous run recorded every file it
-wrote in `target/generated-sources/sqlcj/sqlcj-manifest.txt`, so renaming or
-removing an `sql` entry deletes the repository that entry used to generate,
-while a file sqlcj never generated is left alone. See
+wrote in `target/generated-sources/sqlcj/com/example/app/db/sqlcj-manifest.txt`,
+so renaming or removing an `sql` entry deletes the repository that entry used to
+generate, while a file sqlcj never generated is left alone and never
+overwritten. See
 [Configuration](configuration.md#generated-output-and-failures) for the full
 manifest and cleanup rules.
 
