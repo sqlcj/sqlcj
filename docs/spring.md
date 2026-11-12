@@ -208,9 +208,12 @@ where Spring Boot looks for JPA entities and Spring Data repositories.
 
 ## Several Databases
 
-Each database gets its own configuration file, Java package, and output
-directory, because a `java` block holds one package and one `java.out`, and the
-manifest of an output directory records the files generated into it:
+Each database gets its own configuration file and Java package, because a
+`java` block holds one package and one `java.out`. The two configurations may
+share one `java.out`, because each package of an output directory has a
+manifest of its own and a run cleans up its own package alone; generating the
+same package into the same `java.out` from two configuration files is refused
+with a diagnostic. The configurations below keep one output directory each:
 
 ```yaml
 version: "1"

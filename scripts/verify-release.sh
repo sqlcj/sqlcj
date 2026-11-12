@@ -12,14 +12,18 @@
 # Generation is verified repeatedly over the copied sample. The CLI first
 # generates it with '--config' from an empty sibling directory, which must stay
 # empty, and then generates it again to prove that the sources and the output
-# manifest are byte-identical. Two scratch configurations outside the sample
-# then generate the query groups 'Author' and 'Library' and next only 'Writer',
-# proving that a renamed or removed entry leaves no stale repository and a
-# manifest listing the surviving files alone. Both entries share the one
-# 'AuthorsRow' record and the one 'BookFormat' enum the package generates. The
-# final generation uses the sample's own 'sqlcj.yaml' from the sample directory
-# and must restore the first generated output byte for byte before the sample
-# is compiled and run. The sample's migrations declare an
+# manifest are byte-identical. One scratch configuration outside the sample
+# then generates the query groups 'Author' and 'Library' into a scratch output
+# directory of its own and next only 'Writer', proving that a renamed or
+# removed entry leaves no stale repository and a manifest listing the surviving
+# files alone, below its '# config:' owner line. Both entries share the one
+# 'AuthorsRow' record and the one 'BookFormat' enum the package generates.
+# Between those two runs a second configuration generates the package
+# 'com.example.app.other' into the same scratch output directory, and its files
+# must survive both runs. The final generation uses the sample's own
+# 'sqlcj.yaml' from the sample directory and must restore the first generated
+# output byte for byte before the sample is compiled and run. The sample's
+# migrations declare an
 # enum type and add an enum, an array, and a 'JSONB' column to 'books' and an
 # 'updated_at' column to 'authors', so the generated package holds the shared
 # 'AuthorsRow' and 'BooksRow' records in its 'rows' subpackage, the
@@ -214,7 +218,7 @@ rm -rf "${sample_dir}/target"
 
 generated_root="${sample_dir}/target/generated-sources/sqlcj"
 generated_package="${generated_root}/com/example/app/db"
-manifest_file="${generated_root}/sqlcj-manifest.txt"
+manifest_file="${generated_package}/sqlcj-manifest.txt"
 
 elsewhere_dir="${workspace}/elsewhere"
 first_generation="${workspace}/first-generation"
@@ -251,7 +255,12 @@ log "Verifying stale repository cleanup"
 regeneration_dir="${workspace}/regeneration"
 mkdir -p "${regeneration_dir}"
 
-cat > "${regeneration_dir}/author-and-library.yaml" <<'YAML'
+regeneration_root="${regeneration_dir}/generated"
+regeneration_package="${regeneration_root}/com/example/app/db"
+other_package="${regeneration_root}/com/example/app/other"
+regeneration_manifest="${regeneration_package}/sqlcj-manifest.txt"
+
+cat > "${regeneration_dir}/sqlcj.yaml" <<'YAML'
 version: "1"
 sql:
   - name: Author
@@ -262,10 +271,59 @@ sql:
     queries: ../sample/sql/queries.sql
 java:
   package: com.example.app.db
-  out: ../sample/target/generated-sources/sqlcj
+  out: generated
 YAML
 
-cat > "${regeneration_dir}/writer.yaml" <<'YAML'
+cat > "${regeneration_dir}/other.yaml" <<'YAML'
+version: "1"
+sql:
+  - name: Other
+    schema: ../sample/sql/migrations
+    queries: ../sample/sql/queries.sql
+java:
+  package: com.example.app.other
+  out: generated
+YAML
+
+(cd "${elsewhere_dir}" && java -jar "${cli_jar}" generate \
+    --config ../regeneration/sqlcj.yaml)
+
+for generated in repositories/AuthorRepository repositories/LibraryRepository \
+    rows/AuthorsRow rows/BooksRow enums/BookFormat; do
+    [ -f "${regeneration_package}/${generated}.java" ] \
+        || fail "the renamed-entry setup is missing ${regeneration_package}/${generated}.java"
+done
+
+shared_row_count=$(find "${regeneration_package}" -type f -name 'AuthorsRow.java' | wc -l)
+
+[ "${shared_row_count}" -eq 1 ] \
+    || fail "expected the two entries to share 1 row record but found ${shared_row_count}"
+
+shared_enum_count=$(find "${regeneration_package}" -type f -name 'BookFormat.java' | wc -l)
+
+[ "${shared_enum_count}" -eq 1 ] \
+    || fail "expected the two entries to share 1 enum but found ${shared_enum_count}"
+
+log "Generating a second configuration into the same output directory"
+
+(cd "${elsewhere_dir}" && java -jar "${cli_jar}" generate \
+    --config ../regeneration/other.yaml)
+
+for generated in repositories/OtherRepository rows/AuthorsRow rows/BooksRow \
+    enums/BookFormat; do
+    [ -f "${other_package}/${generated}.java" ] \
+        || fail "the second configuration is missing ${other_package}/${generated}.java"
+done
+
+for generated in repositories/AuthorRepository repositories/LibraryRepository \
+    rows/AuthorsRow rows/BooksRow enums/BookFormat; do
+    [ -f "${regeneration_package}/${generated}.java" ] \
+        || fail "the second configuration deleted ${regeneration_package}/${generated}.java"
+done
+
+other_files=$(cd "${other_package}" && find . -type f | sort)
+
+cat > "${regeneration_dir}/sqlcj.yaml" <<'YAML'
 version: "1"
 sql:
   - name: Writer
@@ -273,55 +331,43 @@ sql:
     queries: ../sample/sql/queries.sql
 java:
   package: com.example.app.db
-  out: ../sample/target/generated-sources/sqlcj
+  out: generated
 YAML
 
 (cd "${elsewhere_dir}" && java -jar "${cli_jar}" generate \
-    --config ../regeneration/author-and-library.yaml)
-
-for generated in repositories/AuthorRepository repositories/LibraryRepository \
-    rows/AuthorsRow rows/BooksRow enums/BookFormat; do
-    [ -f "${generated_package}/${generated}.java" ] \
-        || fail "the renamed-entry setup is missing ${generated_package}/${generated}.java"
-done
-
-shared_row_count=$(find "${generated_root}" -type f -name 'AuthorsRow.java' | wc -l)
-
-[ "${shared_row_count}" -eq 1 ] \
-    || fail "expected the two entries to share 1 row record but found ${shared_row_count}"
-
-shared_enum_count=$(find "${generated_root}" -type f -name 'BookFormat.java' | wc -l)
-
-[ "${shared_enum_count}" -eq 1 ] \
-    || fail "expected the two entries to share 1 enum but found ${shared_enum_count}"
-
-(cd "${elsewhere_dir}" && java -jar "${cli_jar}" generate \
-    --config ../regeneration/writer.yaml)
+    --config ../regeneration/sqlcj.yaml)
 
 for repository in AuthorRepository LibraryRepository; do
-    if [ -e "${generated_package}/repositories/${repository}.java" ]; then
+    if [ -e "${regeneration_package}/repositories/${repository}.java" ]; then
         fail "regenerating left the stale \
-${generated_package}/repositories/${repository}.java behind"
+${regeneration_package}/repositories/${repository}.java behind"
     fi
 done
 
-stale_count=$(find "${generated_root}" -type f -name '*.java' | wc -l)
+stale_count=$(find "${regeneration_package}" -type f -name '*.java' | wc -l)
 
 [ "${stale_count}" -eq 4 ] \
     || fail "expected 4 generated sources after the rename but found ${stale_count}"
 
 for generated in repositories/WriterRepository rows/AuthorsRow rows/BooksRow \
     enums/BookFormat; do
-    [ -f "${generated_package}/${generated}.java" ] \
-        || fail "the surviving generated sources are missing ${generated_package}/${generated}.java"
+    [ -f "${regeneration_package}/${generated}.java" ] \
+        || fail "the surviving generated sources are missing \
+${regeneration_package}/${generated}.java"
 done
 
+surviving_other_files=$(cd "${other_package}" && find . -type f | sort)
+
+[ "${other_files}" = "${surviving_other_files}" ] \
+    || fail "regenerating one package changed the other package: ${surviving_other_files}"
+
 expected_manifest="${workspace}/expected-manifest.txt"
-printf 'com/example/app/db/enums/BookFormat.java\ncom/example/app/db/repositories/WriterRepository.java\ncom/example/app/db/rows/AuthorsRow.java\ncom/example/app/db/rows/BooksRow.java\n' \
+printf '# config: ../sqlcj.yaml\ncom/example/app/db/enums/BookFormat.java\ncom/example/app/db/repositories/WriterRepository.java\ncom/example/app/db/rows/AuthorsRow.java\ncom/example/app/db/rows/BooksRow.java\n' \
     > "${expected_manifest}"
 
-cmp "${expected_manifest}" "${manifest_file}" \
-    || fail "the manifest does not list the surviving files alone: $(cat "${manifest_file}")"
+cmp "${expected_manifest}" "${regeneration_manifest}" \
+    || fail "the manifest does not list the surviving files alone: \
+$(cat "${regeneration_manifest}")"
 
 log "Generating sources with the packaged CLI"
 

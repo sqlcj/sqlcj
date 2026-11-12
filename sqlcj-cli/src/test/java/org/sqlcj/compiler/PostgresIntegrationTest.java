@@ -7491,7 +7491,7 @@ class PostgresIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, tempDir.resolve("sqlcj.yaml"));
 
         Files.createDirectories(classesDirectory);
 
@@ -7512,6 +7512,7 @@ class PostgresIntegrationTest {
             generatedFiles
                 .filter(Files::isRegularFile)
                 .map(Path::toString)
+                .filter(path -> path.endsWith(".java"))
                 .sorted()
                 .forEach(arguments::add);
         }

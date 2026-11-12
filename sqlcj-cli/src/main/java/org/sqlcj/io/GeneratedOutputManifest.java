@@ -8,36 +8,64 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 /**
- * Records the generated files of one successful run in {@code java.out} and
- * deletes the files a previous run recorded that this run did not produce.
+ * Records the generated files of one package of one successful run and deletes
+ * the files a previous run of that package recorded that this run did not
+ * produce.
  *
- * <p>Every entry is one generated file path relative to the output directory,
- * with {@code /} between its name elements, so a manifest written on one
- * filesystem reads the same on another.
+ * <p>One manifest governs one {@code java.package} inside one {@code java.out}
+ * and sits in the directory of that package, so configurations with different
+ * packages may share an output directory. Its first line names the
+ * configuration file that owns the package, and every line after it is one
+ * generated file path relative to the output directory, with {@code /} between
+ * its name elements, so a manifest written on one filesystem reads the same on
+ * another.
  */
 public final class GeneratedOutputManifest {
 
-    /** The manifest file name, inside the output directory. */
+    /** The manifest file name, inside the generated package's directory. */
     public static final String FILE_NAME = "sqlcj-manifest.txt";
 
+    /** The start of the first line, which names the owning configuration. */
+    private static final String CONFIGURATION_PREFIX = "# config: ";
+
+    /** The configuration and the entries one manifest holds. */
+    public record Contents(String configuration, List<String> entries) {
+    }
+
     /**
-     * The entries of the manifest a previous run wrote, or no entry when the
-     * output directory holds no manifest.
+     * The owning configuration one manifest records: the configuration file's
+     * path relative to the output directory, with {@code /} between its name
+     * elements, so an output directory generated on another machine names the
+     * same configuration file.
      */
-    public List<String> read(Path outputDirectory) throws IOException {
-        Path manifestPath = manifestPath(outputDirectory);
+    public String configuration(Path outputDirectory, Path configFile) {
+        return entry(
+            outputDirectory.toAbsolutePath()
+                .normalize()
+                .relativize(configFile.toAbsolutePath().normalize())
+        );
+    }
+
+    /**
+     * The contents of the manifest a previous run of this package wrote, or
+     * nothing when the package holds no manifest.
+     */
+    public Optional<Contents> read(Path outputDirectory, String packageName) throws IOException {
+        Path manifestPath = manifestPath(outputDirectory, packageName);
 
         if (!Files.exists(manifestPath)) {
-            return List.of();
+            return Optional.empty();
         }
 
+        List<String> lines;
+
         try {
-            return List.copyOf(
-                Files.readAllLines(manifestPath, StandardCharsets.UTF_8)
-            );
+            lines = Files.readAllLines(manifestPath, StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new IOException(
                 "Cannot read output manifest: %s: %s"
@@ -45,6 +73,22 @@ public final class GeneratedOutputManifest {
                 e
             );
         }
+
+        if (lines.isEmpty()) {
+            return Optional.of(new Contents("", List.of()));
+        }
+
+        return Optional.of(
+            new Contents(
+                configurationOf(lines.get(0)),
+                List.copyOf(lines.subList(1, lines.size()))
+            )
+        );
+    }
+
+    /** Reports whether the entries of a previous manifest list one path. */
+    public boolean lists(List<String> entries, Path generatedPath) {
+        return entries.contains(entry(generatedPath));
     }
 
     /**
@@ -68,11 +112,22 @@ public final class GeneratedOutputManifest {
         }
     }
 
-    /** Records the generated paths of one successful run, one entry per line. */
-    public void write(Path outputDirectory, List<Path> generatedPaths) throws IOException {
-        Path manifestPath = manifestPath(outputDirectory);
+    /**
+     * Records the owning configuration and the generated paths of one
+     * successful run of one package, one entry per line.
+     */
+    public void write(
+        Path outputDirectory,
+        String packageName,
+        String configuration,
+        List<Path> generatedPaths
+    ) throws IOException {
+        Path manifestPath = manifestPath(outputDirectory, packageName);
 
-        StringBuilder content = new StringBuilder();
+        StringBuilder content = new StringBuilder()
+            .append(CONFIGURATION_PREFIX)
+            .append(configuration)
+            .append('\n');
 
         entries(generatedPaths)
             .stream()
@@ -80,6 +135,8 @@ public final class GeneratedOutputManifest {
             .forEach(entry -> content.append(entry).append('\n'));
 
         try {
+            Files.createDirectories(manifestPath.getParent());
+
             Files.writeString(
                 manifestPath,
                 content,
@@ -206,7 +263,21 @@ public final class GeneratedOutputManifest {
         return entry.toString();
     }
 
-    private Path manifestPath(Path outputDirectory) {
-        return outputDirectory.resolve(FILE_NAME);
+    /** The manifest of one package, inside that package's own directory. */
+    private Path manifestPath(Path outputDirectory, String packageName) {
+        String[] segments = packageName.split("\\.");
+
+        return outputDirectory
+            .resolve(Path.of(segments[0], Arrays.copyOfRange(segments, 1, segments.length)))
+            .resolve(FILE_NAME);
+    }
+
+    /** The configuration the first line of a manifest names. */
+    private String configurationOf(String line) {
+        if (!line.startsWith(CONFIGURATION_PREFIX)) {
+            return "";
+        }
+
+        return line.substring(CONFIGURATION_PREFIX.length());
     }
 }

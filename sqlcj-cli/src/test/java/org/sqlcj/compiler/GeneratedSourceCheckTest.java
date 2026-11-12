@@ -172,7 +172,8 @@ class GeneratedSourceCheckTest {
             new Config(
                 List.of(new SqlConfig(group, schema.toString(), queries.toString())),
                 new JavaConfig(generatedDirectory.toString(), "generated")
-            )
+            ),
+            tempDir.resolve("sqlcj.yaml")
         );
     }
 

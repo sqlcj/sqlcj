@@ -168,7 +168,7 @@ class ReferenceServiceIntegrationTest {
 
     /** The files the three schema inputs generate, relative to {@code java.out}. */
     private static final Set<String> GENERATED_FILES = Set.of(
-        "sqlcj-manifest.txt",
+        "generated/sqlcj-manifest.txt",
         "generated/repositories/TrackerRepository.java",
         "generated/rows/TasksRow.java",
         "generated/rows/ProjectsRow.java",
@@ -2486,7 +2486,7 @@ class ReferenceServiceIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, tempDir.resolve("sqlcj.yaml"));
     }
 
     /** Every generated file of one output directory, by its relative path. */

@@ -652,7 +652,7 @@ public abstract class PostgresApplicationScenarios {
             new JavaConfig(generatedDirectory.toString(), generatedPackage())
         );
 
-        new SqlcjCompiler().compile(config);
+        new SqlcjCompiler().compile(config, tempDir.resolve("sqlcj.yaml"));
 
         Files.createDirectories(classesDirectory);
 
@@ -675,6 +675,7 @@ public abstract class PostgresApplicationScenarios {
             generatedFiles
                 .filter(Files::isRegularFile)
                 .map(Path::toString)
+                .filter(path -> path.endsWith(".java"))
                 .sorted()
                 .forEach(arguments::add);
         }
