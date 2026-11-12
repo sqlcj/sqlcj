@@ -303,7 +303,11 @@ table names, column names, and projection aliases — become conventional Java
 identifiers.
 SQL identifier delimiters are removed before a name is converted, so the quoted
 column `"user id"` has the JDBC label `user id` and generates the component
-`userId`, while executable SQL keeps the query exactly as written.
+`userId`. The executed SQL keeps the query as written apart from its
+placeholders, its written type hints, and the columns of each expanded
+wildcard, which are written under the name PostgreSQL stores, so a `*` over
+that table lists the column as `"user id"`; see
+[Wildcards in the executed statement](queries.md#wildcards-in-the-executed-statement).
 
 Every name is derived from its SQL spelling by one deterministic rule set that
 uses no locale-dependent case mapping and no configuration:

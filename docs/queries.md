@@ -577,6 +577,103 @@ WHERE u.name = :name;
   `EXISTS` of a cast, are each still rejected as a computed projection, naming
   the item as the query writes it.
 
+### Wildcards in the executed statement
+
+Every wildcard sqlcj expands is written, in the statement the database
+executes, as the columns it was analyzed as, in the order
+[Projections](#projections) states, joined by `, `. That is every wildcard of
+an analyzed projection — at the top level, in a `WITH` body, in a subquery or
+`LATERAL` source, and in a branch of a set operation — a `RETURNING *` and a
+`RETURNING <target>.*`, and a wildcard of the `SELECT` an `INSERT` writes its
+rows from.
+
+The executed statement therefore selects the columns the analysis resolved, so
+a column a later migration adds to a wildcard's table changes no value an older
+build reads. The probe
+
+```sql
+-- name: ListOrderCustomerEmails :many
+SELECT o.*, c.email
+FROM orders o
+JOIN customers c ON c.id = o.customer_id;
+```
+
+executes as
+
+```sql
+SELECT "o"."id", "o"."customer_id", "o"."total", c.email
+FROM orders o
+JOIN customers c ON c.id = o.customer_id;
+```
+
+so `c.email` is read from its own position however many columns `orders`
+gains, and every item written beside the wildcard reaches the database as
+written.
+
+- Each listed column is written `"<qualifier>"."<column>"`. Each name is
+  written as PostgreSQL stores it: a delimited name without its delimiters, an
+  undelimited name with the ASCII letters `A` to `Z` folded to lower case, and
+  any `"` of the name itself doubled. Every name is written delimited, so a
+  column named like a keyword or holding a space reads the column it names: an
+  `Items` table whose columns are declared `Mixed`, `"Delimited"`,
+  `"two words"`, and `"select"` expands `SELECT * FROM Items` to
+  `SELECT "items"."mixed", "items"."Delimited", "items"."two words",
+  "items"."select" FROM Items`.
+- The qualifier is the name the source exposes: its alias where the `FROM` item
+  writes one, and otherwise its table or `WITH` name as that item writes it,
+  without a schema qualifier, folded by the same rule. The same read written
+  `SELECT * FROM "Items"` therefore writes `"Items"` as its qualifier,
+  `SELECT I.* FROM Items I` writes `"i"`, and `SELECT "I".* FROM Items AS "I"`
+  writes `"I"`. A `RETURNING` wildcard uses the name the write exposes its
+  target as, so
+  `INSERT INTO users AS u (id, name) VALUES ($1, $2) RETURNING *` executes its
+  clause as `RETURNING "u"."id", "u"."name", "u"."active"` while
+  `INSERT INTO users (id, name) VALUES ($1, $2) RETURNING *` writes
+  `RETURNING "users"."id", "users"."name", "users"."active"`.
+- A wildcard of a derived source lists the columns that source exposes under
+  the name it is read through, and the body of such a source expands its own
+  wildcard where it is written, so
+  `WITH recent AS (SELECT * FROM orders) SELECT * FROM recent` executes as
+  `WITH recent AS (SELECT "orders"."id", "orders"."user_id", "orders"."total"
+  FROM orders) SELECT "recent"."id", "recent"."user_id", "recent"."total" FROM
+  recent`, and `SELECT s.* FROM (SELECT * FROM users) s` as
+  `SELECT "s"."id", "s"."name" FROM (SELECT "users"."id", "users"."name" FROM
+  users) s`.
+- An insert's `SELECT` expands the same way, so
+  `INSERT INTO memberships (project_id, user_id) SELECT * FROM invitations`
+  executes as `INSERT INTO memberships (project_id, user_id) SELECT
+  "invitations"."project_id", "invitations"."user_id" FROM invitations`.
+- A bare `*` over a `USING` or `NATURAL` join group writes each merged column
+  unqualified and delimited, at the position
+  [Projections](#projections) lists it, and no `COALESCE`: that unqualified
+  name is PostgreSQL's own merged column for every join kind, the `FULL` join
+  included, and it reads the merged value there. So
+  `SELECT * FROM tasks t JOIN counters c USING (project_id)`, and the same read
+  written `FULL JOIN`, each project
+  `SELECT "project_id", "t"."id", "t"."owner_id", "t"."sprint_id", "t"."title",
+  "c"."owner_id", "c"."sprint_id", "c"."total"`, while
+  `SELECT t.* FROM tasks t JOIN counters c USING (project_id)` lists that one
+  source's own columns qualified, the merged name included, as
+  `SELECT "t"."id", "t"."project_id", "t"."owner_id", "t"."sprint_id",
+  "t"."title"`.
+- A bare `*` whose merged column another source of the same `FROM` clause also
+  has is rejected, because the executed statement can only write that column
+  unqualified, which PostgreSQL would read as an ambiguous reference:
+  `A bare * cannot list the merged column '<c>' of a USING or NATURAL join,
+  because another source of the same FROM clause also has a column '<c>'; list
+  the columns the query needs instead.` A further `USING` join on the same
+  name merges its own column away instead of exposing it, so
+  `SELECT * FROM tasks t JOIN counters c USING (project_id) JOIN sprints s
+  USING (project_id)` is accepted and writes the one merged `"project_id"`.
+- A wildcard sqlcj does not expand reaches the database as the query writes it,
+  as every unanalyzed item does, so the `*` of the predicate subquery in
+  `SELECT u.id FROM users u WHERE EXISTS (SELECT * FROM profiles p WHERE
+  p.user_id = u.id)` stays written as `*`.
+- The SQL text block of a generated method is the executed statement, its `?`
+  placeholders, its written `::<type>` hints, and its expanded columns
+  included, so it may be copied into `EXPLAIN` to plan the statement that
+  actually runs.
+
 ### Predicates
 
 A `WHERE` clause may combine:
@@ -793,8 +890,10 @@ placeholder takes.
 ### Ordering
 
 `ORDER BY` over direct columns is supported for a stable list order, as in
-`ORDER BY id`. sqlcj rewrites only `$N` parameter tokens; the rest of the
-statement, including the ordering clause, reaches JDBC exactly as written.
+`ORDER BY id`. The ordering clause is not analyzed: apart from a placeholder it
+writes, it reaches JDBC exactly as written, and the three ways the executed
+statement differs from the written one at all are listed in
+[Parameters](#parameters).
 
 An `ORDER BY` placeholder that states its type with a cast is one parameter of
 the query, which is how a sort key chosen by the caller compiles:
@@ -1408,6 +1507,11 @@ A wildcard returns the complete row of the target alone, so:
   `RETURNING * is not supported with UPDATE ... FROM or DELETE ... USING; write
   RETURNING <target>.* for the target's row.`
 
+A returned wildcard reaches the database as the columns it was analyzed as,
+written under the name the write exposes its target as, which
+[Wildcards in the executed statement](#wildcards-in-the-executed-statement)
+states.
+
 `RETURNING *` and `RETURNING <target>.*` expand the target's columns, so a
 column the schema recorded without a mapped type is rejected there as
 `Column '<c>' has unsupported type <T>; a wildcard selects it, so list the
@@ -1472,12 +1576,14 @@ inserts are stated in
 
 A query writes its parameters either as PostgreSQL `$N` placeholders or as
 `:name` placeholders, and one query uses one of the two forms. The compiler
-replaces each real placeholder token with a JDBC `?` and leaves every other
-character of the statement byte-for-byte unchanged, so `$1` or `:id` inside a
-string literal, a quoted identifier, or a comment is not a parameter. The only
-other difference between the written and the executed statement is the
-`::<type>` sqlcj writes directly after the `?` of an occurrence it types from
-another occurrence of the same parameter, which the mixed-occurrence rule below
+replaces each real placeholder token with a JDBC `?`, so `$1` or `:id` inside a
+string literal, a quoted identifier, or a comment is not a parameter. The
+executed statement differs from the written one in three ways and nowhere
+else: those placeholders, the `::<type>` sqlcj writes directly after the `?` of
+an occurrence it types from another occurrence of the same parameter, which the
+mixed-occurrence rule below states, and the columns of each expanded wildcard,
+which
+[Wildcards in the executed statement](#wildcards-in-the-executed-statement)
 states.
 
 - Placeholder indexes must be positive and contiguous from `$1`.
@@ -1553,7 +1659,8 @@ states.
   `(:email IS NULL OR email = :email)`, whose type comes from the compared
   column, as `(?::varchar IS NULL OR email = ?)`. A clause- or
   cast-typed occurrence stays a bare `?`, so a query whose every occurrence one
-  of them types executes exactly the statement it writes. The written type is
+  of them types executes exactly the statement it writes, apart from its
+  expanded wildcards. The written type is
   PostgreSQL's own name of the parameter's type: `int2`, `int4`, `int8`,
   `bool`, `varchar`, or `bpchar` for a blank-padded character type, `text`,
   `date`, `time`, `timestamp`, `timestamptz`, `numeric`, `float4`, `float8`,
@@ -1638,7 +1745,8 @@ A **criteria query** filters its rows by criteria the caller may leave out: one
 query serves every combination of them, because a `null` argument switches its
 own criterion off. The query stays one static SQL text, so the statement the
 database receives is the statement the query file writes, differing from it only
-at its placeholders; sqlcj assembles no SQL at run time.
+at its placeholders and at the columns of each wildcard it expands, which
+`SearchTasks` below writes as `SELECT *`; sqlcj assembles no SQL at run time.
 
 Each criterion is one predicate guarded by a null test of its own parameter,
 which a `null` argument makes true:
@@ -2050,7 +2158,7 @@ public final class AuthorRepository {
                 """
                 INSERT INTO authors (name, bio)
                 VALUES (?, ?)
-                RETURNING *;""",
+                RETURNING "authors"."id", "authors"."name", "authors"."bio", "authors"."created_at";""",
                 java.util.Arrays.asList(name, bio),
                 authorsRowMapper
         );
@@ -2068,7 +2176,7 @@ public final class AuthorRepository {
                 "AuthorRepository",
                 "FindAuthor",
                 """
-                SELECT *
+                SELECT "authors"."id", "authors"."name", "authors"."bio", "authors"."created_at"
                 FROM authors
                 WHERE id = ?;""",
                 java.util.Collections.singletonList(id),
@@ -2079,6 +2187,12 @@ public final class AuthorRepository {
     // listAuthors, updateAuthorBio, and deleteAuthor follow here.
 }
 ```
+
+Each text block above is the statement the database executes, so the `*` of
+`CreateAuthor` and of `FindAuthor` stands there as the `authors` columns the
+analysis resolved, which
+[Wildcards in the executed statement](#wildcards-in-the-executed-statement)
+states.
 
 `CreateAuthor`, `GetAuthor`, `FindAuthor`, and `ListAuthors` each return one
 complete `authors` row, so all four use the one `AuthorsRow` record and the one
@@ -2187,6 +2301,15 @@ header-line order, before the run exits with status `1` having written nothing.
   rejected as
   `SELECT * without FROM selects no columns; list each value with a cast and an
   alias, such as SELECT now()::timestamptz AS now.`
+- A bare `*` over a `USING` or `NATURAL` join whose merged column another
+  source of the same `FROM` clause also has, which the executed statement can
+  only write unqualified, rejected as
+  `A bare * cannot list the merged column '<c>' of a USING or NATURAL join,
+  because another source of the same FROM clause also has a column '<c>'; list
+  the columns the query needs instead.`, as
+  [Wildcards in the executed statement](#wildcards-in-the-executed-statement)
+  states. A source joined into the group on the same name merges its own
+  column away instead, so it is accepted.
 - A `WITH` clause outside the subset, on a read and on a write alike: a
   data-modifying body and a `SEARCH` or `CYCLE` clause, each with the
   diagnostic [Sources](#sources) states, and, in a recursive list, a read of
@@ -2764,6 +2887,48 @@ Reads:
   reads the merged column first and in its wider type and a
   `FULL JOIN ... USING` reads the present side's value for an unmatched row on
   each side.
+- `QueryAnalyzerTest.shouldWriteTheColumnsOfASingleSourceWildcard`,
+  `QueryAnalyzerTest.shouldWriteTheColumnsOfAJoinedWildcard`,
+  `QueryAnalyzerTest.shouldWriteTheColumnsOfAWildcardBesideAColumnOfAnotherSource`,
+  `QueryAnalyzerTest.shouldWriteTheColumnsOfAWildcardOverAMergingGroup`,
+  `QueryAnalyzerTest.shouldWriteTheColumnsOfABareWildcardOverTwoMergingJoinsOfOneName`,
+  `QueryAnalyzerTest.shouldRejectABareWildcardWhoseMergedColumnIsAmbiguous`,
+  `QueryAnalyzerTest.shouldWriteTheColumnsOfAWildcardOfADerivedSource`,
+  `QueryAnalyzerTest.shouldWriteTheColumnsOfEachSetOperationBranchWildcard`,
+  `QueryAnalyzerTest.shouldWriteTheColumnsOfAReturnedWildcard`,
+  `QueryAnalyzerTest.shouldWriteTheColumnsOfAReturnedWildcardBesideAnotherItem`,
+  `QueryAnalyzerTest.shouldCountOneInsertSelectItemPerWildcardColumn`,
+  `QueryAnalyzerTest.shouldLeaveTheWildcardOfAPredicateSubqueryAsWritten`,
+  `QueryAnalyzerTest.shouldWriteTypeHintsAroundAnExpandedWildcard`, and
+  `QueryAnalyzerTest.shouldWriteTheStoredNameOfEachExpandedColumn` pin the
+  executed statement of each expanded wildcard: a single-source and a joined
+  one, qualified and bare, the wildcard beside a column of another source, a
+  merging group's unqualified merged column under each join kind and the
+  qualified columns of one of its sources, two merging joins of one name, the
+  rejection of the ambiguous merged column, a `WITH` body and a subquery
+  source with its own wildcard, each branch of a set operation, every
+  `RETURNING` form and one beside another item, an insert's `SELECT`, the
+  predicate subquery's `*` that stays as written, the type hints and binding
+  order around an expanded wildcard, and the stored name of every folded,
+  delimited, spaced, and keyword name;
+  `DefaultSchemaParserTest.shouldStoreTheFoldedNameOfEachCreatedColumn`,
+  `DefaultSchemaParserTest.shouldStoreTheFoldedNameOfAnAddedColumn`,
+  `DefaultSchemaParserTest.shouldStoreTheFoldedNameOfARenamedColumn`, and
+  `DefaultSchemaParserTest.shouldKeepTheStoredNameOfEachChangedColumn` cover
+  the stored name each `CREATE TABLE`, `ADD COLUMN`, and `RENAME COLUMN`
+  records and the type, nullability, and enum-rename changes that keep it;
+  `SqlcjCompilerIntegrationTest.shouldGenerateTheAnalyzedColumnsOfAWildcard`
+  pins the generated text block of the wildcard beside another source's column
+  and compiles its repository; and
+  `PostgresIntegrationTest.shouldReadTheWildcardColumnsAfterTheDatabaseGainsAColumn`,
+  `PostgresIntegrationTest.shouldReadTheWildcardColumnsOfATableWithAnUnmodeledColumn`,
+  and
+  `PostgresIntegrationTest.shouldReadTheWildcardColumnsOfFoldedAndDelimitedNames`
+  execute them against PostgreSQL 16, where the probe still reads the email
+  after `orders` gains a column, `SELECT *` and `RETURNING *` read the
+  analyzed columns of a table whose database copy holds an unmodeled column
+  between two of them, and the folded and delimited names of a wildcard's
+  source and columns read their own columns.
 - `QueryAnalyzerTest.shouldAnalyzeAnInnerLateralBodyCorrelatedToAnEarlierSource`,
   `QueryAnalyzerTest.shouldReadAnEarlierGroupAndItsOwnGroupInsideALateralBody`,
   `QueryAnalyzerTest.shouldRejectALeftSideReferenceInsideARightOrFullJoinedLateralBody`,
