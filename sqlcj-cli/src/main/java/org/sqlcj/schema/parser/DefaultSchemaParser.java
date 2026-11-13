@@ -246,10 +246,11 @@ public class DefaultSchemaParser implements SchemaParser {
      * every top-level action is ignored, which is decided from the statement's
      * tokens alone, without rewriting it and without resolving its table.
      *
-     * <p>None of those actions can change a modeled column's existence, name,
-     * type, or nullability: nullability comes from {@code NOT NULL} alone, and
-     * PostgreSQL requires a column to be {@code NOT NULL} already before
-     * {@code ADD GENERATED ... AS IDENTITY}. Without this rule no
+     * <p>None of those actions changes a modeled column's existence, name, or
+     * type, and PostgreSQL requires a column to be {@code NOT NULL} already
+     * before {@code ADD GENERATED ... AS IDENTITY}. A key sqlcj cannot read
+     * the columns of states none to mark non-null, so such a column keeps the
+     * nullability its own declaration states. Without this rule no
      * {@code pg_dump} snapshot with an identity column loads, because the parser
      * reads neither the identity form {@code pg_dump} writes nor an
      * {@code EXCLUDE}, {@code DEFERRABLE INITIALLY DEFERRED},
@@ -1623,13 +1624,14 @@ public class DefaultSchemaParser implements SchemaParser {
      * Reports whether one {@code ALTER TABLE} action changes a modeled column
      * and therefore reaches the partitions of its table: {@code ADD COLUMN},
      * {@code DROP COLUMN}, {@code RENAME COLUMN}, a new column type,
-     * {@code SET NOT NULL}, and {@code DROP NOT NULL}.
+     * {@code SET NOT NULL}, {@code DROP NOT NULL}, and an added
+     * {@code PRIMARY KEY}, which PostgreSQL applies to every partition as well.
      */
     private boolean propagatesToPartitions(AlterExpression expression) {
         AlterOperation operation = expression.getOperation();
 
         if (operation == AlterOperation.ADD) {
-            return isNotEmpty(expression.getColDataTypeList());
+            return isNotEmpty(expression.getColDataTypeList()) || addsPrimaryKey(expression);
         }
 
         if (operation == AlterOperation.DROP) {
@@ -1660,7 +1662,9 @@ public class DefaultSchemaParser implements SchemaParser {
      * Applies one {@code ALTER TABLE} action and returns the altered table.
      *
      * <p>An action that cannot change a modeled column's existence, name, type,
-     * or nullability is accepted and leaves the table unchanged. An action that
+     * or nullability is accepted and leaves the table unchanged. An added
+     * {@code PRIMARY KEY} whose columns the parser reads marks them non-null
+     * and records no constraint. An action that
      * would change a column in a way sqlcj does not model, and an action sqlcj
      * does not recognize, is rejected naming the action's own SQL.
      */
@@ -1697,6 +1701,10 @@ public class DefaultSchemaParser implements SchemaParser {
 
         if (operation == AlterOperation.ATTACH_PARTITION || operation == AlterOperation.DETACH_PARTITION) {
             return changePartitionLink(expression, tables, table);
+        }
+
+        if (addsPrimaryKey(expression)) {
+            return changeNullability(expression.getIndex().getColumnsNames(), false, table);
         }
 
         if (isIgnoredConstraintAction(expression) || isIgnoredTableAction(operation)) {
@@ -1840,11 +1848,36 @@ public class DefaultSchemaParser implements SchemaParser {
     }
 
     /**
+     * Reports whether one {@code ALTER TABLE} action adds a {@code PRIMARY KEY}
+     * whose columns the parser reads,
+     * {@code ADD [CONSTRAINT <name>] PRIMARY KEY (<columns>)}, which PostgreSQL
+     * sets {@code NOT NULL} on. A key form that states no column sqlcj reads is
+     * not one and stays ignored, so its columns keep the nullability their own
+     * declarations state.
+     */
+    private boolean addsPrimaryKey(AlterExpression expression) {
+        if (expression.getOperation() != AlterOperation.ADD || isNotEmpty(expression.getColDataTypeList())) {
+            return false;
+        }
+
+        Index index = expression.getIndex();
+
+        return index != null
+            && index.getKind() == Index.Kind.PRIMARY_KEY
+            && isNotEmpty(index.getColumnsNames());
+    }
+
+    /**
      * Reports whether one {@code ALTER TABLE} action states a constraint sqlcj
-     * accepts without modeling it: adding a primary-key, unique, foreign-key, or
-     * check constraint, dropping a named constraint, or renaming one. The table
-     * itself is still resolved, so a missing table fails as it does for any
-     * other {@code ALTER TABLE}.
+     * accepts without modeling it: adding a unique, foreign-key, or check
+     * constraint or a {@code PRIMARY KEY} whose columns it does not read,
+     * dropping a named constraint, or renaming one. The table itself is still
+     * resolved, so a missing table fails as it does for any other
+     * {@code ALTER TABLE}.
+     *
+     * <p>Dropping a key's constraint leaves its columns non-null, as PostgreSQL
+     * leaves them; only {@code DROP NOT NULL} makes such a column nullable
+     * again.
      */
     private boolean isIgnoredConstraintAction(AlterExpression expression) {
         AlterOperation operation = expression.getOperation();
@@ -1950,11 +1983,11 @@ public class DefaultSchemaParser implements SchemaParser {
      * Reports whether one entry of an {@code ALTER COLUMN} action states an
      * identity change, {@code SET STATISTICS}, {@code SET STORAGE},
      * {@code SET COMPRESSION}, or {@code DROP EXPRESSION}. None of them can
-     * change a column's existence, name, type, or nullability, which comes from
-     * {@code NOT NULL} alone; PostgreSQL requires a column to be
-     * {@code NOT NULL} already before {@code ADD GENERATED ... AS IDENTITY}. The
-     * parser reports each of them in the entry list of the action, without a
-     * declared type.
+     * change a column's existence, name, type, or nullability: PostgreSQL
+     * requires a column to be {@code NOT NULL} already before
+     * {@code ADD GENERATED ... AS IDENTITY} and leaves it {@code NOT NULL}
+     * after {@code DROP IDENTITY}. The parser reports each of them in the entry
+     * list of the action, without a declared type.
      */
     private boolean ignoresColumnAction(AlterExpression.ColumnDataType definition) {
         if (definition.isWithType()) {
@@ -2167,24 +2200,24 @@ public class DefaultSchemaParser implements SchemaParser {
                 throw columnNotFound(table.name(), columnName);
             }
 
-            Column column = columns.get(index);
-
-            columns.set(
-                index,
-                new Column(
-                    column.name(),
-                    column.type(),
-                    nullable,
-                    column.unsupportedType(),
-                    column.enumType(),
-                    column.array(),
-                    column.blankPadded(),
-                    column.sqlName()
-                )
-            );
+            columns.set(index, withNullability(columns.get(index), nullable));
         }
 
         return new Table(table.name(), columns, table.constraints(), table.partitionOf());
+    }
+
+    /** The same column with the stated nullability. */
+    private Column withNullability(Column column, boolean nullable) {
+        return new Column(
+            column.name(),
+            column.type(),
+            nullable,
+            column.unsupportedType(),
+            column.enumType(),
+            column.array(),
+            column.blankPadded(),
+            column.sqlName()
+        );
     }
 
     private boolean listsColumn(Constraint constraint, String columnName) {
@@ -2386,6 +2419,10 @@ public class DefaultSchemaParser implements SchemaParser {
      * recorded constraints. Only the table's own table constraints are
      * recorded, in a partition as in any other table.
      *
+     * <p>A table-level {@code PRIMARY KEY} is read once every element has been,
+     * so it marks the columns it lists non-null wherever they come from, the
+     * element list, a {@code LIKE}, or a partition's parent.
+     *
      * <p>A {@code CREATE TABLE} with neither an element list, the empty element
      * list {@code ()}, nor {@code PARTITION OF} states columns sqlcj cannot
      * determine and is rejected as unsupported table DDL.
@@ -2429,7 +2466,10 @@ public class DefaultSchemaParser implements SchemaParser {
             }
         }
 
-        constraints.addAll(parseTableConstraints(createTable));
+        List<Constraint> tableConstraints = parseTableConstraints(createTable);
+
+        markPrimaryKeyColumnsNonNull(columns, tableConstraints);
+        constraints.addAll(tableConstraints);
 
         return new Table(
             tableName,
@@ -2476,6 +2516,28 @@ public class DefaultSchemaParser implements SchemaParser {
         return tables.get(index);
     }
 
+    /**
+     * Marks every column a {@code PRIMARY KEY} constraint lists non-null, in
+     * its position, because PostgreSQL sets {@code NOT NULL} on a key column.
+     * A listed column the table does not have is left alone, as the constraint
+     * itself is recorded as written.
+     */
+    private void markPrimaryKeyColumnsNonNull(List<Column> columns, List<Constraint> constraints) {
+        for (Constraint constraint : constraints) {
+            if (constraint.type() != ConstraintType.PRIMARY_KEY) {
+                continue;
+            }
+
+            for (String columnName : constraint.columns()) {
+                int index = indexOfColumn(columns, columnName);
+
+                if (index >= 0) {
+                    columns.set(index, withNullability(columns.get(index), false));
+                }
+            }
+        }
+    }
+
     private void addColumn(List<Column> columns, String tableName, Column column) {
         if (indexOfColumn(columns, column.name()) >= 0) {
             throw columnAlreadyExists(tableName, column.name());
@@ -2503,7 +2565,7 @@ public class DefaultSchemaParser implements SchemaParser {
         return new Column(
             columnName(definition),
             mappedType.type(),
-            !isSerial(mappedType.typeName()) && isNullable(definition),
+            isNullableColumn(definition, mappedType.typeName()),
             mappedType.unsupportedType(),
             mappedType.enumType(),
             mappedType.array(),
@@ -2531,6 +2593,19 @@ public class DefaultSchemaParser implements SchemaParser {
         };
     }
 
+    /**
+     * Reports whether one column declaration leaves the column nullable.
+     * PostgreSQL sets {@code NOT NULL} on a serial column, on a column
+     * declared {@code PRIMARY KEY}, and on an identity column, so a column
+     * that states any of them is non-null however it is written.
+     */
+    private boolean isNullableColumn(ColumnDefinition definition, String typeName) {
+        return !isSerial(typeName)
+            && !statesPrimaryKey(definition.getColumnSpecs())
+            && !statesIdentity(definition.getColumnSpecs())
+            && isNullable(definition);
+    }
+
     private boolean isNullable(ColumnDefinition definition) {
         List<String> specs = definition.getColumnSpecs();
 
@@ -2545,6 +2620,54 @@ public class DefaultSchemaParser implements SchemaParser {
         }
 
         return true;
+    }
+
+    /**
+     * Reports whether a column's specs state a column-level
+     * {@code PRIMARY KEY}, which the parser reports as the two words
+     * {@link #parseColumnConstraints} records the constraint from.
+     */
+    private boolean statesPrimaryKey(List<String> specs) {
+        if (specs == null) {
+            return false;
+        }
+
+        for (int i = 0; i < specs.size(); i++) {
+            if (statesWords(specs, i, "PRIMARY", "KEY")) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Reports whether a column's specs state an identity column,
+     * {@code GENERATED ALWAYS AS IDENTITY} or
+     * {@code GENERATED BY DEFAULT AS IDENTITY}.
+     * The parser reports the whole identity spec, with its options, as one
+     * spec, so the specs are lexed with the parser's own lexer before their
+     * words are compared. A generated column,
+     * {@code GENERATED ALWAYS AS (<expression>) STORED}, states its expression
+     * after {@code AS} instead of {@code IDENTITY} and is not one.
+     */
+    private boolean statesIdentity(List<String> specs) {
+        if (specs == null) {
+            return false;
+        }
+
+        List<String> tokens = SchemaSourceSplitter.tokens(String.join(" ", specs));
+
+        for (int i = 0; i < tokens.size(); i++) {
+            if (
+                statesWords(tokens, i, "GENERATED", "ALWAYS", "AS", "IDENTITY")
+                    || statesWords(tokens, i, "GENERATED", "BY", "DEFAULT", "AS", "IDENTITY")
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private List<Constraint> parseColumnConstraints(ColumnDefinition definition) {

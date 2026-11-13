@@ -166,6 +166,18 @@ class PostgresIntegrationTest {
         """;
 
     /**
+     * A snapshot whose key column states neither {@code NOT NULL} nor a value
+     * of its own, as PostgreSQL fills and forbids a null in an identity key.
+     */
+    private static final String IDENTITY_KEY_SCHEMA = """
+        CREATE TABLE sessions
+        (
+            id   BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+            note TEXT
+        );
+        """;
+
+    /**
      * A snapshot of a membership relation, whose rows a read reaches only
      * through an {@code EXISTS} subquery.
      */
@@ -3060,6 +3072,73 @@ class PostgresIntegrationTest {
     }
 
     /**
+     * Proves that a bare identity key, declared without {@code NOT NULL}, round
+     * trips as a value end to end: PostgreSQL accepts the snapshot as written,
+     * the generated {@code RETURNING id} returns the {@code Long} PostgreSQL
+     * generated instead of a record, a {@code SELECT id} returns a
+     * {@code List} of them, and the table's row record carries a non-null
+     * {@code id}.
+     */
+    @Test
+    void shouldReturnTheValueOfABareIdentityKeyAgainstPostgres() throws Exception {
+        execute(IDENTITY_KEY_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(
+            IDENTITY_KEY_SCHEMA,
+            """
+                -- name: InsertSession :one
+                INSERT INTO sessions (note)
+                VALUES ($1)
+                RETURNING id;
+
+                -- name: ListSessionIds :many
+                SELECT id
+                FROM sessions
+                ORDER BY id;
+
+                -- name: ListSessions :many
+                SELECT *
+                FROM sessions
+                ORDER BY id;
+                """
+        );
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Method insertSession = repository.getClass().getMethod(
+                "insertSession",
+                String.class
+            );
+
+            assertEquals(Long.class, insertSession.getReturnType());
+
+            assertEquals(1L, insertSession.invoke(repository, "first"));
+            assertEquals(2L, insertSession.invoke(repository, new Object[] { null }));
+
+            assertEquals(
+                List.of(1L, 2L),
+                repository.getClass().getMethod("listSessionIds").invoke(repository)
+            );
+
+            List<?> rows = (List<?>) repository
+                .getClass()
+                .getMethod("listSessions")
+                .invoke(repository);
+
+            assertEquals(
+                List.of(Long.class, String.class),
+                recordComponentTypes(rows.get(0))
+            );
+
+            assertEquals(1L, component(rows.get(0), "id"));
+            assertEquals("first", component(rows.get(0), "note"));
+            assertEquals(2L, component(rows.get(1), "id"));
+            assertNull(component(rows.get(1), "note"));
+        }
+    }
+
+    /**
      * Proves the replace-an-enum migration end to end: the schema that renames
      * the replacement type onto the replaced name and then renames one of its
      * labels is run as PostgreSQL DDL, and the generated enum carries the
@@ -3285,10 +3364,8 @@ class PostgresIntegrationTest {
 
             assertEquals(
                 1L,
-                component(
-                    findByMarks.invoke(repository, values.get(values.size() - 1)),
-                    "id"
-                )
+                findByMarks.invoke(repository, values.get(values.size() - 1)),
+                "a single primary-key column returns its value"
             );
 
             Object empty = queryMethod.invoke(repository, 2L);
@@ -3664,13 +3741,11 @@ class PostgresIntegrationTest {
 
             assertEquals(
                 1L,
-                component(
-                    assertInstanceOf(
-                        Optional.class,
-                        findByHandle.invoke(repository, "ALICE")
-                    ).orElseThrow(),
-                    "id"
-                )
+                assertInstanceOf(
+                    Optional.class,
+                    findByHandle.invoke(repository, "ALICE")
+                ).orElseThrow(),
+                "a single primary-key column returns its value"
             );
 
             Method findByPattern = repository.getClass().getMethod(
@@ -3680,7 +3755,7 @@ class PostgresIntegrationTest {
 
             assertEquals(
                 List.of(1L),
-                ids(findByPattern.invoke(repository, "ali%"))
+                findByPattern.invoke(repository, "ali%")
             );
 
             Method findByAnyHandle = repository.getClass().getMethod(
@@ -3690,7 +3765,7 @@ class PostgresIntegrationTest {
 
             assertEquals(
                 List.of(1L),
-                ids(findByAnyHandle.invoke(repository, List.of("ALICE", "nobody")))
+                findByAnyHandle.invoke(repository, List.of("ALICE", "nobody"))
             );
 
             Method findAboveAddress = repository.getClass().getMethod(
@@ -3700,12 +3775,12 @@ class PostgresIntegrationTest {
 
             assertEquals(
                 List.of(1L),
-                ids(findAboveAddress.invoke(repository, "192.168.0.1/24"))
+                findAboveAddress.invoke(repository, "192.168.0.1/24")
             );
 
             assertEquals(
                 List.of(),
-                ids(findAboveAddress.invoke(repository, "192.168.0.20/24"))
+                findAboveAddress.invoke(repository, "192.168.0.20/24")
             );
         }
     }
@@ -3853,12 +3928,12 @@ class PostgresIntegrationTest {
 
             assertEquals(
                 List.of(1L, 4L),
-                ids(findRecent.invoke(repository, new SqlInterval(0, 1, 0)))
+                findRecent.invoke(repository, new SqlInterval(0, 1, 0))
             );
 
             assertEquals(
                 List.of(1L, 2L, 3L, 4L),
-                ids(findRecent.invoke(repository, new SqlInterval(1, 0, 0)))
+                findRecent.invoke(repository, new SqlInterval(1, 0, 0))
             );
         }
     }
@@ -3989,14 +4064,12 @@ class PostgresIntegrationTest {
 
             assertEquals(
                 1L,
-                component(
-                    assertInstanceOf(
-                        Optional.class,
-                        findByEmail.invoke(repository, "ALICE@EXAMPLE.COM")
-                    )
-                        .orElseThrow(),
-                    "id"
+                assertInstanceOf(
+                    Optional.class,
+                    findByEmail.invoke(repository, "ALICE@EXAMPLE.COM")
                 )
+                    .orElseThrow(),
+                "a single primary-key column returns its value"
             );
 
             Method findByAnyEmail = repository.getClass().getMethod(
@@ -4006,7 +4079,7 @@ class PostgresIntegrationTest {
 
             assertEquals(
                 List.of(1L),
-                ids(findByAnyEmail.invoke(repository, List.of("ALICE@EXAMPLE.COM", "nobody@x.com")))
+                findByAnyEmail.invoke(repository, List.of("ALICE@EXAMPLE.COM", "nobody@x.com"))
             );
 
             Method listNotes = repository.getClass().getMethod("listContactNotes");
@@ -5113,10 +5186,10 @@ class PostgresIntegrationTest {
 
             assertEquals(2, matching.size());
 
-            assertEquals(1L, component(matching.get(0), "id"));
+            assertEquals(1L, matching.get(0));
             assertEquals(
                 2L,
-                component(matching.get(1), "id"),
+                matching.get(1),
                 "a UNION in an IN predicate selects the rows either branch returns"
             );
         }
