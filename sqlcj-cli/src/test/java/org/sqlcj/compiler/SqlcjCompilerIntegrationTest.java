@@ -4322,6 +4322,55 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
+     * A cast of an operand sqlcj knows reads no {@code NULL} is non-null, so a
+     * {@code :one} query of a single filtered {@code COUNT} cast returns the
+     * value itself instead of a record, while a cast of a nullable column keeps
+     * its result record and a {@code @Nullable} component.
+     */
+    @Test
+    void shouldGenerateCompilableJavaForNonNullCastProjections() throws IOException {
+        Path classesDirectory = generateAndCompile(
+            """
+                CREATE TABLE users
+                (
+                    id     BIGINT NOT NULL,
+                    name   VARCHAR(255),
+                    active BOOLEAN
+                );
+                """,
+            """
+                -- name: CountActiveUsers :one
+                SELECT count(*) FILTER (WHERE active)::bigint AS n
+                FROM users;
+
+                -- name: ReadUserLabel :one
+                SELECT name::text AS label
+                FROM users
+                WHERE id = $1;
+                """
+        );
+
+        String repository = Files.readString(
+            tempDir
+                .resolve("generated")
+                .resolve("generated")
+                .resolve("repositories/UsersRepository.java")
+        );
+
+        assertTrue(repository.contains("public Long countActiveUsers()"), repository);
+        assertFalse(repository.contains("CountActiveUsersResult"), repository);
+
+        assertEquals(
+            List.of("@org.jspecify.annotations.Nullable String label"),
+            recordComponents(repository, "ReadUserLabelResult")
+        );
+
+        assertTrue(
+            Files.exists(classesDirectory.resolve("generated/repositories/UsersRepository.class"))
+        );
+    }
+
+    /**
      * An alias on a returned column names the result record's component, for
      * every returning write kind, and the executed SQL keeps the alias.
      */

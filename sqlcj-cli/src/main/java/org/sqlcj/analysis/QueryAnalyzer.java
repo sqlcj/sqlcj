@@ -1,6 +1,8 @@
 package org.sqlcj.analysis;
 
 import net.sf.jsqlparser.expression.Alias;
+import net.sf.jsqlparser.expression.AnalyticExpression;
+import net.sf.jsqlparser.expression.AnalyticType;
 import net.sf.jsqlparser.expression.BinaryExpression;
 import net.sf.jsqlparser.expression.CastExpression;
 import net.sf.jsqlparser.expression.Expression;
@@ -6306,6 +6308,10 @@ public final class QueryAnalyzer {
      * {@code EXISTS (...)::boolean}, is not this item and stays a computed
      * projection.
      *
+     * <p>A cast is typed by the cast itself and is non-null only where its
+     * operand is one this analysis knows to read no {@code NULL}, which it
+     * resolves a direct operand against the levels in scope for.
+     *
      * <p>An aggregate, a cast, and an {@code EXISTS} require their alias only
      * where {@code namesResultColumns} states that this item names its own
      * column, which a projection that names no result column and a position a
@@ -6355,6 +6361,7 @@ public final class QueryAnalyzer {
                 cast,
                 selectItem.getAlias(),
                 analysis.schema(),
+                scope,
                 namesResultColumns
             );
         }
@@ -6581,9 +6588,10 @@ public final class QueryAnalyzer {
 
     /**
      * Resolves a cast projection into its single result column, which is named
-     * after its alias and typed by the cast, as a cast types a placeholder. The
-     * column is nullable because the cast operand is not analyzed, so whether
-     * it can read as {@code NULL} is unknown here.
+     * after its alias and typed by the cast, as a cast types a placeholder. A
+     * cast reads {@code NULL} exactly where its operand does, so the column is
+     * non-null where the operand is one this analysis knows to read none and
+     * nullable wherever that is unknown.
      *
      * <p>The alias is required wherever the projection names the result
      * columns, so a branch of a set operation other than the leftmost may write
@@ -6591,12 +6599,15 @@ public final class QueryAnalyzer {
      * of its own.
      *
      * <p>The operand itself reaches the database as written, as a non-binding
-     * write value does, so PostgreSQL rather than sqlcj checks it.
+     * write value does, so PostgreSQL rather than sqlcj checks it. It is read
+     * for its nullness alone, after the alias and the cast type are checked, so
+     * no operand is rejected here and none is required to resolve.
      */
     private org.sqlcj.schema.Column castColumn(
         CastExpression cast,
         Alias alias,
         Schema schema,
+        Scope scope,
         boolean namesResultColumns
     ) {
         if (alias == null && namesResultColumns) {
@@ -6625,13 +6636,68 @@ public final class QueryAnalyzer {
         return new org.sqlcj.schema.Column(
             name,
             type.type(),
-            true,
+            !readsNoNull(cast.getLeftExpression(), scope),
             null,
             type.enumType(),
             type.array(),
             type.blankPadded(),
             aliasSqlName(alias, name)
         );
+    }
+
+    /**
+     * Reports whether one cast operand is an expression this analysis knows
+     * reads no {@code NULL}, so that a cast of it is a non-null result column.
+     * Every other operand, including one that resolves against no source, is
+     * unknown here and leaves the cast nullable rather than rejected.
+     *
+     * <p>A direct column reads no {@code NULL} when it resolves through the
+     * levels in scope to a non-null column of a source no join null-extends,
+     * which is the rule a selected column of its own carries. Its type is never
+     * read, so a column of an unmapped type states its nullness too.
+     *
+     * <p>An unqualified case-insensitive {@code COUNT} of one argument reads no
+     * {@code NULL}, written plainly or with {@code FILTER (WHERE ...)}, which
+     * the parser reports as a filtered analytic expression of no offset and no
+     * default value, because {@code count} counts {@code 0} rows rather than
+     * none. {@code COUNT(...) OVER (...)}, which the parser reports as a
+     * windowed analytic expression, and a qualified name such as
+     * {@code pg_catalog.count(*)} are typed by no rule here.
+     *
+     * <p>A cast of such an operand reads no {@code NULL} either, so a cast
+     * chain is read through to the operand it finally casts.
+     */
+    private boolean readsNoNull(Expression operand, Scope scope) {
+        net.sf.jsqlparser.schema.Column column = directColumn(operand);
+
+        if (column != null) {
+            return lookupColumn(column, scope)
+                .filter(resolved -> !resolved.column().nullable())
+                .filter(resolved -> !resolved.source().nullable())
+                .isPresent();
+        }
+
+        if (operand instanceof Function function) {
+            List<String> name = function.getMultipartName();
+            ExpressionList<?> arguments = function.getParameters();
+
+            return name != null
+                && name.size() == 1
+                && name.get(0).equalsIgnoreCase("count")
+                && arguments != null
+                && arguments.size() == 1;
+        }
+
+        if (operand instanceof AnalyticExpression analytic) {
+            return analytic.getType() == AnalyticType.FILTER_ONLY
+                && analytic.getName() != null
+                && analytic.getName().equalsIgnoreCase("count")
+                && analytic.getOffset() == null
+                && analytic.getDefaultValue() == null;
+        }
+
+        return operand instanceof CastExpression cast
+            && readsNoNull(cast.getLeftExpression(), scope);
     }
 
     /**
@@ -6806,6 +6872,49 @@ public final class QueryAnalyzer {
         );
     }
 
+    /**
+     * Resolves one column reference as {@link #resolveColumn} does, and reports
+     * no column instead of a diagnostic wherever that resolution fails: an
+     * unknown qualifier, a column the qualified source does not have, an
+     * ambiguous reference, and a reference no level has alike. It is read where
+     * a reference states a fact of its own, such as the nullness of a cast
+     * operand, which leaves a reference it cannot resolve to the database.
+     */
+    private Optional<ResolvedColumn> lookupColumn(
+        net.sf.jsqlparser.schema.Column column,
+        Scope scope
+    ) {
+        String columnName = column.getUnquotedColumnName();
+        String qualifier = qualifier(column);
+
+        if (qualifier != null) {
+            return lookupSource(scope, qualifier)
+                .flatMap(source -> resolvedColumn(source, columnName));
+        }
+
+        for (Scope level = scope; level != null; level = level.enclosing()) {
+            List<Source> matches = level.sources().stream()
+                .filter(source -> exposes(source, columnName))
+                .toList();
+
+            if (matches.size() > 1) {
+                return Optional.empty();
+            }
+
+            if (!matches.isEmpty()) {
+                return resolvedColumn(matches.get(0), columnName);
+            }
+        }
+
+        return Optional.empty();
+    }
+
+    /** One named column of one source, and none where the source has none. */
+    private Optional<ResolvedColumn> resolvedColumn(Source source, String columnName) {
+        return lookupColumn(source.table(), columnName)
+            .map(column -> new ResolvedColumn(source, column));
+    }
+
     private String qualifier(net.sf.jsqlparser.schema.Column column) {
         Table table = column.getTable();
 
@@ -6825,15 +6934,24 @@ public final class QueryAnalyzer {
      * of an enclosing level.
      */
     private Source findSource(Scope scope, String name) {
+        return lookupSource(scope, name)
+            .orElseThrow(() -> unknownSourceQualifier(name));
+    }
+
+    /**
+     * The innermost source of one exposed name, and none where no level in
+     * scope exposes it.
+     */
+    private Optional<Source> lookupSource(Scope scope, String name) {
         for (Scope level = scope; level != null; level = level.enclosing()) {
             Optional<Source> source = lookupSource(level.sources(), name);
 
             if (source.isPresent()) {
-                return source.get();
+                return source;
             }
         }
 
-        throw unknownSourceQualifier(name);
+        return Optional.empty();
     }
 
     /**
