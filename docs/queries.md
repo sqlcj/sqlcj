@@ -1481,7 +1481,8 @@ joined and on a single-table write alike, while a `RETURNING` column list,
 including one whose items are a wildcard of the target and another column, keeps
 the query's own `<QueryName>Result` record, except that a list of exactly one
 column that cannot be NULL returns that column's value, so a `:one`
-`RETURNING id` of a `BIGSERIAL` key returns `Long`.
+`RETURNING id` of a `BIGSERIAL`, identity, or primary-key column returns
+`Long`, and of a `uuid` key returns `UUID`.
 
 An unknown column and `RETURNING` on `:exec` are rejected, and a computed
 `RETURNING` item, with or without an alias, is rejected as
@@ -1905,7 +1906,10 @@ subpackage names are fixed.
   ```
 
   so `SELECT COUNT(*) AS total FROM authors` returns `Long` and a `:many` read
-  of one `NOT NULL` column returns `List<String>`. A non-null column of an enum
+  of one `NOT NULL` column returns `List<String>`. A primary-key or identity
+  column is non-null however it is declared, so a `:one`
+  `INSERT ... RETURNING id` returns that key's value and a `:many` `SELECT id`
+  returns a `List` of it. A non-null column of an enum
   type returns the generated Java enum, and a non-null array column returns its
   `List<T>`, each read exactly as the same column of a record is.
   Every other result keeps its shape: a single column that can be NULL — a
