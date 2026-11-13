@@ -2364,9 +2364,10 @@ class QueryAnalyzerTest {
     }
 
     /**
-     * An aliased cast projection is a nullable result column of the cast type,
-     * in either cast spelling and with or without {@code AS}. Its operand is
-     * not analyzed and reaches the database as written.
+     * An aliased cast projection is a result column of the cast type, in either
+     * cast spelling and with or without {@code AS}. A {@code SUM} is no operand
+     * sqlcj knows to read no {@code NULL}, so the column is nullable, and the
+     * operand reaches the database as written.
      */
     @ParameterizedTest
     @ValueSource(
@@ -2424,6 +2425,91 @@ class QueryAnalyzerTest {
             List.of(new QueryColumn("labels", ColumnType.TEXT, true, null, true)),
             model.columns()
         );
+    }
+
+    /**
+     * A cast of an operand sqlcj knows reads no {@code NULL} is a non-null
+     * result column of the cast type: a {@code NOT NULL} column of a source no
+     * join null-extends, written qualified or not and in either cast spelling,
+     * a {@code COUNT} of one argument, written with or without
+     * {@code DISTINCT} or {@code FILTER (WHERE ...)}, and a cast of such an
+     * operand.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT id::text AS v FROM users|TEXT",
+            "SELECT u.id::text AS v FROM users u|TEXT",
+            "SELECT CAST(id AS text) AS v FROM users|TEXT",
+            "SELECT COUNT(*)::int AS v FROM users|INTEGER",
+            "SELECT COUNT(DISTINCT name)::int AS v FROM users|INTEGER",
+            "SELECT count(*) FILTER (WHERE active)::bigint AS v FROM users|BIGINT",
+            "SELECT CAST(count(*) FILTER (WHERE active) AS bigint) AS v FROM users|BIGINT",
+            "SELECT COUNT(*)::int::bigint AS v FROM users|BIGINT",
+            "SELECT id::text::varchar AS v FROM users|VARCHAR"
+        }
+    )
+    void shouldResolveCastOfKnownNonNullOperandAsNonNull(String sql, ColumnType type) {
+        QueryModel model = analyzer.analyze(
+            new Query("ReadUserValue", QueryType.ONE, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(List.of(new QueryColumn("v", type, false)), model.columns());
+    }
+
+    /**
+     * A cast of any other operand stays nullable: a nullable column, an
+     * aggregate other than {@code COUNT}, a {@code COUNT} over a window, which
+     * reads {@code NULL} over no row, and a qualified {@code count}. An operand
+     * that resolves against no source, such as a system column or a column of
+     * an unknown qualifier, is unknown here rather than rejected, because it
+     * reaches the database as written.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT name::text AS v FROM users|TEXT",
+            "SELECT SUM(id)::numeric AS v FROM users|DECIMAL",
+            "SELECT COUNT(*) OVER ()::bigint AS v FROM users|BIGINT",
+            "SELECT pg_catalog.count(*)::bigint AS v FROM users|BIGINT",
+            "SELECT ctid::text AS v FROM users|TEXT",
+            "SELECT o.id::text AS v FROM users|TEXT"
+        }
+    )
+    void shouldLeaveCastOfAnyOtherOperandNullable(String sql, ColumnType type) {
+        QueryModel model = analyzer.analyze(
+            new Query("ReadUserValue", QueryType.ONE, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(List.of(new QueryColumn("v", type, true)), model.columns());
+    }
+
+    /**
+     * A cast of a {@code NOT NULL} column of a null-extended source is
+     * nullable, because an outer join whose other side finds no match reads
+     * that column as {@code NULL}.
+     */
+    @Test
+    void shouldLeaveCastOfNullExtendedColumnNullable() {
+        String sql = """
+            SELECT p.id::text AS v
+            FROM users u
+            LEFT JOIN profiles p ON p.user_id = u.id
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ReadUserProfileId", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(List.of(new QueryColumn("v", ColumnType.TEXT, true)), model.columns());
     }
 
     /**

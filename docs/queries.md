@@ -493,7 +493,9 @@ GROUP BY r.author_id;
   qualified `pg_catalog.count(*)` or `pg_catalog.max(id)`, an aggregate of two
   arguments, a subscripted argument such as `MIN(labels[1])`, a `SUM` or `AVG`
   of a column of any other type or of an array column, and the `FILTER` and
-  `OVER` forms.
+  `OVER` forms. A cast states the type of such a form, and a `COUNT` written
+  with `FILTER` is non-null as a plain one is, so
+  `count(*) FILTER (WHERE active)::bigint AS n` is a non-null `Long`.
 
 A read may also project a computed value by stating its type in a cast:
 
@@ -517,10 +519,21 @@ WHERE author_id = $1;
   rejected with
   `Result column 'total' has unsupported cast type MONEY`, naming the result
   column and the declared type.
-- The component is always nullable, because the cast operand is not analyzed
-  and so whether it can read as `NULL` is unknown at compile time.
-- The operand itself is not analyzed and reaches the database as written, so
-  PostgreSQL rather than sqlcj checks its column references and its functions.
+- A cast reads `NULL` exactly where its operand does, so the component is
+  non-null where the operand is one sqlcj knows reads no `NULL` and nullable
+  wherever that is unknown. sqlcj knows a `NOT NULL` column of a source no
+  outer join null-extends, written qualified or not; an unqualified `COUNT` of
+  one argument, written with or without `DISTINCT` or `FILTER (WHERE ...)`,
+  because `count` counts `0` rows rather than none; and a cast of such an
+  operand, so a cast chain such as `COUNT(*)::int::bigint` is non-null too.
+  Every other operand leaves the component nullable, including `SUM`, `AVG`,
+  `MIN`, `MAX`, a `COUNT` over a window, a qualified `pg_catalog.count(*)`, a
+  literal, another function, and a placeholder.
+- The operand itself reaches the database as written, so PostgreSQL rather than
+  sqlcj checks its column references and its functions. A direct column operand
+  is looked up only to decide whether it can read as `NULL`, and is never
+  rejected: an operand that resolves against no source, such as a system column
+  like `ctid` or a column of an unknown qualifier, keeps the component nullable.
 - A placeholder the projection's cast casts directly, as in
   `SELECT $1::text AS label`, is one parameter of the query, typed by that cast
   and named after its own placeholder, so an indexed one is `param<N>` and a
@@ -1912,12 +1925,15 @@ subpackage names are fixed.
   returns a `List` of it. A non-null column of an enum
   type returns the generated Java enum, and a non-null array column returns its
   `List<T>`, each read exactly as the same column of a record is.
+  A cast of an operand sqlcj knows reads no `NULL` is non-null too, so a `:one`
+  `SELECT count(*) FILTER (WHERE ...)::bigint AS n` returns `Long`.
   Every other result keeps its shape: a single column that can be NULL — a
   nullable column, a column of a null-extended source, an aliased `MIN`,
-  `MAX`, `SUM`, or `AVG`, or an aliased cast, a cast of a scalar subquery
-  included — keeps the `<QueryName>Result` record, as does a sole component
-  holding an embedded row and a result of two or more columns, while a query
-  that returns one complete table row keeps its `<TableName>Row` record.
+  `MAX`, `SUM`, or `AVG`, or a cast whose operand sqlcj does not know reads no
+  `NULL`, a cast of a scalar subquery included — keeps the `<QueryName>Result`
+  record, as does a sole component holding an embedded row and a result of two
+  or more columns, while a query that returns one complete table row keeps its
+  `<TableName>Row` record.
 - Every other `:one`, `:optional`, or `:many` query generates a nested `public record` named
   `<QueryName>Result` in upper camel case, whose components follow the
   selected-column order and are named after each column's projection alias or
@@ -2018,8 +2034,9 @@ subpackage names are fixed.
   - A result component carries `@org.jspecify.annotations.Nullable` exactly when
     its column can be NULL: a column the schema models nullable, a column of a
     null-extended source, an aliased `MIN`, `MAX`, `SUM`, or `AVG`, an aliased
-    cast, and a component holding an embedded row a join null-extends. Every
-    other component is unannotated, and therefore non-null.
+    cast whose operand sqlcj does not know reads no `NULL`, and a component
+    holding an embedded row a join null-extends. Every other component is
+    unannotated, and therefore non-null.
   - Every generated method parameter and every component of a
     `<QueryName>Params` record is `@org.jspecify.annotations.Nullable`, because
     every placeholder may be bound to `null`.
@@ -2793,13 +2810,25 @@ Reads:
   `QueryAnalyzerTest.shouldResolveEnumCastProjectionColumn`,
   `QueryAnalyzerTest.shouldResolveArrayCastProjectionColumn`,
   `QueryAnalyzerTest.shouldRejectUnsupportedCastProjectionForm`,
-  `QueryAnalyzerTest.shouldResolveCastPlaceholderProjection`, and
-  `QueryAnalyzerTest.shouldNumberNamedProjectionPlaceholderBeforeThePredicateOne`
-  cover both cast
-  spellings and both alias spellings, the nullable column of the cast type
-  including a declared enum and an array, the missing alias and the unmapped
-  cast type, and the projected cast placeholder, its name, and its logical and
-  binding positions, and
+  `QueryAnalyzerTest.shouldResolveCastPlaceholderProjection`,
+  `QueryAnalyzerTest.shouldNumberNamedProjectionPlaceholderBeforeThePredicateOne`,
+  `QueryAnalyzerTest.shouldResolveCastOfKnownNonNullOperandAsNonNull`,
+  `QueryAnalyzerTest.shouldLeaveCastOfAnyOtherOperandNullable`, and
+  `QueryAnalyzerTest.shouldLeaveCastOfNullExtendedColumnNullable`
+  cover both cast spellings and both alias spellings, the nullable column of
+  the cast type including a declared enum and an array, the missing alias and
+  the unmapped cast type, the projected cast placeholder, its name, and its
+  logical and binding positions, and the operands that decide nullness: a
+  `NOT NULL` column qualified and unqualified, a `COUNT`, a
+  `COUNT(DISTINCT ...)`, a filtered `COUNT` in both cast spellings, and a cast
+  chain of one as non-null beside a nullable column, a column of a
+  null-extended source, a `SUM`, a windowed `COUNT`, a qualified
+  `pg_catalog.count(*)`, and the unresolved `ctid` and unknown-qualifier
+  operands as nullable, and
+  `SqlcjCompilerIntegrationTest.shouldGenerateCompilableJavaForNonNullCastProjections`
+  compiles a `:one` filtered `COUNT` cast as a `Long` without a result record
+  beside a cast of a nullable column as a record with a `@Nullable`
+  component, and
   `PostgresIntegrationTest.shouldExecuteGeneratedCastProjectionAgainstPostgres`
   executes a `:one` cast `SUM` against PostgreSQL 16 whose `BigDecimal`
   component is the sum and `null` when no row matches.
