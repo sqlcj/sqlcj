@@ -794,6 +794,22 @@ public final class RetryingTransactions {
 }
 ```
 
+## An Enum Label a Migration Added
+
+A generated enum holds the labels its enum type declared when the code was
+generated. A build older than the migration that added a label therefore cannot
+represent that label, and a read that meets it raises
+`UnmappableValueException` naming the repository, the query, the enum type, and
+the label itself, rather than guessing a constant for a value the running code
+does not know.
+
+The order of a release avoids it: the build that knows the new label is
+deployed before the migration that adds it, so no running build reads a label
+it was not generated with. The generated enum is described in
+[Enum Types](postgresql.md#enum-types), and the exception and the two values it
+carries in
+[Connection Ownership and Transactions](postgresql.md#connection-ownership-and-transactions).
+
 ## Verified by
 
 `CookbookIntegrationTest` applies the fixture's migration to a PostgreSQL 16

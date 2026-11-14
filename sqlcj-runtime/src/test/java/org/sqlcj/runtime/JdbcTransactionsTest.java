@@ -279,6 +279,66 @@ class JdbcTransactionsTest {
     }
 
     /**
+     * An unchecked failure of a row mapper reaches the callback as the
+     * {@link QueryExecutionException} naming the query and its repository, and
+     * rolls the transaction back exactly as a cardinality failure does, so the
+     * write the same transaction already made is discarded.
+     */
+    @Test
+    void shouldRollBackAndRethrowAMapperFailure() throws SQLException {
+        TransactionRecorder recorder = new TransactionRecorder(dataSource);
+        JdbcTransactions transactions = new JdbcTransactions(recorder.dataSource());
+
+        IllegalStateException mapperFailure = new IllegalStateException("mapper failure");
+
+        AtomicReference<QueryExecutionException> raised = new AtomicReference<>();
+
+        QueryExecutionException failure = assertThrows(
+            QueryExecutionException.class,
+            () -> transactions.useTransaction(connection -> {
+                QueryExecutor executor = new JdbcQueryExecutor(connection);
+
+                executor.execute(REPOSITORY, "InsertUser", INSERT_USER, List.of(1L, "Alice"));
+
+                try {
+                    executor.queryOne(
+                        REPOSITORY,
+                        "GetUser",
+                        "SELECT id FROM users WHERE id = ?",
+                        List.of(1L),
+                        resultSet -> {
+                            throw mapperFailure;
+                        }
+                    );
+                } catch (QueryExecutionException e) {
+                    raised.set(e);
+
+                    throw e;
+                }
+            })
+        );
+
+        assertSame(raised.get(), failure);
+        assertEquals(QueryExecutionException.class, failure.getClass());
+
+        assertEquals(
+            "Failed to execute query 'GetUser' in UsersRepository",
+            failure.getMessage()
+        );
+
+        assertSame(mapperFailure, failure.getCause());
+
+        assertEquals(List.of(), names());
+
+        assertEquals(
+            List.of("getConnection", "setAutoCommit(false)", "rollback", "setAutoCommit(true)", "close"),
+            recorder.calls
+        );
+
+        recorder.assertOneClosedConnection();
+    }
+
+    /**
      * A connection that cannot be obtained fails the transaction before the
      * callback runs, and no connection is left to release.
      */
