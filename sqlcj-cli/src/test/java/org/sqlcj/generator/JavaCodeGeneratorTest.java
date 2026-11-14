@@ -13,6 +13,7 @@ import org.sqlcj.parser.QueryType;
 import org.sqlcj.runtime.GeneratedRepository;
 import org.sqlcj.runtime.QueryExecutor;
 import org.sqlcj.runtime.RowMapper;
+import org.sqlcj.runtime.UnmappableValueException;
 import org.sqlcj.schema.ColumnType;
 import org.sqlcj.schema.EnumType;
 
@@ -5564,8 +5565,9 @@ class JavaCodeGeneratorTest {
      * The generated enum names one constant per label, in label order, holds
      * the exact labels, and resolves a label back to its constant. A null label
      * reads back as {@code null}, and a label the enum does not hold, which
-     * means the database declares one the schema source does not, fails naming
-     * the enum type and the label.
+     * means the database declares one the schema source does not, fails as an
+     * {@code UnmappableValueException} naming the enum type and the label and
+     * carrying both.
      */
     @Test
     void shouldGenerateCompilableEnumWithLabelLookups() throws Exception {
@@ -5611,12 +5613,20 @@ class JavaCodeGeneratorTest {
                 () -> fromLabel.invoke(null, "covered")
             );
 
-            assertInstanceOf(IllegalArgumentException.class, failure.getCause());
+            UnmappableValueException unmappable = assertInstanceOf(
+                UnmappableValueException.class,
+                failure.getCause()
+            );
 
             assertEquals(
                 "Unknown label for enum type stage_setting: covered",
-                failure.getCause().getMessage()
+                unmappable.getMessage()
             );
+
+            assertEquals("stage_setting", unmappable.type());
+            assertEquals("covered", unmappable.value());
+            assertNull(unmappable.getCause());
+            assertNull(unmappable.sqlState());
         }
     }
 

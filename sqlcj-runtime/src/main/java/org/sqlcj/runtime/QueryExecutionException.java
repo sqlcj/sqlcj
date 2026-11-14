@@ -23,17 +23,23 @@ import java.sql.SQLException;
  * it</li>
  * <li>{@link TransactionConflictException}</li>
  * <li>{@link QueryTimeoutException}</li>
+ * <li>{@link UnmappableValueException}, which no SQLSTATE names and whose
+ * {@link #sqlState()} is {@code null}</li>
  * </ul>
  *
  * <p>A failure no subclass covers, and every failure of acquiring or releasing
  * a connection, is this type itself. {@link #sqlState()} reports the SQLSTATE
  * behind it, so a rarer code stays reachable all the same.
  *
- * <p>One cause is raised by the runtime rather than by a driver: a column the
+ * <p>Two causes are raised by the runtime rather than by a driver. A column the
  * schema sqlcj generated from states {@code NOT NULL} read as SQL
  * {@code NULL}, which {@link NotNullColumn} reports as a {@code SQLException}
  * without a SQLSTATE. It is this type itself, and {@link #sqlState()} is
- * {@code null} for it.
+ * {@code null} for it. An unchecked failure of a row mapper is this type
+ * itself as well, with the mapper's own exception as its cause and the message
+ * naming the query and its repository, unless the mapper read a value the
+ * generated API cannot represent, which is an
+ * {@link UnmappableValueException}.
  */
 public class QueryExecutionException extends RuntimeException {
 

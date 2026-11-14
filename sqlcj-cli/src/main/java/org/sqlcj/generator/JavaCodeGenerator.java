@@ -655,7 +655,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
                     }
                 }
 
-                throw new IllegalArgumentException(%s + label);
+            %s
             }
             """
             .formatted(
@@ -664,10 +664,39 @@ public final class JavaCodeGenerator implements CodeGenerator {
                     List.of(NULLABLE + " String label")
                 ),
                 sharedEnum.typeName(),
-                generateStringLiteral(
-                    "Unknown label for enum type " + sharedEnum.enumName() + ": "
-                )
+                generateUnknownLabelFailure(sharedEnum, BODY_INDENT)
             );
+    }
+
+    /**
+     * Writes the failure of a label the generated enum does not hold, which
+     * carries the PostgreSQL type and the label itself so that the runtime
+     * reports both beside the query that read them. A statement that does not
+     * fit the limit writes its arguments one per line, one call continuation
+     * past the line that opens the call, with the closing parenthesis at that
+     * line's column, the layout a wrapped bound-argument list already uses.
+     */
+    private String generateUnknownLabelFailure(SharedEnum sharedEnum, int indent) {
+        String margin = " ".repeat(indent);
+        String call = "throw new org.sqlcj.runtime.UnmappableValueException(";
+        String message = generateStringLiteral(
+            "Unknown label for enum type " + sharedEnum.enumName() + ": "
+        ) + " + label";
+        String type = generateStringLiteral(sharedEnum.enumName());
+        String oneLine = call + message + ", " + type + ", label, null);";
+
+        if (fits(indent, oneLine)) {
+            return margin + oneLine;
+        }
+
+        String argumentMargin = " ".repeat(indent + CONTINUATION_INDENT);
+
+        return margin + call + "\n"
+            + argumentMargin + message + ",\n"
+            + argumentMargin + type + ",\n"
+            + argumentMargin + "label,\n"
+            + argumentMargin + "null\n"
+            + margin + ");";
     }
 
     /**

@@ -56,6 +56,18 @@ import java.util.Optional;
  * statement has already executed, so a returning write that fails the check has
  * already changed the database.
  *
+ * <p>An unchecked failure of the row mapper of {@link #queryOne},
+ * {@link #queryOptional}, or {@link #queryMany} is rethrown as a
+ * {@link QueryExecutionException} with the message {@code "Failed to execute
+ * query '<query>' in <repository>"} and the mapper's own exception as its
+ * cause, so a mapping failure names the query it was read for. A value the
+ * generated API cannot represent, which the generated enum's
+ * {@code fromLabel} reports as an {@link UnmappableValueException}, keeps that
+ * type, its {@link UnmappableValueException#type() type}, and its
+ * {@link UnmappableValueException#value() value}; every other unchecked
+ * failure becomes a plain {@link QueryExecutionException}. An {@link Error} a
+ * mapper raises is rethrown unchanged.
+ *
  * <p>{@link #executeBatch} executes its SQL once per element of the batch, in
  * the order of the batch, as one JDBC batch on one connection, binds each
  * element exactly as a single execution binds its arguments, and returns the
@@ -162,7 +174,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
                     );
                 }
 
-                T row = mapper.map(resultSet);
+                T row = map(repository, query, resultSet, mapper);
 
                 if (resultSet.next()) {
                     throw new QueryCardinalityException(
@@ -193,7 +205,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
                     return Optional.empty();
                 }
 
-                T row = mapper.map(resultSet);
+                T row = map(repository, query, resultSet, mapper);
 
                 if (resultSet.next()) {
                     throw new QueryCardinalityException(
@@ -223,7 +235,7 @@ public final class JdbcQueryExecutor implements QueryExecutor {
                 List<T> results = new ArrayList<>();
 
                 while (resultSet.next()) {
-                    results.add(mapper.map(resultSet));
+                    results.add(map(repository, query, resultSet, mapper));
                 }
 
                 return results;
@@ -490,6 +502,37 @@ public final class JdbcQueryExecutor implements QueryExecutor {
             return operation.run(statement);
         } catch (SQLException e) {
             throw translate(failureMessage(repository, query), e);
+        }
+    }
+
+    /**
+     * Maps the row the result set stands on and names the query and its
+     * repository for a failure of the mapper itself, which no SQLSTATE covers:
+     * a value the generated API cannot represent keeps its
+     * {@link UnmappableValueException} type, its type, and its value, and
+     * every other unchecked failure becomes a plain
+     * {@link QueryExecutionException}, each with the mapper's own exception as
+     * its cause. A {@link SQLException} the mapper raises is translated where
+     * every other one of the operation is, and an {@link Error} is rethrown
+     * unchanged.
+     */
+    private <T> T map(
+        String repository,
+        String query,
+        ResultSet resultSet,
+        RowMapper<T> mapper
+    ) throws SQLException {
+        try {
+            return mapper.map(resultSet);
+        } catch (UnmappableValueException e) {
+            throw new UnmappableValueException(
+                failureMessage(repository, query),
+                e.type(),
+                e.value(),
+                e
+            );
+        } catch (RuntimeException e) {
+            throw new QueryExecutionException(failureMessage(repository, query), e);
         }
     }
 

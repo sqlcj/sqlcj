@@ -1678,6 +1678,185 @@ class JdbcQueryExecutorTest {
     }
 
     /**
+     * An unchecked failure of a row mapper names the query and its repository
+     * instead of leaving the executor as it was raised. Every read of a
+     * connection the executor obtains per operation reports the same plain
+     * {@link QueryExecutionException} with the mapper's own exception as its
+     * cause and no SQLSTATE, and the statement, its result set, and the
+     * acquired connection are still closed.
+     */
+    @Test
+    void shouldReportAMapperFailureOfADataSourceOperation() throws SQLException {
+        JdbcResourceTracker tracker = new JdbcResourceTracker();
+
+        JdbcQueryExecutor dataSourceExecutor = new JdbcQueryExecutor(
+            tracker.track(DataSource.class, dataSource)
+        );
+
+        assertEveryReadReportsItsMapperFailure(dataSourceExecutor);
+
+        assertEquals(3, tracker.connections.size());
+        assertEquals(3, tracker.statements.size());
+        assertEquals(3, tracker.resultSets.size());
+
+        tracker.assertAllConnectionsClosed();
+        tracker.assertAllStatementsAndResultSetsClosed();
+    }
+
+    /**
+     * The caller-owned connection path reports the same failure, closes the
+     * statement and its result set, and leaves the connection open.
+     */
+    @Test
+    void shouldReportAMapperFailureOnACallerOwnedConnection() throws SQLException {
+        JdbcResourceTracker tracker = new JdbcResourceTracker();
+
+        try (Connection connection = dataSource.getConnection()) {
+            JdbcQueryExecutor connectionExecutor = new JdbcQueryExecutor(
+                tracker.track(Connection.class, connection)
+            );
+
+            assertEveryReadReportsItsMapperFailure(connectionExecutor);
+
+            assertEquals(3, tracker.statements.size());
+            assertEquals(3, tracker.resultSets.size());
+
+            tracker.assertAllStatementsAndResultSetsClosed();
+
+            assertFalse(connection.isClosed());
+        }
+    }
+
+    /**
+     * A value the generated API cannot represent, which a generated enum's
+     * {@code fromLabel} raises while a row is mapped, keeps its
+     * {@link UnmappableValueException} type, its type, and its value, names
+     * the query and its repository, and carries the original as its cause.
+     */
+    @Test
+    void shouldRethrowAnUnmappableValueOfAMapper() {
+        UnmappableValueException raised = new UnmappableValueException(
+            "Unknown label for enum type stage_setting: covered",
+            "stage_setting",
+            "covered",
+            null
+        );
+
+        UnmappableValueException failure = assertThrows(
+            UnmappableValueException.class,
+            () -> executor.queryOne(
+                REPOSITORY,
+                "GetUser",
+                SELECT_USER,
+                List.of(1L),
+                failingMapper(raised)
+            )
+        );
+
+        assertEquals(UnmappableValueException.class, failure.getClass());
+
+        assertEquals(
+            "Failed to execute query 'GetUser' in UsersRepository",
+            failure.getMessage()
+        );
+
+        assertEquals("stage_setting", failure.type());
+        assertEquals("covered", failure.value());
+        assertSame(raised, failure.getCause());
+        assertNull(failure.sqlState());
+    }
+
+    /** An {@link Error} a row mapper raises is rethrown as the same instance. */
+    @Test
+    void shouldRethrowAnErrorAMapperRaises() {
+        MapperError raised = new MapperError();
+
+        assertSame(
+            raised,
+            assertThrows(
+                MapperError.class,
+                () -> executor.queryOne(
+                    REPOSITORY,
+                    "GetUser",
+                    SELECT_USER,
+                    List.of(1L),
+                    resultSet -> {
+                        throw raised;
+                    }
+                )
+            )
+        );
+    }
+
+    /**
+     * Runs every read of the given executor with a row mapper that fails with
+     * one unchecked exception of its own, and asserts that each one raises a
+     * plain {@link QueryExecutionException} naming its query, with that
+     * exception as its cause and no SQLSTATE.
+     */
+    private void assertEveryReadReportsItsMapperFailure(JdbcQueryExecutor target) {
+        RuntimeException raised = new IllegalStateException("mapper failure");
+
+        Map<String, Executable> reads = new LinkedHashMap<>();
+
+        reads.put(
+            "GetUser",
+            () -> target.queryOne(
+                REPOSITORY,
+                "GetUser",
+                SELECT_USER,
+                List.of(1L),
+                failingMapper(raised)
+            )
+        );
+        reads.put(
+            "FindUser",
+            () -> target.queryOptional(
+                REPOSITORY,
+                "FindUser",
+                SELECT_USER,
+                List.of(1L),
+                failingMapper(raised)
+            )
+        );
+        reads.put(
+            "ListUsers",
+            () -> target.queryMany(
+                REPOSITORY,
+                "ListUsers",
+                "SELECT id, name FROM users ORDER BY id",
+                List.of(),
+                failingMapper(raised)
+            )
+        );
+
+        reads.forEach((query, read) -> {
+            QueryExecutionException failure = assertThrows(QueryExecutionException.class, read);
+
+            assertEquals(QueryExecutionException.class, failure.getClass(), query);
+
+            assertEquals(
+                "Failed to execute query '%s' in UsersRepository".formatted(query),
+                failure.getMessage()
+            );
+
+            assertSame(raised, failure.getCause());
+            assertNull(failure.sqlState());
+        });
+    }
+
+    /** A row mapper that fails with the given unchecked exception. */
+    private RowMapper<User> failingMapper(RuntimeException failure) {
+        return resultSet -> {
+            throw failure;
+        };
+    }
+
+    /** An error a row mapper of these tests throws, distinct from an assertion failure. */
+    private static final class MapperError extends Error {
+    }
+
+    /**
      * Runs every executor operation on an executor whose statements fail, and
      * asserts that each one raises the expected type with its own query's
      * message, the same cause instance, and the SQLSTATE of that cause.

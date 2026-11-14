@@ -24,6 +24,7 @@ import org.sqlcj.runtime.QueryTimeoutException;
 import org.sqlcj.runtime.SqlInterval;
 import org.sqlcj.runtime.TransactionConflictException;
 import org.sqlcj.runtime.UniqueViolationException;
+import org.sqlcj.runtime.UnmappableValueException;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -474,6 +475,23 @@ class PostgresIntegrationTest {
             setting drift_setting,
             age     INTERVAL,
             tags    TEXT[]
+        );
+        """;
+
+    /**
+     * A snapshot declaring an enum type and a {@code NOT NULL} column of it,
+     * which the database then gains one more label of. It is the drift a
+     * migration leaves between a build generated before it and the database
+     * after it: a row holding the added label carries a value the generated
+     * enum cannot represent.
+     */
+    private static final String LABEL_DRIFT_SCHEMA = """
+        CREATE TYPE drift_setting AS ENUM ('indoor', 'outdoor');
+
+        CREATE TABLE drifted
+        (
+            id      BIGINT PRIMARY KEY,
+            setting drift_setting NOT NULL
         );
         """;
 
@@ -5867,6 +5885,74 @@ class PostgresIntegrationTest {
         );
 
         assertNull(cause.getSQLState());
+    }
+
+    /**
+     * Covers the label a migration adds after generation: the database
+     * declares an enum label the generation snapshot does not, and a row holds
+     * it. The generated enum cannot represent that label, so the read fails
+     * with an {@link UnmappableValueException} naming the query, the
+     * repository, the enum type, and the label, rather than guessing a
+     * constant. {@code ALTER TYPE ... ADD VALUE} and the write that uses the
+     * label run as separate statements, because PostgreSQL allows the label
+     * only once the statement that added it has committed.
+     */
+    @Test
+    void shouldFailWhereAnEnumLabelAddedAfterGenerationIsRead() throws Exception {
+        execute(LABEL_DRIFT_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(
+            LABEL_DRIFT_SCHEMA,
+            """
+                -- name: GetDriftedSetting :one
+                SELECT setting
+                FROM drifted
+                WHERE id = $1;
+                """
+        );
+
+        execute("ALTER TYPE drift_setting ADD VALUE 'sad'");
+        execute("INSERT INTO drifted (id, setting) VALUES (1, 'sad')");
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            InvocationTargetException thrown = assertThrows(
+                InvocationTargetException.class,
+                () -> repository.getClass()
+                    .getMethod("getDriftedSetting", Long.class)
+                    .invoke(repository, 1L)
+            );
+
+            UnmappableValueException failure = assertInstanceOf(
+                UnmappableValueException.class,
+                thrown.getCause()
+            );
+
+            assertEquals(UnmappableValueException.class, failure.getClass());
+
+            assertEquals(
+                "Failed to execute query 'GetDriftedSetting' in UsersRepository",
+                failure.getMessage()
+            );
+
+            assertEquals("drift_setting", failure.type());
+            assertEquals("sad", failure.value());
+            assertNull(failure.sqlState());
+
+            UnmappableValueException cause = assertInstanceOf(
+                UnmappableValueException.class,
+                failure.getCause()
+            );
+
+            assertEquals(
+                "Unknown label for enum type drift_setting: sad",
+                cause.getMessage()
+            );
+
+            assertEquals("drift_setting", cause.type());
+            assertEquals("sad", cause.value());
+        }
     }
 
     /**
