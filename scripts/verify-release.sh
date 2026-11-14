@@ -480,10 +480,11 @@ for spring_boot_version in 4.0.9 4.1.2; do
     find "${spring_generated_root}" -type f -name '*.java' | sort
 
     # The marker is printed rather than matched quietly, so the run records
-    # that both repositories carry the annotation the starter scans for.
+    # that both repositories import and carry the annotation the starter scans for.
     for repository in AuthorRepository BookRepository; do
-        grep -H '@org.sqlcj.runtime.GeneratedRepository' \
-            "${spring_generated_package}/repositories/${repository}.java" \
+        repository_file="${spring_generated_package}/repositories/${repository}.java"
+        { grep -H '^import org\.sqlcj\.runtime\.GeneratedRepository;$' "${repository_file}" \
+            && grep -H '^@GeneratedRepository$' "${repository_file}"; } \
             || fail "the generated ${repository} does not carry the marker the starter scans for"
     done
 
