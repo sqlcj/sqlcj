@@ -165,7 +165,8 @@ QueryExecutionException                  any failure of a generated operation
 │   ├── NotNullViolationException        a NULL in a NOT NULL column
 │   └── CheckViolationException          a row a CHECK rejects
 ├── TransactionConflictException         the transaction was rolled back
-└── QueryTimeoutException                the statement was cancelled
+├── QueryTimeoutException                the statement was cancelled
+└── UnmappableValueException             a value the generated API cannot hold
 ```
 
 Every one of them is a `QueryExecutionException`, so code that catches that
@@ -260,6 +261,30 @@ cause's. The exception is a plain `QueryExecutionException`, and its
 reported the failure. It is not a `NotNullViolationException`: that one is the
 database refusing a write of `NULL` into a `NOT NULL` column, reported as
 `23502`.
+
+An unchecked failure of the row mapper of a `:one`, `:optional`, or `:many`
+read is reported the same way: it is rethrown as a plain
+`QueryExecutionException` naming the query and the repository, with the
+mapper's own exception as its cause, so a mapping failure says which call it
+belongs to. One such failure carries more than its message. An enum label the
+database gained after the code was generated, which the generated enum
+therefore does not hold, raises
+`org.sqlcj.runtime.UnmappableValueException`:
+
+```text
+Failed to execute query 'GetDriftedSetting' in UsersRepository
+Unknown label for enum type drift_setting: sad
+```
+
+The first message is the exception's own and the second its cause's, which is
+the `UnmappableValueException` the generated enum's `fromLabel` raised.
+`type()` is the PostgreSQL type name, `drift_setting`, and `value()` is the
+label, `sad`, so an application reports both without reading a message.
+`sqlState()` is `null`, because no database reported the failure. Every other
+unchecked mapper failure, such as the `IllegalArgumentException`
+`SqlInterval.parse` raises for text of another `IntervalStyle`, is the plain
+`QueryExecutionException`. An `Error` is not wrapped: it reaches the caller as
+the same instance.
 
 A failed operation on a caller-owned connection leaves the connection open, so
 the application decides whether to continue or roll back.
@@ -623,8 +648,10 @@ component. Text of any other `IntervalStyle`, which the session can select, is
 rejected with
 `IllegalArgumentException` naming the text and `IntervalStyle`, because such
 text cannot be told apart from the `postgres` form: a leading `-` of
-`sql_standard` applies to every unsigned field after it. sqlcj never changes the
-session setting.
+`sql_standard` applies to every unsigned field after it. Read through a
+generated repository, that `IllegalArgumentException` arrives as the cause of a
+`QueryExecutionException` naming the query and the repository, as every other
+unchecked mapper failure does. sqlcj never changes the session setting.
 
 A `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`, or `MACADDR8` argument
 is passed to the executor as
@@ -701,7 +728,12 @@ public enum StageSetting {
             }
         }
 
-        throw new IllegalArgumentException("Unknown label for enum type stage_setting: " + label);
+        throw new org.sqlcj.runtime.UnmappableValueException(
+                "Unknown label for enum type stage_setting: " + label,
+                "stage_setting",
+                label,
+                null
+        );
     }
 }
 ```
@@ -711,9 +743,14 @@ public enum StageSetting {
   label in the position its `ALTER TYPE ... ADD VALUE` places it.
 - A constant is named by the naming rules in
   [Generated Java Names](configuration.md#generated-java-names).
-- `fromLabel` reads back a label: `null` for a SQL `NULL`, and a failure for a
-  label the generated enum does not hold, which means the database declares one
-  the schema source does not. A nullable enum column is read with
+- `fromLabel` reads back a label: `null` for a SQL `NULL`, and
+  `org.sqlcj.runtime.UnmappableValueException` for a label the generated enum
+  does not hold, which means the database declares one the schema source does
+  not. That exception carries the PostgreSQL type name and the label itself,
+  and it replaced the `IllegalArgumentException` earlier versions raised there;
+  through a generated read it arrives as
+  [Connection Ownership and Transactions](#connection-ownership-and-transactions)
+  describes. A nullable enum column is read with
   `<EnumType>.fromLabel(resultSet.getString(position))`, while a non-null one is
   read with
   `org.sqlcj.runtime.NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`,
@@ -1719,6 +1756,23 @@ Enum types:
   against PostgreSQL 16, compares the generated constants with
   `pg_enum` in `enumsortorder`, and round trips a null and a non-null value as
   an `INSERT` value, an equality predicate, and a result component.
+- `PostgresIntegrationTest.shouldFailWhereAnEnumLabelAddedAfterGenerationIsRead`
+  executes the label drift against PostgreSQL 16: a build generated before
+  `ALTER TYPE ... ADD VALUE 'sad'` reads a row holding that label and fails
+  with `UnmappableValueException`, its exact message, `type()`, `value()`, a
+  `null` `sqlState()`, and the generated enum's own
+  `UnmappableValueException` as its cause;
+  `JavaCodeGeneratorTest.shouldGenerateCompilableEnumWithLabelLookups` covers
+  the exception the compiled `fromLabel` raises and both values it carries;
+  `JdbcQueryExecutorTest.shouldReportAMapperFailureOfADataSourceOperation`,
+  `JdbcQueryExecutorTest.shouldReportAMapperFailureOnACallerOwnedConnection`,
+  `JdbcQueryExecutorTest.shouldRethrowAnUnmappableValueOfAMapper`, and
+  `JdbcQueryExecutorTest.shouldRethrowAnErrorAMapperRaises` cover every read
+  of both construction paths, the plain `QueryExecutionException` of any other
+  unchecked mapper failure with its cause and released resources, the rethrown
+  `UnmappableValueException`, and the unwrapped `Error`; and
+  `JdbcTransactionsTest.shouldRollBackAndRethrowAMapperFailure` covers the
+  rollback a mapper failure inside `useTransaction` causes.
 
 Domain types:
 
