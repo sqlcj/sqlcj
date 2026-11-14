@@ -13,6 +13,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -27,11 +29,17 @@ import static org.junit.jupiter.api.Assertions.fail;
  * never contradicts the nullness annotations it carries and no later generator
  * change brings a warning back.
  *
- * <p>Two trees are checked: the reference service's, generated from its
- * hand-written snapshot, and a sqlcj-owned fixture that reads every mapped
+ * <p>Three trees are checked: the reference service's, generated from its
+ * hand-written snapshot; a sqlcj-owned fixture that reads every mapped
  * type, scalar and array, nullable and {@code NOT NULL}, through every result
  * shape a generated repository has, and binds an enum and an {@code INTERVAL}
- * parameter of each nullness, as one read and as one {@code :batchexec}.
+ * parameter of each nullness, as one read and as one {@code :batchexec}; and a
+ * sqlcj-owned fixture whose eight enum types are named exactly like the JDK,
+ * runtime, and JSpecify types generated code writes.
+ *
+ * <p>The two trees without a name collision are also asserted to write no
+ * qualified type name at all outside their {@code package} and {@code import}
+ * declarations, and every tree to import no type its own text does not name.
  *
  * <p>Each tree is compiled in a {@code javac} process of the build's own JDK,
  * so no compiler or surefire setting of this build changes, with
@@ -50,6 +58,18 @@ class GeneratedSourceCheckTest {
 
     /** The marker every NullAway finding carries. */
     private static final String NULLAWAY_FINDING = "[NullAway]";
+
+    /**
+     * The package prefixes generated code names a type from, which a generated
+     * file without a name collision writes only in an {@code import}
+     * declaration.
+     */
+    private static final List<String> QUALIFIED_PREFIXES = List.of(
+        "java.",
+        "org.sqlcj.",
+        "org.jspecify.",
+        "generated."
+    );
 
     /** The packages of {@code javac} Error Prone reads the compilation from. */
     private static final List<String> EXPORTED_COMPILER_PACKAGES = List.of(
@@ -96,6 +116,8 @@ class GeneratedSourceCheckTest {
         );
 
         assertNoFinding(generatedDirectory, "classes-reference-service");
+        assertNoQualifiedName(generatedDirectory);
+        assertEveryImportIsNamed(generatedDirectory);
     }
 
     /**
@@ -117,6 +139,31 @@ class GeneratedSourceCheckTest {
         );
 
         assertNoFinding(generatedDirectory, "classes-null-checker");
+        assertNoQualifiedName(generatedDirectory);
+        assertEveryImportIsNamed(generatedDirectory);
+    }
+
+    /**
+     * The fixture whose eight enum types are named {@code optional},
+     * {@code big_decimal}, {@code local_date}, {@code objects},
+     * {@code arrays}, {@code nullable}, {@code null_marked}, and
+     * {@code string} carries no finding either: every generated file keeps the
+     * generated enum's simple name, writes the type it shadows in full, and
+     * imports nothing it does not name.
+     */
+    @Test
+    void shouldReportNoFindingOnTheShadowedNameFixtureTree() throws Exception {
+        Path generatedDirectory = tempDir.resolve("shadowed-names");
+
+        generate(
+            "Measurements",
+            fixture("/shadowed-names/schema.sql"),
+            fixture("/shadowed-names/queries.sql"),
+            generatedDirectory
+        );
+
+        assertNoFinding(generatedDirectory, "classes-shadowed-names");
+        assertEveryImportIsNamed(generatedDirectory);
     }
 
     /**
@@ -167,6 +214,65 @@ class GeneratedSourceCheckTest {
 
         assertEquals("", check.output());
         assertEquals(0, check.exitCode());
+    }
+
+    /**
+     * Asserts that no generated file of one tree writes a qualified type name
+     * outside its {@code package} and {@code import} declarations, so that a
+     * tree without a name collision reads as the Java a developer writes.
+     */
+    private void assertNoQualifiedName(Path generatedDirectory) throws IOException {
+        for (Path source : sources(generatedDirectory)) {
+            for (String line : Files.readString(source).lines().toList()) {
+                if (isDeclaration(line)) {
+                    continue;
+                }
+
+                for (String prefix : QUALIFIED_PREFIXES) {
+                    assertFalse(
+                        line.contains(prefix),
+                        "%s writes a qualified name: %s".formatted(source, line)
+                    );
+                }
+            }
+        }
+    }
+
+    /**
+     * Asserts that every single-type import of every generated file of one tree
+     * names a type the file's own text writes by that simple name, so that no
+     * generated file carries an unused import.
+     */
+    private void assertEveryImportIsNamed(Path generatedDirectory) throws IOException {
+        for (Path source : sources(generatedDirectory)) {
+            List<String> lines = Files.readString(source).lines().toList();
+
+            String body = lines.stream()
+                .filter(line -> !isDeclaration(line))
+                .collect(Collectors.joining("\n"));
+
+            for (String line : lines) {
+                if (!line.startsWith("import ")) {
+                    continue;
+                }
+
+                String qualifiedName = line.substring("import ".length(), line.length() - 1);
+                String simpleName = qualifiedName
+                    .substring(qualifiedName.lastIndexOf('.') + 1);
+
+                assertTrue(
+                    Pattern.compile("\\b" + Pattern.quote(simpleName) + "\\b")
+                        .matcher(body)
+                        .find(),
+                    "%s imports %s and names it nowhere".formatted(source, qualifiedName)
+                );
+            }
+        }
+    }
+
+    /** Reports whether one line is a package or import declaration. */
+    private boolean isDeclaration(String line) {
+        return line.startsWith("package ") || line.startsWith("import ");
     }
 
     /** Generates the one repository of one query group into its own directory. */

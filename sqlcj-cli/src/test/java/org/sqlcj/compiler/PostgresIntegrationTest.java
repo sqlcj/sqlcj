@@ -1006,6 +1006,14 @@ class PostgresIntegrationTest {
         execute("DROP TABLE IF EXISTS memberships");
         execute("DROP TABLE IF EXISTS teams");
         execute("DROP TABLE IF EXISTS measurements");
+        execute("DROP TYPE IF EXISTS optional");
+        execute("DROP TYPE IF EXISTS big_decimal");
+        execute("DROP TYPE IF EXISTS local_date");
+        execute("DROP TYPE IF EXISTS objects");
+        execute("DROP TYPE IF EXISTS arrays");
+        execute("DROP TYPE IF EXISTS nullable");
+        execute("DROP TYPE IF EXISTS null_marked");
+        execute("DROP TYPE IF EXISTS string");
         execute("DROP TABLE IF EXISTS readings");
         execute("DROP TABLE IF EXISTS categories");
         execute("DROP TABLE IF EXISTS documents");
@@ -3115,6 +3123,227 @@ class PostgresIntegrationTest {
                     .getMessage()
             );
         }
+    }
+
+    /**
+     * Proves that a schema whose enum types are named exactly like the JDK,
+     * runtime, and JSpecify types generated code writes generates code that
+     * compiles and runs: every one of the eight generated enums is bound and
+     * read back as its own constant by the {@code :one} insert that returns
+     * the whole row, the {@code :optional} read, and the {@code :many} read,
+     * the nullable enum column round trips as a constant and as {@code null},
+     * and the {@code :exec} update rewrites each of them beside its nullable
+     * text, numeric, and date columns.
+     */
+    @Test
+    void shouldRoundTripEnumTypesNamedLikeTheTypesGeneratedCodeWrites() throws Exception {
+        String schema = fixture("/shadowed-names/schema.sql");
+
+        execute(schema);
+
+        Path classesDirectory = generateAndCompile(
+            schema,
+            fixture("/shadowed-names/queries.sql")
+        );
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Class<?> optionalEnum = enumClass(classLoader, "Optional");
+            Class<?> bigDecimalEnum = enumClass(classLoader, "BigDecimal");
+            Class<?> localDateEnum = enumClass(classLoader, "LocalDate");
+            Class<?> objectsEnum = enumClass(classLoader, "Objects");
+            Class<?> arraysEnum = enumClass(classLoader, "Arrays");
+            Class<?> nullableEnum = enumClass(classLoader, "Nullable");
+            Class<?> nullMarkedEnum = enumClass(classLoader, "NullMarked");
+            Class<?> stringEnum = enumClass(classLoader, "String");
+
+            Object repository = newRepository(classLoader);
+
+            Method insert = repository.getClass().getMethod(
+                "insertMeasurement",
+                String.class,
+                String.class,
+                BigDecimal.class,
+                BigDecimal.class,
+                LocalDate.class,
+                LocalDate.class,
+                optionalEnum,
+                bigDecimalEnum,
+                localDateEnum,
+                objectsEnum,
+                arraysEnum,
+                nullableEnum,
+                nullMarkedEnum,
+                stringEnum,
+                optionalEnum
+            );
+
+            Object inserted = insert.invoke(
+                repository,
+                "first",
+                "a note",
+                new BigDecimal("1.50"),
+                new BigDecimal("2.50"),
+                LocalDate.of(2026, 1, 1),
+                LocalDate.of(2026, 2, 2),
+                constant(optionalEnum, "PRESENT"),
+                constant(bigDecimalEnum, "SMALL"),
+                constant(localDateEnum, "TODAY"),
+                constant(objectsEnum, "ONE"),
+                constant(arraysEnum, "EMPTY"),
+                constant(nullableEnum, "MAYBE"),
+                constant(nullMarkedEnum, "MARKED"),
+                constant(stringEnum, "TEXT"),
+                constant(optionalEnum, "ABSENT")
+            );
+
+            assertNotNull(inserted);
+
+            assertEquals("first", component(inserted, "label"));
+            assertEquals("a note", component(inserted, "note"));
+            assertEquals(new BigDecimal("1.50"), component(inserted, "total"));
+            assertEquals(new BigDecimal("2.50"), component(inserted, "balance"));
+            assertEquals(LocalDate.of(2026, 1, 1), component(inserted, "takenOn"));
+            assertEquals(LocalDate.of(2026, 2, 2), component(inserted, "closedOn"));
+
+            assertEquals(constant(optionalEnum, "PRESENT"), component(inserted, "presence"));
+            assertEquals(constant(bigDecimalEnum, "SMALL"), component(inserted, "magnitude"));
+            assertEquals(constant(localDateEnum, "TODAY"), component(inserted, "dayKind"));
+            assertEquals(constant(objectsEnum, "ONE"), component(inserted, "countKind"));
+            assertEquals(constant(arraysEnum, "EMPTY"), component(inserted, "listKind"));
+            assertEquals(constant(nullableEnum, "MAYBE"), component(inserted, "maybeKind"));
+            assertEquals(constant(nullMarkedEnum, "MARKED"), component(inserted, "markKind"));
+            assertEquals(constant(stringEnum, "TEXT"), component(inserted, "textKind"));
+            assertEquals(constant(optionalEnum, "ABSENT"), component(inserted, "sparePresence"));
+
+            Object second = insert.invoke(
+                repository,
+                "second",
+                null,
+                new BigDecimal("3.50"),
+                null,
+                LocalDate.of(2026, 3, 3),
+                null,
+                constant(optionalEnum, "ABSENT"),
+                constant(bigDecimalEnum, "LARGE"),
+                constant(localDateEnum, "TOMORROW"),
+                constant(objectsEnum, "MANY"),
+                constant(arraysEnum, "FILLED"),
+                constant(nullableEnum, "NEVER"),
+                constant(nullMarkedEnum, "UNMARKED"),
+                constant(stringEnum, "BLANK"),
+                null
+            );
+
+            assertNotNull(second);
+
+            assertNull(component(second, "note"));
+            assertNull(component(second, "balance"));
+            assertNull(component(second, "closedOn"));
+            assertNull(component(second, "sparePresence"));
+
+            assertEquals(constant(stringEnum, "BLANK"), component(second, "textKind"));
+
+            Long id = assertInstanceOf(Long.class, component(inserted, "id"));
+
+            Method find = repository.getClass().getMethod("findMeasurement", Long.class);
+
+            Object found = assertInstanceOf(Optional.class, find.invoke(repository, id))
+                .orElseThrow();
+
+            assertEquals(constant(optionalEnum, "PRESENT"), component(found, "presence"));
+            assertEquals(constant(stringEnum, "TEXT"), component(found, "textKind"));
+            assertEquals(constant(optionalEnum, "ABSENT"), component(found, "sparePresence"));
+
+            List<?> all = assertInstanceOf(
+                List.class,
+                repository.getClass().getMethod("listMeasurements").invoke(repository)
+            );
+
+            assertEquals(2, all.size());
+
+            assertEquals(constant(nullableEnum, "MAYBE"), component(all.get(0), "maybeKind"));
+            assertEquals(constant(nullableEnum, "NEVER"), component(all.get(1), "maybeKind"));
+
+            Method update = repository.getClass().getMethod(
+                "updateMeasurementKinds",
+                Long.class,
+                optionalEnum,
+                bigDecimalEnum,
+                localDateEnum,
+                objectsEnum,
+                arraysEnum,
+                nullableEnum,
+                nullMarkedEnum,
+                stringEnum,
+                optionalEnum,
+                String.class,
+                BigDecimal.class,
+                LocalDate.class
+            );
+
+            assertEquals(
+                1,
+                update.invoke(
+                    repository,
+                    id,
+                    constant(optionalEnum, "ABSENT"),
+                    constant(bigDecimalEnum, "LARGE"),
+                    constant(localDateEnum, "TOMORROW"),
+                    constant(objectsEnum, "MANY"),
+                    constant(arraysEnum, "FILLED"),
+                    constant(nullableEnum, "NEVER"),
+                    constant(nullMarkedEnum, "UNMARKED"),
+                    constant(stringEnum, "BLANK"),
+                    null,
+                    null,
+                    null,
+                    null
+                )
+            );
+
+            Object updated = assertInstanceOf(Optional.class, find.invoke(repository, id))
+                .orElseThrow();
+
+            assertEquals(constant(optionalEnum, "ABSENT"), component(updated, "presence"));
+            assertEquals(constant(bigDecimalEnum, "LARGE"), component(updated, "magnitude"));
+            assertEquals(constant(localDateEnum, "TOMORROW"), component(updated, "dayKind"));
+            assertEquals(constant(objectsEnum, "MANY"), component(updated, "countKind"));
+            assertEquals(constant(arraysEnum, "FILLED"), component(updated, "listKind"));
+            assertEquals(constant(nullableEnum, "NEVER"), component(updated, "maybeKind"));
+            assertEquals(constant(nullMarkedEnum, "UNMARKED"), component(updated, "markKind"));
+            assertEquals(constant(stringEnum, "BLANK"), component(updated, "textKind"));
+
+            assertNull(component(updated, "sparePresence"));
+            assertNull(component(updated, "note"));
+            assertNull(component(updated, "balance"));
+            assertNull(component(updated, "closedOn"));
+        }
+    }
+
+    /** The generated enum of one enum type, loaded from the compiled tree. */
+    private Class<?> enumClass(URLClassLoader classLoader, String typeName) throws Exception {
+        Class<?> enumClass = Class.forName("generated.enums." + typeName, true, classLoader);
+
+        assertTrue(enumClass.isEnum(), typeName);
+
+        return enumClass;
+    }
+
+    /** One constant of a generated enum, by its generated name. */
+    private Object constant(Class<?> enumClass, String constantName) {
+        return Arrays.stream(enumClass.getEnumConstants())
+            .filter(constant -> constant.toString().equals(constantName))
+            .findFirst()
+            .orElseThrow();
+    }
+
+    /** The text of one fixture file of the test resources. */
+    private String fixture(String resource) throws Exception {
+        URL url = PostgresIntegrationTest.class.getResource(resource);
+
+        assertNotNull(url, "missing fixture: " + resource);
+
+        return Files.readString(Path.of(url.toURI()));
     }
 
     /**
