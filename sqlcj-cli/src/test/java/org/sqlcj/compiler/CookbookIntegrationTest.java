@@ -799,10 +799,10 @@ class CookbookIntegrationTest {
         int rivalAttempts,
         AtomicInteger attempts
     ) {
-        return connection -> {
+        return transaction -> {
             int attempt = attempts.incrementAndGet();
 
-            Object newsletter = repository(new JdbcQueryExecutor(connection));
+            Object newsletter = repository(transaction.executor());
 
             // The read takes the transaction's snapshot, which the update the
             // rival commits next leaves behind.

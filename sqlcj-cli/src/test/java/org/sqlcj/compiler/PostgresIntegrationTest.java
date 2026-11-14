@@ -6882,12 +6882,12 @@ class PostgresIntegrationTest {
 
             AtomicReference<Connection> used = new AtomicReference<>();
 
-            List<Object> committed = transactions.inTransaction(connection -> {
-                used.set(connection);
+            List<Object> committed = transactions.inTransaction(transaction -> {
+                used.set(transaction.connection());
 
-                writeUsersOnOneConnection(classLoader, connection, 1L);
+                writeUsersOnOneConnection(classLoader, transaction.connection(), 1L);
 
-                return listUserNames(classLoader, new JdbcQueryExecutor(connection));
+                return listUserNames(classLoader, transaction.executor());
             });
 
             assertEquals(List.of("Alice", "Bob", "Carol"), committed);
@@ -6919,10 +6919,10 @@ class PostgresIntegrationTest {
                 thrown,
                 assertThrows(
                     IllegalStateException.class,
-                    () -> transactions.useTransaction(connection -> {
-                        used.set(connection);
+                    () -> transactions.useTransaction(transaction -> {
+                        used.set(transaction.connection());
 
-                        writeUsersOnOneConnection(classLoader, connection, 1L);
+                        writeUsersOnOneConnection(classLoader, transaction.connection(), 1L);
 
                         throw thrown;
                     })
@@ -6938,8 +6938,8 @@ class PostgresIntegrationTest {
                 error,
                 assertThrows(
                     CallbackError.class,
-                    () -> transactions.useTransaction(connection -> {
-                        writeUsersOnOneConnection(classLoader, connection, 1L);
+                    () -> transactions.useTransaction(transaction -> {
+                        writeUsersOnOneConnection(classLoader, transaction.connection(), 1L);
 
                         throw error;
                     })
@@ -6950,13 +6950,10 @@ class PostgresIntegrationTest {
 
             QueryCardinalityException failure = assertThrows(
                 QueryCardinalityException.class,
-                () -> transactions.useTransaction(connection -> {
-                    writeUsersOnOneConnection(classLoader, connection, 1L);
+                () -> transactions.useTransaction(transaction -> {
+                    writeUsersOnOneConnection(classLoader, transaction.connection(), 1L);
 
-                    Object repository = newRepository(
-                        classLoader,
-                        new JdbcQueryExecutor(connection)
-                    );
+                    Object repository = newRepository(classLoader, transaction.executor());
 
                     // The generated :one query runs on the transaction's own
                     // connection and fails its cardinality check there; only
@@ -7439,7 +7436,7 @@ class PostgresIntegrationTest {
             TransactionConflictException failure = assertThrows(
                 TransactionConflictException.class,
                 () -> transactions.useTransaction(second -> {
-                    QueryExecutor secondExecutor = new JdbcQueryExecutor(second);
+                    QueryExecutor secondExecutor = second.executor();
 
                     assertEquals(List.of(), usersByCode(classLoader, secondExecutor, 2));
 
