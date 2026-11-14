@@ -639,7 +639,10 @@ rejected where an enum is expected. An array argument is wrapped in
 `org.sqlcj.runtime.SqlArray` the same way; see [Array Types](#array-types).
 
 An `INTERVAL` argument is passed to the executor as
-`new org.sqlcj.runtime.UntypedText(value == null ? null : value.format())`.
+`new org.sqlcj.runtime.UntypedText(value.format())`, or as
+`new org.sqlcj.runtime.UntypedText(value == null ? null : value.format())` for a
+nullable parameter or component, as an enum argument is written around
+`label()`.
 `format()` writes the three counts with an explicit sign on every field, as in
 `+14 mons -3 days +3723000004 microseconds`, so that PostgreSQL reads the text
 alike under every `IntervalStyle` and the least microsecond count the record
@@ -1280,7 +1283,12 @@ statement makes indirectly is never seen:
 ## Nulls
 
 Every generated method parameter and every generated result component uses a
-reference type, so each of them can represent SQL `NULL`. A result component may
+reference type, so each of them can represent SQL `NULL`. A parameter accepts a
+`null`, and binds it as SQL `NULL`, exactly where the query gives that `null` a
+meaning; every other parameter rejects it with a `NullPointerException` before
+the statement runs, as
+[Parameter nullness](queries.md#parameter-nullness) states. A result component
+may
 be `null` exactly when its column is modeled nullable by the schema snapshot or
 is read from a null-extended source — one a `LEFT`, `RIGHT`, or `FULL` join
 null-extends — whose columns are all nullable because an unmatched row supplies
@@ -1316,7 +1324,8 @@ Null handling does not depend on the column type:
   `java.util.Collections.singletonList`, or `java.util.Arrays.asList`, by the
   number of binding positions, and each of the three accepts null elements,
 - `JdbcQueryExecutor` binds each argument positionally with
-  `PreparedStatement.setObject`, so a null argument is bound as SQL `NULL`. A
+  `PreparedStatement.setObject`, so a null argument of a parameter that accepts
+  one is bound as SQL `NULL`. A
   `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`, or `MACADDR8` argument
   is bound the same way through its
   `org.sqlcj.runtime.UntypedText` wrapper, so a null value becomes a SQL `NULL`
