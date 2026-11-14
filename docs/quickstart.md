@@ -354,8 +354,8 @@ public final class App {
             System.out.println("missing row rejected: " + e.getMessage());
         }
 
-        Long committedId = transactions.inTransaction(connection -> {
-            AuthorRepository transactionalAuthors = new AuthorRepository(new JdbcQueryExecutor(connection));
+        Long committedId = transactions.inTransaction(transaction -> {
+            AuthorRepository transactionalAuthors = new AuthorRepository(transaction.executor());
 
             AuthorsRow committed = transactionalAuthors.createAuthor("Grace Hopper", null);
 
@@ -367,8 +367,8 @@ public final class App {
         System.out.println("committed: " + authors.getAuthor(committedId).bio());
 
         try {
-            transactions.useTransaction(connection -> {
-                AuthorRepository transactionalAuthors = new AuthorRepository(new JdbcQueryExecutor(connection));
+            transactions.useTransaction(transaction -> {
+                AuthorRepository transactionalAuthors = new AuthorRepository(transaction.executor());
 
                 AuthorsRow discarded = transactionalAuthors.createAuthor("Temporary Author", null);
 
@@ -539,11 +539,14 @@ That output is the whole MVP contract in one run:
   table of its schema.
 - The two transactions run generated operations through
   `org.sqlcj.runtime.JdbcTransactions`, which obtains a connection, disables its
-  auto-commit, and hands it to the callback. The first callback returns
-  normally, so the helper commits both of its writes and `inTransaction` returns
-  the new author's id. In the second, the `:one` `GetAuthor` read of a missing
-  id fails, so the helper rolls both of its writes back and the
-  `QueryCardinalityException` of that read reaches the application unchanged.
+  auto-commit, and hands the callback a `JdbcTransaction` carrying the
+  application's executor bound to that connection, so the repository the
+  callback builds over `transaction.executor()` runs in that transaction. The
+  first callback returns normally, so the helper commits both of its writes and
+  `inTransaction` returns the new author's id. In the second, the `:one`
+  `GetAuthor` read of a missing id fails, so the helper rolls both of its
+  writes back and the `QueryCardinalityException` of that read reaches the
+  application unchanged.
   [Connection Ownership and Transactions](postgresql.md#connection-ownership-and-transactions)
   documents the helper's commit, rollback, and failure rules, and the
   caller-owned connection an application that needs the connection itself runs

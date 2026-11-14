@@ -467,13 +467,14 @@ public final class ArticleLookup {
 
 Replacing an article is two writes — archive the article being replaced, store
 its published replacement — which must either both commit or neither happen.
-`JdbcTransactions.inTransaction` opens one transaction, hands its connection to
-the unit of work, commits the transaction when the work returns, and rolls it
-back when the work fails. The unit of work binds its own repository over that
-one connection, so both writes take part in that transaction; a repository
-built over the `DataSource` would take a connection of its own and commit by
-itself. Connection ownership and the exception each refused statement raises
-are in
+`JdbcTransactions.inTransaction` opens one transaction, hands the unit of work
+a `JdbcTransaction` carrying the application's executor bound to that
+transaction's connection, commits the transaction when the work returns, and
+rolls it back when the work fails. The unit of work binds its own repository
+over `transaction.executor()`, so both writes take part in that transaction
+through the executor the application uses everywhere else; a repository built
+over the `DataSource` would take a connection of its own and commit by itself.
+Connection ownership and the exception each refused statement raises are in
 [Connection Ownership and Transactions](postgresql.md#connection-ownership-and-transactions).
 
 A replacement whose slug another article already holds raises
@@ -509,7 +510,6 @@ package com.example.newsletter;
 import com.example.newsletter.enums.ArticleStatus;
 import com.example.newsletter.repositories.NewsletterRepository;
 import com.example.newsletter.rows.ArticlesRow;
-import org.sqlcj.runtime.JdbcQueryExecutor;
 import org.sqlcj.runtime.JdbcTransactions;
 
 import java.time.OffsetDateTime;
@@ -519,10 +519,10 @@ import java.time.OffsetDateTime;
  * publishes its replacement, and the two writes either both happen or neither
  * does.
  *
- * <p>The unit of work runs on the one connection {@link JdbcTransactions}
- * opens the transaction on, and it binds its own repository over that
- * connection, so both writes take part in the same transaction. A normal
- * return commits it; any failure, such as the
+ * <p>The unit of work runs in the one transaction {@link JdbcTransactions}
+ * opens, and it binds its own repository over that transaction's executor, so
+ * both writes take part in the same transaction. A normal return commits it;
+ * any failure, such as the
  * {@link org.sqlcj.runtime.UniqueViolationException} of a replacement whose
  * slug is already taken, rolls the archiving back too and reaches the caller
  * unchanged.
@@ -540,8 +540,8 @@ public final class ArticleReplacement {
         String title,
         OffsetDateTime publishedAt
     ) {
-        return transactions.inTransaction(connection -> {
-            NewsletterRepository newsletter = new NewsletterRepository(new JdbcQueryExecutor(connection));
+        return transactions.inTransaction(transaction -> {
+            NewsletterRepository newsletter = new NewsletterRepository(transaction.executor());
 
             newsletter.setArticleStatus(ArticleStatus.ARCHIVED, articleId);
 
