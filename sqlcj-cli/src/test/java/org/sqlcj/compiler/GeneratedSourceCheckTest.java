@@ -30,7 +30,8 @@ import static org.junit.jupiter.api.Assertions.fail;
  * <p>Two trees are checked: the reference service's, generated from its
  * hand-written snapshot, and a sqlcj-owned fixture that reads every mapped
  * type, scalar and array, nullable and {@code NOT NULL}, through every result
- * shape a generated repository has.
+ * shape a generated repository has, and binds an enum and an {@code INTERVAL}
+ * parameter of each nullness, as one read and as one {@code :batchexec}.
  *
  * <p>Each tree is compiled in a {@code javac} process of the build's own JDK,
  * so no compiler or surefire setting of this build changes, with
@@ -100,7 +101,9 @@ class GeneratedSourceCheckTest {
     /**
      * The fixture tree carries none either, so every read of every mapped
      * type, scalar and array, nullable and {@code NOT NULL}, passes the
-     * checker in every result shape.
+     * checker in every result shape, and so do the enum and {@code INTERVAL}
+     * arguments of a non-null and of a nullable parameter, which a method and
+     * a parameter record both bind.
      */
     @Test
     void shouldReportNoFindingOnTheEveryTypeFixtureTree() throws Exception {

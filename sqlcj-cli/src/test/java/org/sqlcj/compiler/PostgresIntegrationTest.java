@@ -780,15 +780,13 @@ class PostgresIntegrationTest {
         INSERT INTO customer_orders (id, customer_id, quantity)
         VALUES ($1, $2, $3);
 
-        -- name: RenameCustomer :exec
-        UPDATE customers
-        SET name = $2
-        WHERE id = $1;
+        -- name: InsertUnnamedCustomer :exec
+        INSERT INTO customers (id)
+        VALUES ($1);
 
-        -- name: RenameCustomers :batchexec
-        UPDATE customers
-        SET name = $2
-        WHERE id = $1;
+        -- name: InsertUnnamedCustomers :batchexec
+        INSERT INTO customers (id)
+        VALUES ($1);
         """;
 
     /**
@@ -1262,8 +1260,9 @@ class PostgresIntegrationTest {
     /**
      * Covers the list predicate end to end: one {@code List} argument is bound
      * as one server array and PostgreSQL returns the rows whose id the list
-     * contains, in the queried order, while a null list and an empty list
-     * contain no id and match no row.
+     * contains, in the queried order, while an empty list contains no id and
+     * matches no row. The list itself is a non-null parameter, so a
+     * {@code null} list fails before the statement runs.
      */
     @Test
     void shouldExecuteGeneratedListPredicateAgainstPostgres() throws Exception {
@@ -1291,10 +1290,17 @@ class PostgresIntegrationTest {
                 List.class
             );
 
-            List<Long> noIds = null;
-
-            assertEquals(List.of(), names(listByIds.invoke(repository, noIds)));
             assertEquals(List.of(), names(listByIds.invoke(repository, List.of())));
+
+            assertEquals(
+                "Parameter 'id' of query 'ListUsersByIds' in UsersRepository must not be null",
+                assertThrows(
+                    InvocationTargetException.class,
+                    () -> listByIds.invoke(repository, (List<Long>) null)
+                )
+                    .getCause()
+                    .getMessage()
+            );
 
             assertEquals(
                 List.of("Bob"),
@@ -2959,7 +2965,8 @@ class PostgresIntegrationTest {
      * constants carry PostgreSQL's own labels in its own sort order, a null and
      * a non-null value are written as {@code INSERT} values and read back as
      * constants of the generated enum, and an equality predicate matches by
-     * label while a null argument matches no row.
+     * label. The compared parameter is non-null, so a null argument fails
+     * before the statement runs.
      */
     @Test
     void shouldRoundTripEnumValues() throws Exception {
@@ -3062,11 +3069,15 @@ class PostgresIntegrationTest {
 
             assertEquals(1L, component(found.orElseThrow(), "id"));
 
-            assertTrue(
-                assertInstanceOf(
-                    Optional.class,
-                    findMethod.invoke(repository, new Object[] { null })
-                ).isEmpty()
+            assertEquals(
+                "Parameter 'setting' of query 'FindStageEventBySetting' in UsersRepository"
+                    + " must not be null",
+                assertThrows(
+                    InvocationTargetException.class,
+                    () -> findMethod.invoke(repository, new Object[] { null })
+                )
+                    .getCause()
+                    .getMessage()
             );
         }
     }
@@ -3479,7 +3490,8 @@ class PostgresIntegrationTest {
      * by value rather than by text. {@code JSON} keeps the text as written and
      * {@code JSONB} reads back as PostgreSQL normalizes it. The equality
      * predicate is proven on {@code JSONB} alone, because PostgreSQL defines no
-     * {@code json = json} operator.
+     * {@code json = json} operator, and its parameter is non-null, so a null
+     * argument fails before the statement runs.
      */
     @Test
     void shouldRoundTripJsonValues() throws Exception {
@@ -3559,11 +3571,15 @@ class PostgresIntegrationTest {
 
             assertEquals(1L, component(found.orElseThrow(), "id"));
 
-            assertTrue(
-                assertInstanceOf(
-                    Optional.class,
-                    findMethod.invoke(repository, new Object[] { null })
-                ).isEmpty()
+            assertEquals(
+                "Parameter 'config' of query 'FindDocumentByConfig' in UsersRepository"
+                    + " must not be null",
+                assertThrows(
+                    InvocationTargetException.class,
+                    () -> findMethod.invoke(repository, new Object[] { null })
+                )
+                    .getCause()
+                    .getMessage()
             );
         }
     }
@@ -6828,8 +6844,8 @@ class PostgresIntegrationTest {
      * Each constraint PostgreSQL names raises its own runtime type through a
      * generated {@code :exec} method and through a generated
      * {@code :batchexec} method of the same statement: a duplicate key, a
-     * missing referenced row, a {@code NULL} in a {@code NOT NULL} column, and
-     * a row a {@code CHECK} rejects.
+     * missing referenced row, a row that leaves a {@code NOT NULL} column
+     * without a value, and a row a {@code CHECK} rejects.
      */
     @Test
     void shouldRaiseTheMappedConstraintViolationsOfGeneratedWritesAgainstPostgres() throws Exception {
@@ -6850,9 +6866,9 @@ class PostgresIntegrationTest {
                 .getClass()
                 .getMethod("insertOrder", Long.class, Long.class, Integer.class);
 
-            Method renameCustomer = repository
+            Method insertUnnamedCustomer = repository
                 .getClass()
-                .getMethod("renameCustomer", Long.class, String.class);
+                .getMethod("insertUnnamedCustomer", Long.class);
 
             assertMappedFailure(
                 UniqueViolationException.class,
@@ -6873,9 +6889,9 @@ class PostgresIntegrationTest {
             assertMappedFailure(
                 NotNullViolationException.class,
                 "23502",
-                "RenameCustomer",
+                "InsertUnnamedCustomer",
                 PSQLException.class,
-                () -> renameCustomer.invoke(repository, 1L, null)
+                () -> insertUnnamedCustomer.invoke(repository, 12L)
             );
 
             assertMappedFailure(
@@ -6888,7 +6904,10 @@ class PostgresIntegrationTest {
 
             Class<?> insertCustomers = paramsType(repository, "InsertCustomersParams");
             Class<?> insertOrders = paramsType(repository, "InsertOrdersParams");
-            Class<?> renameCustomers = paramsType(repository, "RenameCustomersParams");
+            Class<?> insertUnnamedCustomers = paramsType(
+                repository,
+                "InsertUnnamedCustomersParams"
+            );
 
             assertMappedFailure(
                 UniqueViolationException.class,
@@ -6917,12 +6936,12 @@ class PostgresIntegrationTest {
             assertMappedFailure(
                 NotNullViolationException.class,
                 "23502",
-                "RenameCustomers",
+                "InsertUnnamedCustomers",
                 BatchUpdateException.class,
                 () -> batch(
                     repository,
-                    "renameCustomers",
-                    List.of(params(renameCustomers, 1L, null))
+                    "insertUnnamedCustomers",
+                    List.of(params(insertUnnamedCustomers, 13L))
                 )
             );
 

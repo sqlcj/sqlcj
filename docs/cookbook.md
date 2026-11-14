@@ -116,10 +116,7 @@ LIMIT :pageSize OFFSET :pageOffset;
 ```
 
 ```java
-public List<ArticlesRow> listArticlePage(
-    @org.jspecify.annotations.Nullable Integer pageSize,
-    @org.jspecify.annotations.Nullable Integer pageOffset
-);
+public List<ArticlesRow> listArticlePage(Integer pageSize, Integer pageOffset);
 ```
 
 ```java
@@ -176,12 +173,12 @@ LIMIT :pageSize;
 ```
 
 ```java
-public List<ArticlesRow> listLatestArticles(@org.jspecify.annotations.Nullable Integer pageSize);
+public List<ArticlesRow> listLatestArticles(Integer pageSize);
 
 public List<ArticlesRow> listArticlesBefore(
-    @org.jspecify.annotations.Nullable OffsetDateTime publishedAt,
-    @org.jspecify.annotations.Nullable Long id,
-    @org.jspecify.annotations.Nullable Integer pageSize
+    OffsetDateTime publishedAt,
+    Long id,
+    Integer pageSize
 );
 ```
 
@@ -260,8 +257,8 @@ public List<ArticlesRow> searchArticles(
     @org.jspecify.annotations.Nullable String search,
     @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable ArticleStatus> statuses,
     @org.jspecify.annotations.Nullable OffsetDateTime publishedSince,
-    @org.jspecify.annotations.Nullable Integer pageSize,
-    @org.jspecify.annotations.Nullable Integer pageOffset
+    Integer pageSize,
+    Integer pageOffset
 );
 
 public Long countSearchedArticles(
@@ -338,10 +335,7 @@ RETURNING *;
 ```
 
 ```java
-public SubscribersRow upsertSubscriber(
-    @org.jspecify.annotations.Nullable String email,
-    @org.jspecify.annotations.Nullable String name
-);
+public SubscribersRow upsertSubscriber(String email, String name);
 ```
 
 ```java
@@ -383,8 +377,8 @@ VALUES (:articleId, :viewedAt);
 
 ```java
 public record RecordArticleViewsParams(
-    @org.jspecify.annotations.Nullable Long articleId,
-    @org.jspecify.annotations.Nullable OffsetDateTime viewedAt
+    Long articleId,
+    OffsetDateTime viewedAt
 ) {
 }
 
@@ -442,9 +436,7 @@ ORDER BY id;
 ```
 
 ```java
-public List<ArticlesRow> listArticlesByIds(
-    @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable Long> ids
-);
+public List<ArticlesRow> listArticlesByIds(List<@org.jspecify.annotations.Nullable Long> ids);
 ```
 
 ```java
@@ -502,16 +494,13 @@ WHERE id = :id;
 
 ```java
 public ArticlesRow createArticle(
-    @org.jspecify.annotations.Nullable String slug,
-    @org.jspecify.annotations.Nullable String title,
-    @org.jspecify.annotations.Nullable ArticleStatus status,
-    @org.jspecify.annotations.Nullable OffsetDateTime publishedAt
+    String slug,
+    String title,
+    ArticleStatus status,
+    OffsetDateTime publishedAt
 );
 
-public int setArticleStatus(
-    @org.jspecify.annotations.Nullable ArticleStatus status,
-    @org.jspecify.annotations.Nullable Long id
-);
+public int setArticleStatus(ArticleStatus status, Long id);
 ```
 
 ```java
@@ -591,16 +580,13 @@ WHERE id = :id;
 
 ```java
 public ArticlesRow createArticle(
-    @org.jspecify.annotations.Nullable String slug,
-    @org.jspecify.annotations.Nullable String title,
-    @org.jspecify.annotations.Nullable ArticleStatus status,
-    @org.jspecify.annotations.Nullable OffsetDateTime publishedAt
+    String slug,
+    String title,
+    ArticleStatus status,
+    OffsetDateTime publishedAt
 );
 
-public int setArticleStatus(
-    @org.jspecify.annotations.Nullable ArticleStatus status,
-    @org.jspecify.annotations.Nullable Long id
-);
+public int setArticleStatus(ArticleStatus status, Long id);
 ```
 
 ```java
@@ -675,10 +661,10 @@ RETURNING *;
 
 ```java
 public ArticlesRow createArticle(
-    @org.jspecify.annotations.Nullable String slug,
-    @org.jspecify.annotations.Nullable String title,
-    @org.jspecify.annotations.Nullable ArticleStatus status,
-    @org.jspecify.annotations.Nullable OffsetDateTime publishedAt
+    String slug,
+    String title,
+    ArticleStatus status,
+    OffsetDateTime publishedAt
 );
 ```
 

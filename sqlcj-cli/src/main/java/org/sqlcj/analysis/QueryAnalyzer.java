@@ -3069,6 +3069,11 @@ public final class QueryAnalyzer {
      * <p>A target written with a subscript inserts into one element of its
      * array column, so its value is not typed from that column, which must
      * still exist.
+     *
+     * <p>A value written into a nullable column stores SQL {@code NULL} there
+     * for a {@code null} argument, so such a parameter is nullable, whatever
+     * default the column declares, while one written into a {@code NOT NULL}
+     * column is not.
      */
     private void resolveInsertValueRow(
         ParenthesedExpressionList<?> row,
@@ -3085,7 +3090,7 @@ public final class QueryAnalyzer {
             org.sqlcj.schema.Column column = findColumn(table, target.getUnquotedColumnName());
 
             if (directColumn(target) != null) {
-                resolveColumnValue(row.get(index), column, placeholders);
+                resolveColumnValue(row.get(index), column, placeholders, column.nullable());
             }
         }
     }
@@ -3250,6 +3255,11 @@ public final class QueryAnalyzer {
      * <p>Arithmetic inside an assigned value types the placeholders it writes
      * beside a numeric column of the level the assignment's own clause reads,
      * which is the level its {@code WHERE} expression reads.
+     *
+     * <p>A value assigned to a nullable column stores SQL {@code NULL} there
+     * for a {@code null} argument, so such a parameter is nullable, whatever
+     * default the column declares, while one assigned to a {@code NOT NULL}
+     * column is not.
      */
     private void resolveUpdateSetParameters(
         List<UpdateSet> updateSets,
@@ -3268,7 +3278,12 @@ public final class QueryAnalyzer {
             org.sqlcj.schema.Column column = findColumn(table, target.getUnquotedColumnName());
 
             if (directColumn(target) != null) {
-                resolveColumnValue(updateSet.getValue(0), column, placeholders);
+                resolveColumnValue(
+                    updateSet.getValue(0),
+                    column,
+                    placeholders,
+                    column.nullable()
+                );
             }
 
             resolveArithmeticParameters(updateSet.getValue(0), scope, placeholders);
@@ -3467,6 +3482,11 @@ public final class QueryAnalyzer {
      * parameter's type at it. A logical parameter no occurrence types has no
      * type to write, so the first occurrence of such a parameter, in textual
      * order, is rejected naming where the query writes it.
+     *
+     * <p>An occurrence the query tests for null is nullable wherever its
+     * parameter's type comes from, because the test gives a {@code null} bound
+     * at it a meaning, so the guard of a criteria query is nullable both where
+     * it states its own cast and where another occurrence types it.
      */
     private ResolvedOccurrences resolveOccurrences(ParsedSql parsedSql, Placeholders placeholders) {
         List<PlaceholderOccurrence> reported = parsedSql.placeholders();
@@ -3482,7 +3502,7 @@ public final class QueryAnalyzer {
 
                 typed = cast == null
                     ? null
-                    : toCastParameter(cast, indexedParameterName(cast.placeholder()));
+                    : toCastParameter(cast, indexedParameterName(cast.placeholder()), false);
             }
 
             if (typed != null) {
@@ -3511,6 +3531,12 @@ public final class QueryAnalyzer {
 
             occurrences.set(position, parameter);
             writtenTypes.add(position);
+        }
+
+        for (int position = 0; position < reported.size(); position++) {
+            if (reported.get(position).nullTested()) {
+                occurrences.set(position, occurrences.get(position).asNullable());
+            }
         }
 
         return new ResolvedOccurrences(occurrences, writtenTypes);
@@ -3750,7 +3776,10 @@ public final class QueryAnalyzer {
     /**
      * Retains one parameter per placeholder index in logical index order. A
      * repeated index keeps the name and type of its first occurrence and is
-     * accepted only when every occurrence resolves to the same Java type.
+     * accepted only when every occurrence resolves to the same Java type. It is
+     * nullable when any of its occurrences is, because a {@code null} argument
+     * is bound at every position of the index and one position giving it a
+     * meaning is enough.
      */
     private List<QueryParameter> toParameters(List<QueryParameter> occurrences, List<String> names) {
         Map<Integer, QueryParameter> parametersByIndex = new LinkedHashMap<>();
@@ -3760,6 +3789,10 @@ public final class QueryAnalyzer {
 
             if (parameter != null) {
                 requireSameParameterType(parameter, occurrence, names);
+
+                if (occurrence.nullable()) {
+                    parametersByIndex.put(parameter.index(), parameter.asNullable());
+                }
             }
         }
 
@@ -5836,24 +5869,41 @@ public final class QueryAnalyzer {
      * Resolves one value of a clause that names its parameter after a column: a
      * placeholder typed from the column, a cast placeholder that states its own
      * type and keeps the column's name, or an expression that is neither, whose
-     * own cast placeholders are typed where they stand.
+     * own cast placeholders are typed where they stand. A {@code null} bound
+     * there has no meaning of its own, as a compared value and an item of an
+     * insert's {@code SELECT} are.
      */
     private void resolveColumnValue(
         Expression value,
         org.sqlcj.schema.Column column,
         Placeholders placeholders
     ) {
+        resolveColumnValue(value, column, placeholders, false);
+    }
+
+    /**
+     * Resolves one value of a clause that names its parameter after a column,
+     * stating whether a {@code null} bound there has a meaning, which it has
+     * where the value is written into a nullable column and stores SQL
+     * {@code NULL} in it.
+     */
+    private void resolveColumnValue(
+        Expression value,
+        org.sqlcj.schema.Column column,
+        Placeholders placeholders,
+        boolean nullable
+    ) {
         Placeholder placeholder = placeholders.of(value);
 
         if (placeholder != null) {
-            addParameter(placeholder, column, placeholders);
+            addParameter(placeholder, column, placeholders, nullable);
             return;
         }
 
         CastPlaceholder cast = placeholders.ofCast(value);
 
         if (cast != null) {
-            addCastParameter(cast, column.name(), placeholders);
+            addCastParameter(cast, column.name(), placeholders, nullable);
         }
     }
 
@@ -5883,11 +5933,24 @@ public final class QueryAnalyzer {
         String name,
         Placeholders placeholders
     ) {
-        placeholders.record(cast.placeholder(), toCastParameter(cast, name));
+        addCastParameter(cast, name, placeholders, false);
+    }
+
+    private void addCastParameter(
+        CastPlaceholder cast,
+        String name,
+        Placeholders placeholders,
+        boolean nullable
+    ) {
+        placeholders.record(cast.placeholder(), toCastParameter(cast, name, nullable));
     }
 
     /** One parameter occurrence a cast types, under the given name. */
-    private QueryParameter toCastParameter(CastPlaceholder cast, String name) {
+    private QueryParameter toCastParameter(
+        CastPlaceholder cast,
+        String name,
+        boolean nullable
+    ) {
         ColumnTypeMapping.MappedType type = cast.type();
 
         return toParameter(
@@ -5896,7 +5959,8 @@ public final class QueryAnalyzer {
             type.type(),
             type.enumType(),
             type.array(),
-            type.blankPadded()
+            type.blankPadded(),
+            nullable
         );
     }
 
@@ -5905,6 +5969,15 @@ public final class QueryAnalyzer {
         org.sqlcj.schema.Column column,
         Placeholders placeholders
     ) {
+        addParameter(placeholder, column, placeholders, false);
+    }
+
+    private void addParameter(
+        Placeholder placeholder,
+        org.sqlcj.schema.Column column,
+        Placeholders placeholders,
+        boolean nullable
+    ) {
         addParameter(
             placeholder,
             column.name(),
@@ -5912,6 +5985,7 @@ public final class QueryAnalyzer {
             column.enumType(),
             column.array(),
             column.blankPadded(),
+            nullable,
             placeholders
         );
     }
@@ -5935,9 +6009,26 @@ public final class QueryAnalyzer {
         boolean blankPadded,
         Placeholders placeholders
     ) {
+        addParameter(placeholder, name, type, enumType, array, blankPadded, false, placeholders);
+    }
+
+    /**
+     * Records one parameter occurrence a clause of the query typed, stating
+     * whether a {@code null} bound at it has a meaning of its own.
+     */
+    private void addParameter(
+        Placeholder placeholder,
+        String name,
+        ColumnType type,
+        String enumType,
+        boolean array,
+        boolean blankPadded,
+        boolean nullable,
+        Placeholders placeholders
+    ) {
         placeholders.record(
             placeholder,
-            toParameter(placeholder, name, type, enumType, array, blankPadded)
+            toParameter(placeholder, name, type, enumType, array, blankPadded, nullable)
         );
     }
 
@@ -5951,7 +6042,8 @@ public final class QueryAnalyzer {
         ColumnType type,
         String enumType,
         boolean array,
-        boolean blankPadded
+        boolean blankPadded,
+        boolean nullable
     ) {
         return new QueryParameter(
             placeholder.index(),
@@ -5959,7 +6051,8 @@ public final class QueryAnalyzer {
             type,
             enumType,
             array,
-            blankPadded
+            blankPadded,
+            nullable
         );
     }
 

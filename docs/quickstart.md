@@ -502,7 +502,15 @@ That output is the whole MVP contract in one run:
 - One `AuthorRepository` instance answers every call, and each generated method
   keeps the types and order of its named query.
 - `CreateAuthor` is a `:one` write whose `RETURNING` clause reads back the
-  database-generated `BIGSERIAL` identifier as a typed `Long`.
+  database-generated `BIGSERIAL` identifier as a typed `Long`. It generates
+  `createAuthor(String name, @org.jspecify.annotations.Nullable String bio)`,
+  because `authors.name` is `NOT NULL` while `authors.bio` is not, so a `null`
+  name fails at once with a `NullPointerException` naming the parameter, the
+  query, and the repository, while a `null` bio stores SQL `NULL`. Every
+  generated parameter is nullable exactly where the query gives a `null`
+  argument a meaning, so `getAuthor(Long id)` and
+  `listAuthorPage(Integer limit, Integer offset)` take no `null` either; see
+  [Parameter nullness](queries.md#parameter-nullness).
 - `GetAuthor` is a `:one` read: it returns the row when exactly one matches, and
   fails with `org.sqlcj.runtime.QueryCardinalityException` naming the query and
   the repository when none matches or several do.

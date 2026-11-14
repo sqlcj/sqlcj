@@ -166,6 +166,13 @@ class ReferenceServiceIntegrationTest {
     /** A page of the criteria search large enough to hold every match of its project. */
     private static final Integer WHOLE_PAGE = 10;
 
+    /**
+     * A sort key no {@code CASE} of the criteria search accepts, which leaves
+     * its rows in the order of the trailing column. The key itself is a
+     * non-null parameter, because nothing in the query tests it for null.
+     */
+    private static final String UNSORTED_KEY = "none";
+
     /** The files the three schema inputs generate, relative to {@code java.out}. */
     private static final Set<String> GENERATED_FILES = Set.of(
         "generated/sqlcj-manifest.txt",
@@ -309,7 +316,9 @@ class ReferenceServiceIntegrationTest {
      * the limit a generated declaration, bound-argument list, and value row
      * mapper is written within. A line inside a SQL text block is exempt,
      * because it is the SQL of the query source, written as its author wrote
-     * it.
+     * it, and so is a line holding one string literal alone, which is an
+     * argument the generator has already written on a line of its own and
+     * cannot break further.
      */
     private void assertNoLinePassesTheColumnLimit(Path generatedDirectory) throws Exception {
         try (Stream<Path> paths = Files.walk(generatedDirectory)) {
@@ -330,7 +339,7 @@ class ReferenceServiceIntegrationTest {
                         continue;
                     }
 
-                    if (insideSql) {
+                    if (insideSql || isStringLiteralLine(line)) {
                         continue;
                     }
 
@@ -345,6 +354,18 @@ class ReferenceServiceIntegrationTest {
                 }
             }
         }
+    }
+
+    /**
+     * Reports whether one generated line holds a string literal alone, apart
+     * from the comma an argument list writes after it, which is a null-check
+     * message the generator writes on its own line.
+     */
+    private boolean isStringLiteralLine(String line) {
+        String content = line.strip();
+
+        return content.startsWith("\"")
+            && (content.endsWith("\"") || content.endsWith("\","));
     }
 
     /**
@@ -1934,7 +1955,7 @@ class ReferenceServiceIntegrationTest {
             assertEquals(
                 List.of(alphaId, betaId, gammaId, deltaId),
                 componentsOf(
-                    searchTasks(repository, projectId, null, null, null, null, null),
+                    searchTasks(repository, projectId, null, null, null, null, UNSORTED_KEY),
                     "id"
                 ),
                 "no criterion reads every task of the project in id order"
@@ -1943,7 +1964,7 @@ class ReferenceServiceIntegrationTest {
             assertEquals(
                 List.of("Alpha Report", "Beta REPORT"),
                 componentsOf(
-                    searchTasks(repository, projectId, "report", null, null, null, null),
+                    searchTasks(repository, projectId, "report", null, null, null, UNSORTED_KEY),
                     "title"
                 ),
                 "the title search matches its pattern in any case"
@@ -1959,7 +1980,7 @@ class ReferenceServiceIntegrationTest {
                         List.of(open, blocked),
                         null,
                         null,
-                        null
+                        UNSORTED_KEY
                     ),
                     "title"
                 ),
@@ -1969,7 +1990,7 @@ class ReferenceServiceIntegrationTest {
             assertEquals(
                 List.of("Alpha Report", "Delta Deploy"),
                 componentsOf(
-                    searchTasks(repository, projectId, null, null, assigneeId, null, null),
+                    searchTasks(repository, projectId, null, null, assigneeId, null, UNSORTED_KEY),
                     "title"
                 ),
                 "the assignee criterion keeps the tasks assigned to it"
@@ -1978,7 +1999,7 @@ class ReferenceServiceIntegrationTest {
             assertEquals(
                 List.of("Alpha Report", "Gamma Backlog"),
                 componentsOf(
-                    searchTasks(repository, projectId, null, null, null, (short) 2, null),
+                    searchTasks(repository, projectId, null, null, null, (short) 2, UNSORTED_KEY),
                     "title"
                 ),
                 "the priority bound keeps the tasks at or under it"
@@ -1987,7 +2008,7 @@ class ReferenceServiceIntegrationTest {
             assertEquals(
                 List.of("Alpha Report"),
                 componentsOf(
-                    searchTasks(repository, projectId, "report", null, assigneeId, null, null),
+                    searchTasks(repository, projectId, "report", null, assigneeId, null, UNSORTED_KEY),
                     "title"
                 ),
                 "the title search and the assignee criterion narrow each other"
@@ -2003,7 +2024,7 @@ class ReferenceServiceIntegrationTest {
                         List.of(doing, blocked),
                         null,
                         (short) 3,
-                        null
+                        UNSORTED_KEY
                     ),
                     "title"
                 ),
@@ -2039,7 +2060,7 @@ class ReferenceServiceIntegrationTest {
                         null,
                         null,
                         null,
-                        null,
+                        UNSORTED_KEY,
                         2,
                         1
                     ),

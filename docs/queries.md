@@ -97,7 +97,10 @@ carries the `SQLException` as its cause and reports its SQLSTATE through
 `sqlState()`. A column or value the model states non-null that the database
 returns as SQL `NULL` fails where it is read, as a plain
 `QueryExecutionException` whose `sqlState()` is `null`, because no database
-reported that failure. Nullness is the model's: a column a null-extended source
+reported that failure, and a `null` passed to a non-null parameter raises
+`NullPointerException` before any statement runs, as
+[Parameter nullness](#parameter-nullness) states. Nullness is the model's: a
+column a null-extended source
 contributes on its own is nullable however its table declares it, so it keeps
 its plain read and reads back as `null`, while a whole row such a source
 contributes is instead the nullable component, guarded by
@@ -783,8 +786,10 @@ its placeholder, while a placeholder as the tested value, as in
 `<column> = ANY(<placeholder>)` is the id-list read. The placeholder is one
 whole list of the compared column's type, named after that column, so
 `WHERE id = ANY($1)` takes a `List<Long> id` and the runtime binds the list as
-one PostgreSQL array at one `?` position. A null list and an empty list contain
-no value, so each matches no row. A named list keeps its own name, and one name
+one PostgreSQL array at one `?` position. An empty list contains no value, so
+it matches no row, while the list itself is a non-null parameter, as
+[Parameter nullness](#parameter-nullness) states, so a `null` list fails before
+the statement runs. A named list keeps its own name, and one name
 used by two list predicates, as in
 `id = ANY(:ids) OR parent_id = ANY(:ids)`, is one parameter bound at both
 positions.
@@ -1575,9 +1580,12 @@ the driver reported for each element, in that order and unchanged. An empty list
 executes nothing and returns an empty array.
 
 The record holds one component per parameter, in logical parameter order and
-with the Java types the `:exec` method's parameters have, so a repeated
-placeholder is one component bound at each of its positions and a query that
-binds no parameter generates a record without components. A `null` list raises
+with the Java types and the nullness the `:exec` method's parameters have, so a
+repeated placeholder is one component bound at each of its positions and a
+query that binds no parameter generates a record without components. A `null`
+for a non-null component raises `NullPointerException` where the row is built,
+in the record's compact constructor, which
+[Parameter nullness](#parameter-nullness) states. A `null` list raises
 `NullPointerException` while the method builds its batch, before the executor
 runs, and so does a `null` element, so such a call executes nothing.
 
@@ -1718,10 +1726,12 @@ in its `SET` clause, so the generated method takes `(id, bio)` and binds
 `(bio, id)`:
 
 ```java
-public int updateAuthorBio(
-    @org.jspecify.annotations.Nullable Long id,
-    @org.jspecify.annotations.Nullable String bio
-) {
+public int updateAuthorBio(Long id, @org.jspecify.annotations.Nullable String bio) {
+    java.util.Objects.requireNonNull(
+            id,
+            "Parameter 'id' of query 'UpdateAuthorBio' in AuthorRepository must not be null"
+    );
+
     return executor.execute(
             "AuthorRepository",
             "UpdateAuthorBio",
@@ -1729,7 +1739,7 @@ public int updateAuthorBio(
             UPDATE authors
             SET bio = ?
             WHERE id = ?;""",
-            java.util.Arrays.asList(bio, id)
+            java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(bio, id)
     );
 }
 ```
@@ -1752,6 +1762,76 @@ WHERE id = :id;
 
 The generated method takes `(bio, id)`, because `:bio` occurs first, and binds
 `(bio, id)`.
+
+### Parameter nullness
+
+A generated parameter is nullable exactly where the query gives a `null`
+argument a meaning. Every other parameter is non-null, and a `null` passed to
+one of them raises `NullPointerException` at once, before the statement runs,
+with the message
+`Parameter '<parameter>' of query '<QueryName>' in <Repository> must not be
+null`. The nullable parameters are annotated
+`@org.jspecify.annotations.Nullable`, as
+[Generated Java](#generated-java) states, so a Kotlin caller and a null checker
+read the rule from the class files.
+
+A parameter is nullable when **any** occurrence of it is:
+
+- the tested value of `IS NULL` or `IS NOT NULL`, including the `ISNULL` and
+  `NOTNULL` spellings, as `:search` is in
+  `(:search::text IS NULL OR title ILIKE '%' || :search || '%')`;
+- either side of `IS DISTINCT FROM` or `IS NOT DISTINCT FROM`, as in
+  `assignee_id IS NOT DISTINCT FROM :assigneeId::int8`;
+- an argument of an unqualified `COALESCE` or `NULLIF`, as in
+  `priority = COALESCE(:priority::int2, priority)`;
+- the whole value written into a nullable column by `INSERT ... VALUES`,
+  `UPDATE ... SET`, or `ON CONFLICT ... DO UPDATE SET`, as `bio` is in
+  `INSERT INTO authors (name, bio) VALUES (:name, :bio)`, where `name` is
+  `NOT NULL` and `bio` is not.
+
+The tested value is the placeholder itself, a cast chain of it, or a
+parenthesized one, so `(:x)::int IS NULL` tests `:x` while `lower(:x) IS NULL`
+does not: a placeholder another expression computes with is not the value the
+test reads.
+
+Every other position is non-null, including a placeholder:
+
+- compared with `=`, `<>`, `<`, `IN`, `= ANY`, `LIKE`, or `BETWEEN`, or read by
+  a `CASE WHEN` comparison, such as the sort key of a criteria query;
+- used as the `LIMIT` row count or the `OFFSET` value;
+- written into a `NOT NULL` column, whatever default that column declares,
+  because the column's own nullability decides alone: a `null` written into a
+  column with a default would store SQL `NULL` rather than that default, which
+  only a nullable target accepts;
+- written as an item of the `SELECT` an `INSERT` reads its rows from.
+
+A list parameter stays non-null while its elements stay nullable, as in
+`List<@org.jspecify.annotations.Nullable Long> ids`, because a SQL array may
+hold a `NULL` element.
+
+The same rule applies to the components of a `<QueryName>Params` record, whose
+compact constructor rejects a `null` for each non-null component, so a batch row
+fails where it is built rather than where the batch binds it.
+
+```sql
+-- name: UpsertAuthor :one
+INSERT INTO authors (id, name, bio)
+VALUES (:id, :name, :bio)
+ON CONFLICT (id) DO UPDATE
+    SET name = EXCLUDED.name, bio = EXCLUDED.bio
+RETURNING *;
+```
+
+`UpsertAuthor` generates
+`upsertAuthor(Long id, String name, @org.jspecify.annotations.Nullable String bio)`,
+because `authors.id` and `authors.name` are `NOT NULL` while `authors.bio` is
+not, and `upsertAuthor(1L, null, null)` fails with
+`Parameter 'name' of query 'UpsertAuthor' in AuthorRepository must not be null`
+instead of reaching the database.
+
+Widening a parameter to `@org.jspecify.annotations.Nullable` later is
+source-compatible for its callers, while narrowing one is not, so a position
+sqlcj does not read as nullable today may become nullable in a later version.
 
 ## Criteria Queries
 
@@ -1783,8 +1863,10 @@ project, is written unguarded beside them. A sort key, a page, and a matching
 count complete the shape:
 
 - The sort key is an `ORDER BY` placeholder cast once and read by a `CASE` per
-  accepted value, with a trailing column that gives a stable order, so a `null`
-  key leaves the rows in that order; see [Ordering](#ordering).
+  accepted value, with a trailing column that gives a stable order, so a key no
+  `CASE` accepts leaves the rows in that order. Nothing tests the key for null,
+  so it is a non-null parameter; see [Ordering](#ordering) and
+  [Parameter nullness](#parameter-nullness).
 - The page is a `LIMIT` and an `OFFSET` placeholder; see
   [Pagination](#pagination).
 - The count repeats the same `WHERE` text in a query of its own, unsorted and
@@ -1830,6 +1912,13 @@ pageOffset)`, which returns `List<TasksRow>`, and
 `countSearchedTasks(Long projectId, String search, List<TaskStatus> statuses,
 Long assigneeId, Short maxPriority)`, whose result is the non-null `total`
 column alone, so it returns `Long`.
+
+Each guarded criterion is `@org.jspecify.annotations.Nullable`, because its own
+null test gives a `null` argument the meaning of leaving the criterion out, so
+`search`, `statuses`, `assigneeId`, and `maxPriority` take a `null` while the
+required `projectId`, the `sort` key, and the page's `pageSize` and
+`pageOffset` do not; see
+[Parameter nullness](#parameter-nullness).
 
 At the occurrence that neither a clause nor a cast types, sqlcj writes the
 parameter's own PostgreSQL type, so the search executes as `?::text`, the status
@@ -1982,8 +2071,8 @@ subpackage names are fixed.
   `batch.stream().map(params -> <argument list>).toList()`, where each
   element's argument list is built with `java.util.Collections.emptyList`,
   `java.util.Collections.singletonList`, or `java.util.Arrays.asList` by the
-  number of binding positions, and each argument is wrapped exactly as the same
-  argument of a single execution is. A
+  number of binding positions, as a single execution's list is, and each
+  argument is wrapped exactly as the same argument of a single execution is. A
   query that binds no parameter reads no component, so its argument lists are
   built with an added `.map(java.util.Objects::requireNonNull)` that rejects a
   `null` element.
@@ -1997,6 +2086,15 @@ subpackage names are fixed.
   as `new org.sqlcj.runtime.UntypedText(<parameter>)`, written out in full, so
   that the runtime binds its text without a declared SQL type; see
   [Supported Column Types](postgresql.md#supported-column-types).
+- The bound arguments of one execution are passed as a list of no element,
+  built with `java.util.Collections.emptyList`, of one, built with
+  `java.util.Collections.singletonList`, or of two or more, built with
+  `java.util.Arrays.asList`. Each of the three accepts a null argument, unlike
+  `List.of`, so a nullable parameter can be bound. A list of two or more
+  arguments states its element type, which is `Object` when no argument can be
+  null and `@org.jspecify.annotations.Nullable Object` when one can, so the
+  list's type follows from the arguments' nullness rather than from the Java
+  types they happen to have.
 - A column or parameter of a one-dimensional array type is a
   `java.util.List<T>` of the element's Java type. Its argument is passed as
   `new org.sqlcj.runtime.SqlArray("<element type>", <parameter>)`, or as
@@ -2037,9 +2135,14 @@ subpackage names are fixed.
     cast whose operand sqlcj does not know reads no `NULL`, and a component
     holding an embedded row a join null-extends. Every other component is
     unannotated, and therefore non-null.
-  - Every generated method parameter and every component of a
-    `<QueryName>Params` record is `@org.jspecify.annotations.Nullable`, because
-    every placeholder may be bound to `null`.
+  - A generated method parameter and a component of a `<QueryName>Params`
+    record carries `@org.jspecify.annotations.Nullable` exactly when the query
+    gives a `null` bound at it a meaning, which
+    [Parameter nullness](#parameter-nullness) states. Every other parameter and
+    component is unannotated, and therefore non-null, and the generated method
+    and the record's compact constructor reject a `null` for each of them with
+    `java.util.Objects.requireNonNull`, before any execution, naming the
+    parameter, the query, and the repository.
   - An array element is always nullable, wherever the list type is written, as
     in `java.util.List<@org.jspecify.annotations.Nullable String>`, because a
     SQL array may hold a `NULL` element. A nullable `BYTEA` is written
@@ -2047,7 +2150,11 @@ subpackage names are fixed.
     itself may be null rather than its bytes.
   - A generated enum's `fromLabel` accepts and returns
     `@org.jspecify.annotations.Nullable`, and its constructor, `label()`, and
-    constants stay non-null.
+    constants stay non-null. An enum or `INTERVAL` argument of a non-null
+    parameter is therefore bound as
+    `new org.sqlcj.runtime.UntypedText(<parameter>.label())` or
+    `new org.sqlcj.runtime.UntypedText(<parameter>.format())`, without the null
+    test a nullable one needs.
   - Unannotated, and therefore non-null, are the repository's
     `QueryExecutor` field and constructor parameter, a batch method's
     `List<<QueryName>Params> batch` and its elements, the `Optional` and
@@ -2069,8 +2176,9 @@ subpackage names are fixed.
   `javac -Xlint:all -Werror` and NullAway `0.14.3` in JSpecify mode and find
   nothing, so a build that runs a null checker over its own sources need not
   exclude the generated ones.
-- A method declaration that has parameters, a bound-argument list built with
-  `java.util.Collections.singletonList` or `java.util.Arrays.asList`, and a
+- A method declaration that has parameters, a null check, a bound-argument
+  list built with `java.util.Collections.singletonList` or
+  `java.util.Arrays.asList`, and a
   value row mapper are written wrapped when one line would pass 120 columns,
   the repository's own formatter limit and an IDE's default right margin,
   counted with the member indentation and the trailing punctuation: the
@@ -2080,7 +2188,8 @@ subpackage names are fixed.
   argument on a line of its own, one call continuation past the line that
   opens the list, with its closing parenthesis at that line's column, a batch
   row keeping `batch.stream().map(params -> ...` and `)).toList()` on those
-  two lines; and a value row mapper continues `resultSet -> ...` on the next
+  two lines; a null check writes its parameter and its message that way; and a
+  value row mapper continues `resultSet -> ...` on the next
   line. A declaration without parameters has nothing to wrap and stays on one
   line; a line inside a SQL text block stays as written, because it is the SQL
   the query source states; and a single parameter or argument that alone
@@ -2169,10 +2278,12 @@ public final class AuthorRepository {
      * Table: authors
      * Type: ONE
      */
-    public AuthorsRow createAuthor(
-        @org.jspecify.annotations.Nullable String name,
-        @org.jspecify.annotations.Nullable String bio
-    ) {
+    public AuthorsRow createAuthor(String name, @org.jspecify.annotations.Nullable String bio) {
+        java.util.Objects.requireNonNull(
+                name,
+                "Parameter 'name' of query 'CreateAuthor' in AuthorRepository must not be null"
+        );
+
         return executor.queryOne(
                 "AuthorRepository",
                 "CreateAuthor",
@@ -2180,7 +2291,7 @@ public final class AuthorRepository {
                 INSERT INTO authors (name, bio)
                 VALUES (?, ?)
                 RETURNING "authors"."id", "authors"."name", "authors"."bio", "authors"."created_at";""",
-                java.util.Arrays.asList(name, bio),
+                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(name, bio),
                 authorsRowMapper
         );
     }
@@ -2192,7 +2303,12 @@ public final class AuthorRepository {
      * Table: authors
      * Type: OPTIONAL
      */
-    public Optional<AuthorsRow> findAuthor(@org.jspecify.annotations.Nullable Long id) {
+    public Optional<AuthorsRow> findAuthor(Long id) {
+        java.util.Objects.requireNonNull(
+                id,
+                "Parameter 'id' of query 'FindAuthor' in AuthorRepository must not be null"
+        );
+
         return executor.queryOptional(
                 "AuthorRepository",
                 "FindAuthor",
@@ -3576,6 +3692,60 @@ Parameters:
   a cast subscript projection and a cast subscript filter against PostgreSQL 16
   as one `String` component and one `String` method parameter.
 
+Parameter nullness:
+
+- `SqlParameterCompilerTest.shouldReportTheNullTestedPositionsOfAPlaceholder`,
+  `SqlParameterCompilerTest.shouldReportOnlyTheTestedValueItselfAsNullTested`,
+  and `SqlParameterCompilerTest.shouldReportANullTestAtEveryNestingDepth` cover
+  the null-testing positions the SQL layer reports: both spellings of
+  `IS [NOT] NULL`, both sides of `IS [NOT] DISTINCT FROM`, an argument of an
+  unqualified `COALESCE` or `NULLIF`, the cast chain and the parentheses that
+  keep the tested value, the computed and the compared positions that are no
+  test, and a test inside an `OR` guard, a subquery, and a write.
+- `QueryAnalyzerTest.shouldMakeANullTestedParameterNullable`,
+  `QueryAnalyzerTest.shouldKeepAParameterThatIsOnlyReadNonNull`,
+  `QueryAnalyzerTest.shouldMakeAValueOfANullableTargetColumnNullable`,
+  `QueryAnalyzerTest.shouldKeepAnInsertSelectItemNonNull`, and
+  `QueryAnalyzerTest.shouldMakeARepeatedParameterNullableWhenAnyOccurrenceIs`
+  cover the analyzed rule: each tested position, each read position, the
+  nullable and `NOT NULL` write targets of `INSERT ... VALUES`,
+  `UPDATE ... SET`, and `ON CONFLICT DO UPDATE SET`, the item of an insert's
+  `SELECT`, and the merge of one parameter's occurrences.
+- `JavaCodeGeneratorTest.shouldCheckEveryNonNullParameterOfAQueryMethod`,
+  `JavaCodeGeneratorTest.shouldCheckEveryNonNullParameterOfAnExecMethod`,
+  `JavaCodeGeneratorTest.shouldCheckNothingWhenNoParameterIsNonNull`,
+  `JavaCodeGeneratorTest.shouldWrapANullCheckThatPassesTheLimit`,
+  `JavaCodeGeneratorTest.shouldCheckEveryNonNullComponentOfABatchParamsRecord`,
+  `JavaCodeGeneratorTest.shouldGenerateNoCompactConstructorForNullableBatchComponentsAlone`,
+  `JavaCodeGeneratorTest.shouldCheckNothingInTheMethodOfAnUnsupportedQueryType`,
+  `JavaCodeGeneratorTest.shouldBindANonNullEnumAndIntervalArgumentWithoutANullTest`,
+  and `JavaCodeGeneratorTest.shouldStateTheElementTypeOfABoundArgumentList`
+  cover the generated annotations, the checks and their order, their wrapped
+  form, the parameter record's compact constructor and its absence, the
+  unsupported query type that checks nothing, the enum and `INTERVAL` arguments
+  of a non-null parameter, and the stated element type of a bound-argument
+  list.
+- `SqlcjCompilerIntegrationTest.shouldStateParameterNullnessFromItsUseInTheClassFiles`
+  reads every rule back from compiled generated code — each tested position,
+  the cast and the uncast guard, the nullable, `NOT NULL`, and
+  `NOT NULL DEFAULT` write targets of an insert, an update, and an upsert, an
+  item of an insert's `SELECT`, the `LIMIT` and `OFFSET` values, the `= ANY`
+  list and its nullable elements, and the batch record's components — and
+  asserts the message of the `NullPointerException` a `null` raises in a
+  generated method and in a parameter record, with an executor that fails if it
+  is called, while
+  `SqlcjCompilerIntegrationTest.shouldStateTheNullnessOfTheGeneratedApiInTheClassFiles`
+  covers the other nullness the class files carry.
+- `GeneratedSourceCheckTest.shouldReportNoFindingOnTheEveryTypeFixtureTree`
+  compiles a fixture whose parameters are an enum and an `INTERVAL` of each
+  nullness, bound by one read and by one `:batchexec`, under NullAway in
+  JSpecify mode with no finding, and
+  `PostgresIntegrationTest.shouldExecuteGeneratedListPredicateAgainstPostgres`,
+  `PostgresIntegrationTest.shouldRoundTripEnumValues`, and
+  `PostgresIntegrationTest.shouldRoundTripJsonValues` execute a non-null list
+  and a non-null compared value against PostgreSQL 16 and assert the message a
+  `null` raises instead.
+
 Criteria queries:
 
 - `QueryAnalyzerTest.shouldTypeTheUncastOccurrenceOfAComputedSearchPattern`,
@@ -3629,7 +3799,8 @@ Generated Java:
   `GeneratedSourceCheckTest.shouldReportNoFindingOnTheEveryTypeFixtureTree`
   compile the reference service's generated tree and the fixture tree that
   reads every mapped type, scalar and array, nullable and `NOT NULL`, through
-  every result shape, with `javac -Xlint:all -Werror` and NullAway in JSpecify
+  every result shape, and binds an enum and an `INTERVAL` parameter of each
+  nullness, with `javac -Xlint:all -Werror` and NullAway in JSpecify
   mode at error level, with no finding, while
   `GeneratedSourceCheckTest.shouldReportANullnessErrorOnABrokenSource` is the
   negative control that reports one on a `@NullMarked` source returning `null`
