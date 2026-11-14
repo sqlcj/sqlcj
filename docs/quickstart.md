@@ -573,8 +573,8 @@ query, each beginning with the source's absolute path and the query's header
 line, and exits with status `1`:
 
 ```text
-sqlcj: /home/dev/my-app/sql/queries.sql:57: Invalid query 'ListAuthorNames': Cannot infer the type of lower(name) in SELECT; state it with a cast and an alias, such as SUM(amount)::numeric AS total
-sqlcj: /home/dev/my-app/sql/queries.sql:72: Invalid query 'ListBookTitles': Cannot infer the type of upper(title) in SELECT; state it with a cast and an alias, such as SUM(amount)::numeric AS total
+sqlcj: /home/dev/my-app/sql/queries.sql:57: Invalid query 'ListAuthorNames': Cannot infer the type of lower(name) in SELECT; state it with a cast and an alias, such as lower(name)::<type> AS <alias>
+sqlcj: /home/dev/my-app/sql/queries.sql:72: Invalid query 'ListBookTitles': Cannot infer the type of upper(title) in SELECT; state it with a cast and an alias, such as upper(title)::<type> AS <alias>
 ```
 
 A rejected query does not end the run, so one run reports every rejected query
