@@ -26,6 +26,7 @@ import net.sf.jsqlparser.expression.operators.relational.GreaterThan;
 import net.sf.jsqlparser.expression.operators.relational.GreaterThanEquals;
 import net.sf.jsqlparser.expression.operators.relational.InExpression;
 import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
+import net.sf.jsqlparser.expression.operators.relational.JsonOperator;
 import net.sf.jsqlparser.expression.operators.relational.LikeExpression;
 import net.sf.jsqlparser.expression.operators.relational.MinorThan;
 import net.sf.jsqlparser.expression.operators.relational.MinorThanEquals;
@@ -471,6 +472,19 @@ public final class QueryAnalyzer {
      * the query names it, which a cast types wherever it appears.
      */
     private static final String INDEXED_PARAMETER_NAME_PREFIX = "param";
+
+    /**
+     * The JSONB key-existence operator that tests one key, whose right operand
+     * is a single key rather than a list of them.
+     */
+    private static final String JSON_KEY_OPERATOR = "?";
+
+    /**
+     * The JSONB key-existence operators, written as the parser reports them:
+     * {@code ?} tests one key, {@code ?|} tests any of a list of keys, and
+     * {@code ?&} tests all of them.
+     */
+    private static final List<String> JSON_KEY_OPERATORS = List.of(JSON_KEY_OPERATOR, "?|", "?&");
 
     /**
      * The qualifier an {@code ON CONFLICT DO UPDATE} assignment writes to read
@@ -5221,8 +5235,64 @@ public final class QueryAnalyzer {
             return;
         }
 
+        if (
+            expression instanceof JsonOperator json
+                && JSON_KEY_OPERATORS.contains(json.getStringExpression())
+        ) {
+            resolveJsonKeyExistence(json, scope, analysis);
+            return;
+        }
+
         if (expression instanceof ComparisonOperator comparison) {
             resolveParameterComparison(comparison, scope, analysis);
+        }
+    }
+
+    /**
+     * Resolves one JSONB key-existence predicate, written {@code ?},
+     * {@code ?|}, or {@code ?&}. A direct column on either side resolves
+     * against the level the predicate stands in, as a comparison's operand
+     * does.
+     *
+     * <p>PostgreSQL fixes the key type of each operator, so an uncast
+     * placeholder written as the right operand binds {@code text} for
+     * {@code ?} and {@code text[]} for {@code ?|} and {@code ?&}, named after
+     * itself when named and after its own index otherwise. Every other operand
+     * keeps the rules of the expression it is, so a cast placeholder states its
+     * own type.
+     */
+    private void resolveJsonKeyExistence(
+        JsonOperator json,
+        Scope scope,
+        Analysis analysis
+    ) {
+        Placeholders placeholders = analysis.placeholders();
+
+        net.sf.jsqlparser.schema.Column leftColumn = directColumn(json.getLeftExpression());
+
+        if (leftColumn != null) {
+            resolveColumn(leftColumn, scope);
+        }
+
+        Expression right = json.getRightExpression();
+        net.sf.jsqlparser.schema.Column rightColumn = directColumn(right);
+
+        if (rightColumn != null) {
+            resolveColumn(rightColumn, scope);
+        }
+
+        Placeholder placeholder = placeholders.of(right);
+
+        if (placeholder != null) {
+            addParameter(
+                placeholder,
+                indexedParameterName(placeholder),
+                ColumnType.TEXT,
+                null,
+                !JSON_KEY_OPERATOR.equals(json.getStringExpression()),
+                false,
+                placeholders
+            );
         }
     }
 

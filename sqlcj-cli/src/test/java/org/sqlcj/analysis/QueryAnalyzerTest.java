@@ -6594,6 +6594,121 @@ class QueryAnalyzerTest {
         );
     }
 
+    /**
+     * The JSONB key-existence operators reach the database doubled, which is
+     * the escape the JDBC driver reads as the operator, and the placeholders
+     * written after one bind at their own positions.
+     */
+    @Test
+    void shouldWriteJsonKeyExistenceOperatorsDoubled() {
+        assertEquals(
+            "SELECT id FROM users WHERE metadata ?? 'vip'",
+            analyzeUntyped("SELECT id FROM users WHERE metadata ? 'vip'").executableSql()
+        );
+
+        assertEquals(
+            "SELECT id FROM users WHERE metadata ??| array['a','b']",
+            analyzeUntyped("SELECT id FROM users WHERE metadata ?| array['a','b']")
+                .executableSql()
+        );
+
+        QueryModel model = analyzeUntyped(
+            "SELECT id FROM users WHERE metadata ?& array['a'] AND id = :id"
+        );
+
+        assertEquals(
+            "SELECT id FROM users WHERE metadata ??& array['a'] AND id = ?",
+            model.executableSql()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            model.parameters()
+        );
+    }
+
+    /**
+     * PostgreSQL fixes the key type of each operator, so an uncast placeholder
+     * written as the right operand binds {@code text} for {@code ?} and a
+     * {@code text[]} list for {@code ?|} and {@code ?&}, keeping its own name
+     * when it is named.
+     */
+    @Test
+    void shouldResolveJsonKeyExistenceParameterFromTheOperator() {
+        QueryModel key = analyzeUntyped("SELECT id FROM users WHERE metadata ? :key");
+
+        assertEquals(
+            List.of(new QueryParameter(1, "key", ColumnType.TEXT)),
+            key.parameters()
+        );
+
+        assertEquals("SELECT id FROM users WHERE metadata ?? ?", key.executableSql());
+
+        assertEquals(
+            List.of(new QueryParameter(1, "param1", ColumnType.TEXT, null, true)),
+            analyzeUntyped("SELECT id FROM users WHERE metadata ?| $1").parameters()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "keys", ColumnType.TEXT, null, true)),
+            analyzeUntyped("SELECT id FROM users WHERE metadata ?& :keys").parameters()
+        );
+    }
+
+    /** An operand of the operator names a column of the query's sources. */
+    @Test
+    void shouldRejectUnknownColumnInJsonKeyExistencePredicate() {
+        String sql = "SELECT id FROM users WHERE missing ? 'a'";
+
+        Query query = new Query("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, untypedSchema)
+        );
+
+        assertEquals(
+            "Column not found in sources users: missing",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A real anonymous placeholder written beside the operator is still
+     * rejected, on either side of it.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "SELECT id FROM users WHERE metadata ? ?",
+            "SELECT id FROM users WHERE ? ? 'a'"
+        }
+    )
+    void shouldRejectAnonymousParameterBesideJsonKeyExistenceOperator(String sql) {
+        Query query = new Query("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, untypedSchema)
+        );
+
+        assertEquals(
+            "Anonymous '?' parameters are not supported; use an indexed placeholder such as $1",
+            exception.getMessage()
+        );
+    }
+
+    /** One analyzed read of the schema whose {@code metadata} is {@code JSONB}. */
+    private QueryModel analyzeUntyped(String sql) {
+        return analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            untypedSchema
+        );
+    }
+
     @Test
     void shouldResolveNamedParameter() {
         String sql = "SELECT * FROM users WHERE id = :userId";
