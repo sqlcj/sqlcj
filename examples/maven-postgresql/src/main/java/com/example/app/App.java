@@ -26,9 +26,9 @@ import java.util.Optional;
  * <p>All eighteen named queries are methods of one generated
  * {@link AuthorRepository}. The repository is constructed once per execution
  * context: once from the {@code DataSource}-backed executor, and once more per
- * transaction, over the connection {@link JdbcTransactions} hands its
- * callback. The first transaction commits on a normal return and returns the
- * new author's id, while the second is rolled back by a failing statement, the
+ * transaction, over the executor {@link JdbcTransactions} hands its callback.
+ * The first transaction commits on a normal return and returns the new
+ * author's id, while the second is rolled back by a failing statement, the
  * {@code :one} {@code GetAuthor} read of a missing id, whose
  * {@link QueryCardinalityException} the helper rethrows unchanged.
  *
@@ -326,8 +326,8 @@ public final class App {
      * later read, and returns the new author's id.
      */
     private static Long writeAndCommit(JdbcTransactions transactions) {
-        return transactions.inTransaction(connection -> {
-            AuthorRepository transactionalAuthors = new AuthorRepository(new JdbcQueryExecutor(connection));
+        return transactions.inTransaction(transaction -> {
+            AuthorRepository transactionalAuthors = new AuthorRepository(transaction.executor());
 
             AuthorsRow author = transactionalAuthors.createAuthor("Grace Hopper", null);
 
@@ -350,8 +350,8 @@ public final class App {
      */
     private static void writeAndRollback(JdbcTransactions transactions) {
         try {
-            transactions.useTransaction(connection -> {
-                AuthorRepository transactionalAuthors = new AuthorRepository(new JdbcQueryExecutor(connection));
+            transactions.useTransaction(transaction -> {
+                AuthorRepository transactionalAuthors = new AuthorRepository(transaction.executor());
 
                 AuthorsRow author = transactionalAuthors.createAuthor("Temporary Author", null);
 

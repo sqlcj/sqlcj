@@ -46,13 +46,13 @@ none:
 ```java
 JdbcTransactions transactions = new JdbcTransactions(dataSource);
 
-Long id = transactions.inTransaction(connection -> {
-    AuthorRepository authors = new AuthorRepository(new JdbcQueryExecutor(connection));
+Long id = transactions.inTransaction(transaction -> {
+    AuthorRepository authors = new AuthorRepository(transaction.executor());
 
     AuthorsRow created = authors.createAuthor("Ada Lovelace", "First programmer");
 
     try (
-        PreparedStatement statement = connection.prepareStatement(
+        PreparedStatement statement = transaction.connection().prepareStatement(
             "INSERT INTO author_audit (author_id, action) VALUES (?, ?)"
         )
     ) {
@@ -65,19 +65,44 @@ Long id = transactions.inTransaction(connection -> {
 });
 ```
 
-The callback receives the transaction's connection, binds the generated
-repositories it needs over `new JdbcQueryExecutor(connection)`, and may run
-hand-written JDBC on the same connection, so every operation takes part in the
-same transaction. It never commits, rolls back, closes, or reconfigures the
+The callback receives one `org.sqlcj.runtime.JdbcTransaction`, a record of the
+`QueryExecutor` bound to the transaction's connection and of that `Connection`
+itself. It binds the generated repositories it needs over
+`transaction.executor()` and may run hand-written JDBC on
+`transaction.connection()`, so every operation takes part in the same
+transaction. It never commits, rolls back, closes, or reconfigures the
 connection itself. A callback that throws a checked exception has it rethrown as
 declared, and a callback that throws none needs neither a `catch` nor a `throws`
 clause.
+
+A second constructor takes the function that turns the transaction's connection
+into the application's own executor, so an application that decorates its
+executor for logging, metrics, or tracing keeps that decoration inside every
+transaction:
+
+```java
+JdbcTransactions transactions = new JdbcTransactions(
+    dataSource,
+    connection -> new TimedQueryExecutor(new JdbcQueryExecutor(connection))
+);
+```
+
+The function is applied once per transaction, after auto-commit was disabled
+and before the callback runs, and the executor it returns is the one
+`transaction.executor()` reports. Any exception or error it throws rolls the
+transaction back, releases its connection, and is rethrown as the same
+instance, exactly as a failure of the callback is, and the callback does not
+run. The one-argument constructor passes `JdbcQueryExecutor::new`, so by
+default the callback receives a `JdbcQueryExecutor` over the transaction's
+connection.
 
 Each call manages the transaction by these rules:
 
 - It obtains one connection from the `DataSource` and disables auto-commit on
   it, unless that connection already has auto-commit disabled, which it then
   leaves untouched.
+- It builds the callback's executor from that connection with the function it
+  was constructed with.
 - A normal return commits the transaction.
 - Any exception or error the callback throws rolls the transaction back and is
   rethrown as the same instance, unchanged, including a
@@ -2163,6 +2188,17 @@ Connection ownership and transactions:
   commits although the outer call rolls back, and
   `shouldRequireNoCatchOrThrowsForACallbackThatThrowsNothing` compiles a
   callback that throws nothing with neither a `catch` nor a `throws` clause.
+  `JdbcTransactionsTest.shouldRunTheCallbackOperationsThroughTheConstructedExecutor`
+  covers the executor the second constructor's function builds: a recording
+  decorator observes every operation, in order, of a committed and of a
+  rolled-back transaction, and the function is applied once per transaction on
+  that transaction's own connection;
+  `JdbcTransactionsTest.shouldRollBackAndRethrowAFailureOfTheExecutorFunction`
+  covers the function that throws, whose exception is rethrown as the same
+  instance after the rollback, the restore, and the close, with the callback
+  never run. `shouldReturnTheCallbackValueAndCommit` runs its generated
+  operation through `transaction.executor()`, which covers the default the
+  one-argument constructor passes.
 - `PostgresIntegrationTest.shouldCommitGeneratedAndHandWrittenWritesThroughTheTransactionHelper`
   commits two generated writes and a hand-written `PreparedStatement` insert
   made on the connection the helper handed the callback, and

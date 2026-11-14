@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -32,8 +33,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Covers the transaction helper over H2: the committed and rolled-back paths,
- * the failure of every JDBC call the helper itself makes, and the auto-commit
- * and closing rules it follows on each of those paths.
+ * the executor the constructor's function builds per transaction, the failure
+ * of every JDBC call the helper itself makes, and the auto-commit and closing
+ * rules it follows on each of those paths.
  */
 class JdbcTransactionsTest {
 
@@ -77,17 +79,17 @@ class JdbcTransactionsTest {
         TransactionRecorder recorder = new TransactionRecorder(dataSource);
         JdbcTransactions transactions = new JdbcTransactions(recorder.dataSource());
 
-        String name = transactions.inTransaction(connection -> {
-            assertFalse(connection.getAutoCommit());
+        String name = transactions.inTransaction(transaction -> {
+            assertFalse(transaction.connection().getAutoCommit());
 
-            new JdbcQueryExecutor(connection).execute(
+            transaction.executor().execute(
                 REPOSITORY,
                 "InsertUser",
                 INSERT_USER,
                 List.of(1L, "Alice")
             );
 
-            insert(connection, 2L, "Bob");
+            insert(transaction.connection(), 2L, "Bob");
 
             return "committed";
         });
@@ -109,12 +111,153 @@ class JdbcTransactionsTest {
         TransactionRecorder recorder = new TransactionRecorder(dataSource);
         JdbcTransactions transactions = new JdbcTransactions(recorder.dataSource());
 
-        transactions.useTransaction(connection -> insert(connection, 1L, "Alice"));
+        transactions.useTransaction(transaction -> insert(transaction.connection(), 1L, "Alice"));
 
         assertEquals(List.of("Alice"), names());
 
         assertEquals(
             List.of("getConnection", "setAutoCommit(false)", "commit", "setAutoCommit(true)", "close"),
+            recorder.calls
+        );
+
+        recorder.assertOneClosedConnection();
+    }
+
+    /**
+     * The callback runs its generated operations through the executor the
+     * constructor's function built, so a decorating executor observes every
+     * operation, in order, of a committed and of a rolled-back transaction. The
+     * function is applied once per transaction, on that transaction's own
+     * connection.
+     */
+    @Test
+    void shouldRunTheCallbackOperationsThroughTheConstructedExecutor() throws SQLException {
+        TransactionRecorder recorder = new TransactionRecorder(dataSource);
+
+        List<String> operations = new ArrayList<>();
+        List<Connection> built = new ArrayList<>();
+
+        JdbcTransactions transactions = new JdbcTransactions(
+            recorder.dataSource(),
+            connection -> {
+                built.add(connection);
+
+                return new RecordingQueryExecutor(new JdbcQueryExecutor(connection), operations);
+            }
+        );
+
+        List<Connection> received = new ArrayList<>();
+
+        List<Long> committed = transactions.inTransaction(transaction -> {
+            received.add(transaction.connection());
+
+            transaction.executor().execute(
+                REPOSITORY,
+                "InsertUser",
+                INSERT_USER,
+                List.of(1L, "Alice")
+            );
+
+            return transaction.executor().queryMany(
+                REPOSITORY,
+                "ListUserIds",
+                "SELECT id FROM users ORDER BY id",
+                List.of(),
+                resultSet -> resultSet.getLong("id")
+            );
+        });
+
+        assertEquals(List.of(1L), committed);
+
+        IllegalStateException thrown = new IllegalStateException("callback failed");
+
+        IllegalStateException failure = assertThrows(
+            IllegalStateException.class,
+            () -> transactions.useTransaction(transaction -> {
+                received.add(transaction.connection());
+
+                transaction.executor().execute(
+                    REPOSITORY,
+                    "InsertUser",
+                    INSERT_USER,
+                    List.of(2L, "Bob")
+                );
+
+                throw thrown;
+            })
+        );
+
+        assertSame(thrown, failure);
+
+        // Only the committed transaction's write survives, and both ran every
+        // operation through the decorator the function built.
+        assertEquals(List.of("Alice"), names());
+
+        assertEquals(
+            List.of("execute(InsertUser)", "queryMany(ListUserIds)", "execute(InsertUser)"),
+            operations
+        );
+
+        // One application of the function per transaction, each on that
+        // transaction's own connection.
+        assertEquals(2, built.size());
+        assertEquals(2, received.size());
+
+        assertSame(received.get(0), built.get(0));
+        assertSame(received.get(1), built.get(1));
+        assertNotSame(built.get(0), built.get(1));
+
+        assertEquals(
+            List.of(
+                "getConnection",
+                "setAutoCommit(false)",
+                "commit",
+                "setAutoCommit(true)",
+                "close",
+                "getConnection",
+                "setAutoCommit(false)",
+                "rollback",
+                "setAutoCommit(true)",
+                "close"
+            ),
+            recorder.calls
+        );
+
+        assertEquals(2, recorder.connections.size());
+        recorder.assertAllConnectionsClosed();
+    }
+
+    /**
+     * A runtime exception the constructor's function throws rolls the
+     * transaction back and is rethrown as the same instance, exactly as a
+     * failure of the callback is, and the callback does not run.
+     */
+    @Test
+    void shouldRollBackAndRethrowAFailureOfTheExecutorFunction() throws SQLException {
+        TransactionRecorder recorder = new TransactionRecorder(dataSource);
+
+        IllegalStateException thrown = new IllegalStateException("executor failed");
+
+        JdbcTransactions transactions = new JdbcTransactions(
+            recorder.dataSource(),
+            connection -> {
+                throw thrown;
+            }
+        );
+
+        AtomicBoolean ran = new AtomicBoolean();
+
+        IllegalStateException failure = assertThrows(
+            IllegalStateException.class,
+            () -> transactions.useTransaction(transaction -> ran.set(true))
+        );
+
+        assertSame(thrown, failure);
+        assertEquals(0, failure.getSuppressed().length);
+        assertFalse(ran.get());
+
+        assertEquals(
+            List.of("getConnection", "setAutoCommit(false)", "rollback", "setAutoCommit(true)", "close"),
             recorder.calls
         );
 
@@ -135,8 +278,8 @@ class JdbcTransactionsTest {
 
         IllegalStateException failure = assertThrows(
             IllegalStateException.class,
-            () -> transactions.useTransaction(connection -> {
-                insert(connection, 1L, "Alice");
+            () -> transactions.useTransaction(transaction -> {
+                insert(transaction.connection(), 1L, "Alice");
 
                 throw thrown;
             })
@@ -164,8 +307,8 @@ class JdbcTransactionsTest {
 
         CallbackError failure = assertThrows(
             CallbackError.class,
-            () -> transactions.useTransaction(connection -> {
-                insert(connection, 1L, "Alice");
+            () -> transactions.useTransaction(transaction -> {
+                insert(transaction.connection(), 1L, "Alice");
 
                 throw thrown;
             })
@@ -196,11 +339,11 @@ class JdbcTransactionsTest {
 
         SQLException failure = assertThrows(
             SQLException.class,
-            () -> transactions.useTransaction(connection -> {
-                insert(connection, 1L, "Alice");
+            () -> transactions.useTransaction(transaction -> {
+                insert(transaction.connection(), 1L, "Alice");
 
                 try (
-                    PreparedStatement statement = connection.prepareStatement(
+                    PreparedStatement statement = transaction.connection().prepareStatement(
                         "INSERT INTO missing_table (id) VALUES (?)"
                     )
                 ) {
@@ -240,8 +383,8 @@ class JdbcTransactionsTest {
 
         QueryCardinalityException failure = assertThrows(
             QueryCardinalityException.class,
-            () -> transactions.useTransaction(connection -> {
-                QueryExecutor executor = new JdbcQueryExecutor(connection);
+            () -> transactions.useTransaction(transaction -> {
+                QueryExecutor executor = transaction.executor();
 
                 executor.execute(REPOSITORY, "InsertUser", INSERT_USER, List.of(1L, "Alice"));
 
@@ -295,8 +438,8 @@ class JdbcTransactionsTest {
 
         QueryExecutionException failure = assertThrows(
             QueryExecutionException.class,
-            () -> transactions.useTransaction(connection -> {
-                QueryExecutor executor = new JdbcQueryExecutor(connection);
+            () -> transactions.useTransaction(transaction -> {
+                QueryExecutor executor = transaction.executor();
 
                 executor.execute(REPOSITORY, "InsertUser", INSERT_USER, List.of(1L, "Alice"));
 
@@ -355,7 +498,7 @@ class JdbcTransactionsTest {
 
         TransactionException failure = assertThrows(
             TransactionException.class,
-            () -> transactions.useTransaction(connection -> ran.set(true))
+            () -> transactions.useTransaction(transaction -> ran.set(true))
         );
 
         assertEquals("Failed to begin a transaction", failure.getMessage());
@@ -384,7 +527,7 @@ class JdbcTransactionsTest {
 
         TransactionException failure = assertThrows(
             TransactionException.class,
-            () -> transactions.useTransaction(connection -> ran.set(true))
+            () -> transactions.useTransaction(transaction -> ran.set(true))
         );
 
         assertEquals("Failed to begin a transaction", failure.getMessage());
@@ -417,7 +560,7 @@ class JdbcTransactionsTest {
 
         TransactionException failure = assertThrows(
             TransactionException.class,
-            () -> transactions.useTransaction(connection -> insert(connection, 1L, "Alice"))
+            () -> transactions.useTransaction(transaction -> insert(transaction.connection(), 1L, "Alice"))
         );
 
         assertEquals("Failed to commit the transaction", failure.getMessage());
@@ -460,7 +603,7 @@ class JdbcTransactionsTest {
 
             QueryExecutionException failure = assertThrows(
                 QueryExecutionException.class,
-                () -> transactions.useTransaction(connection -> insert(connection, 1L, "Alice"))
+                () -> transactions.useTransaction(transaction -> insert(transaction.connection(), 1L, "Alice"))
             );
 
             assertEquals(state.getValue(), failure.getClass());
@@ -490,7 +633,9 @@ class JdbcTransactionsTest {
 
         TransactionConflictException pendingFailure = assertThrows(
             TransactionConflictException.class,
-            () -> pendingTransactions.useTransaction(connection -> insert(connection, 2L, "Bob"))
+            () -> pendingTransactions.useTransaction(
+                transaction -> insert(transaction.connection(), 2L, "Bob")
+            )
         );
 
         assertSame(commitCause, pendingFailure.getCause());
@@ -524,7 +669,9 @@ class JdbcTransactionsTest {
 
         TransactionException beginFailure = assertThrows(
             TransactionException.class,
-            () -> beginTransactions.useTransaction(connection -> insert(connection, 1L, "Alice"))
+            () -> beginTransactions.useTransaction(
+                transaction -> insert(transaction.connection(), 1L, "Alice")
+            )
         );
 
         assertEquals("Failed to begin a transaction", beginFailure.getMessage());
@@ -543,8 +690,8 @@ class JdbcTransactionsTest {
 
         IllegalStateException callbackFailure = assertThrows(
             IllegalStateException.class,
-            () -> rollbackTransactions.useTransaction(connection -> {
-                insert(connection, 1L, "Alice");
+            () -> rollbackTransactions.useTransaction(transaction -> {
+                insert(transaction.connection(), 1L, "Alice");
 
                 throw thrown;
             })
@@ -583,8 +730,8 @@ class JdbcTransactionsTest {
 
         IllegalStateException failure = assertThrows(
             IllegalStateException.class,
-            () -> transactions.useTransaction(connection -> {
-                insert(connection, 1L, "Alice");
+            () -> transactions.useTransaction(transaction -> {
+                insert(transaction.connection(), 1L, "Alice");
 
                 throw thrown;
             })
@@ -627,7 +774,7 @@ class JdbcTransactionsTest {
 
         TransactionException failure = assertThrows(
             TransactionException.class,
-            () -> transactions.useTransaction(connection -> insert(connection, 1L, "Alice"))
+            () -> transactions.useTransaction(transaction -> insert(transaction.connection(), 1L, "Alice"))
         );
 
         assertEquals("Failed to release the transaction's connection", failure.getMessage());
@@ -660,7 +807,7 @@ class JdbcTransactionsTest {
 
         TransactionException failure = assertThrows(
             TransactionException.class,
-            () -> transactions.useTransaction(connection -> insert(connection, 1L, "Alice"))
+            () -> transactions.useTransaction(transaction -> insert(transaction.connection(), 1L, "Alice"))
         );
 
         assertEquals("Failed to release the transaction's connection", failure.getMessage());
@@ -683,7 +830,9 @@ class JdbcTransactionsTest {
 
         TransactionException pendingFailure = assertThrows(
             TransactionException.class,
-            () -> pendingTransactions.useTransaction(connection -> insert(connection, 2L, "Bob"))
+            () -> pendingTransactions.useTransaction(
+                transaction -> insert(transaction.connection(), 2L, "Bob")
+            )
         );
 
         assertEquals("Failed to commit the transaction", pendingFailure.getMessage());
@@ -719,7 +868,7 @@ class JdbcTransactionsTest {
 
         JdbcTransactions transactions = new JdbcTransactions(recorder.dataSource());
 
-        transactions.useTransaction(connection -> insert(connection, 1L, "Alice"));
+        transactions.useTransaction(transaction -> insert(transaction.connection(), 1L, "Alice"));
 
         assertEquals(List.of("Alice"), names());
 
@@ -746,12 +895,12 @@ class JdbcTransactionsTest {
         IllegalStateException failure = assertThrows(
             IllegalStateException.class,
             () -> transactions.useTransaction(outer -> {
-                insert(outer, 1L, "Alice");
+                insert(outer.connection(), 1L, "Alice");
 
                 transactions.useTransaction(inner -> {
-                    assertNotSame(outer, inner);
+                    assertNotSame(outer.connection(), inner.connection());
 
-                    insert(inner, 2L, "Bob");
+                    insert(inner.connection(), 2L, "Bob");
                 });
 
                 throw thrown;
@@ -790,7 +939,7 @@ class JdbcTransactionsTest {
     void shouldRequireNoCatchOrThrowsForACallbackThatThrowsNothing() {
         JdbcTransactions transactions = new JdbcTransactions(dataSource);
 
-        long rows = transactions.inTransaction(connection -> 1L);
+        long rows = transactions.inTransaction(transaction -> 1L);
 
         assertEquals(1L, rows);
 
@@ -825,6 +974,86 @@ class JdbcTransactionsTest {
 
     /** An error a callback of these tests throws, distinct from an assertion failure. */
     private static final class CallbackError extends Error {
+    }
+
+    /**
+     * The application's decorated executor: it records the operation and the
+     * query of every call it is given, in order, and delegates each one, so a
+     * test can assert both what the callback ran through it and what reached
+     * the database.
+     */
+    private static final class RecordingQueryExecutor implements QueryExecutor {
+
+        private final QueryExecutor delegate;
+
+        private final List<String> operations;
+
+        private RecordingQueryExecutor(QueryExecutor delegate, List<String> operations) {
+            this.delegate = delegate;
+            this.operations = operations;
+        }
+
+        @Override
+        public <T> T queryOne(
+            String repository,
+            String query,
+            String sql,
+            List<?> parameters,
+            RowMapper<T> mapper
+        ) {
+            record("queryOne", query);
+
+            return delegate.queryOne(repository, query, sql, parameters, mapper);
+        }
+
+        @Override
+        public <T> Optional<T> queryOptional(
+            String repository,
+            String query,
+            String sql,
+            List<?> parameters,
+            RowMapper<T> mapper
+        ) {
+            record("queryOptional", query);
+
+            return delegate.queryOptional(repository, query, sql, parameters, mapper);
+        }
+
+        @Override
+        public <T> List<T> queryMany(
+            String repository,
+            String query,
+            String sql,
+            List<?> parameters,
+            RowMapper<T> mapper
+        ) {
+            record("queryMany", query);
+
+            return delegate.queryMany(repository, query, sql, parameters, mapper);
+        }
+
+        @Override
+        public int execute(String repository, String query, String sql, List<?> parameters) {
+            record("execute", query);
+
+            return delegate.execute(repository, query, sql, parameters);
+        }
+
+        @Override
+        public int[] executeBatch(
+            String repository,
+            String query,
+            String sql,
+            List<? extends List<?>> batch
+        ) {
+            record("executeBatch", query);
+
+            return delegate.executeBatch(repository, query, sql, batch);
+        }
+
+        private void record(String operation, String query) {
+            operations.add("%s(%s)".formatted(operation, query));
+        }
     }
 
     /**

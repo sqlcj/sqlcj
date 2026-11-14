@@ -3,7 +3,6 @@ package com.example.newsletter;
 import com.example.newsletter.enums.ArticleStatus;
 import com.example.newsletter.repositories.NewsletterRepository;
 import com.example.newsletter.rows.ArticlesRow;
-import org.sqlcj.runtime.JdbcQueryExecutor;
 import org.sqlcj.runtime.JdbcTransactions;
 
 import java.time.OffsetDateTime;
@@ -13,10 +12,10 @@ import java.time.OffsetDateTime;
  * publishes its replacement, and the two writes either both happen or neither
  * does.
  *
- * <p>The unit of work runs on the one connection {@link JdbcTransactions}
- * opens the transaction on, and it binds its own repository over that
- * connection, so both writes take part in the same transaction. A normal
- * return commits it; any failure, such as the
+ * <p>The unit of work runs in the one transaction {@link JdbcTransactions}
+ * opens, and it binds its own repository over that transaction's executor, so
+ * both writes take part in the same transaction. A normal return commits it;
+ * any failure, such as the
  * {@link org.sqlcj.runtime.UniqueViolationException} of a replacement whose
  * slug is already taken, rolls the archiving back too and reaches the caller
  * unchanged.
@@ -34,8 +33,8 @@ public final class ArticleReplacement {
         String title,
         OffsetDateTime publishedAt
     ) {
-        return transactions.inTransaction(connection -> {
-            NewsletterRepository newsletter = new NewsletterRepository(new JdbcQueryExecutor(connection));
+        return transactions.inTransaction(transaction -> {
+            NewsletterRepository newsletter = new NewsletterRepository(transaction.executor());
 
             newsletter.setArticleStatus(ArticleStatus.ARCHIVED, articleId);
 

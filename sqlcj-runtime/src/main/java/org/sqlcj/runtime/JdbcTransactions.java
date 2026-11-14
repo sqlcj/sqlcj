@@ -5,21 +5,24 @@ import org.jspecify.annotations.Nullable;
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.function.Function;
 
 /**
  * Runs a unit of work on one connection inside one transaction.
  *
  * <p>A call obtains a connection from the {@link DataSource}, disables
- * auto-commit on it, and hands it to the callback. The callback binds the
- * generated repositories it needs over {@code new JdbcQueryExecutor(connection)}
- * and may run hand-written JDBC code on the same connection, so every operation
- * takes part in the same transaction:
+ * auto-commit on it, builds the application's {@link QueryExecutor} over it,
+ * and hands both to the callback as one {@link JdbcTransaction}. The callback
+ * binds the generated repositories it needs over
+ * {@link JdbcTransaction#executor()} and may run hand-written JDBC code on
+ * {@link JdbcTransaction#connection()}, so every operation takes part in the
+ * same transaction:
  *
  * <pre>{@code
  * JdbcTransactions transactions = new JdbcTransactions(dataSource);
  *
- * Long id = transactions.inTransaction(connection -> {
- *     AuthorRepository authors = new AuthorRepository(new JdbcQueryExecutor(connection));
+ * Long id = transactions.inTransaction(transaction -> {
+ *     AuthorRepository authors = new AuthorRepository(transaction.executor());
  *
  *     Author author = authors.createAuthor("Jane Austen", "English novelist");
  *
@@ -29,6 +32,11 @@ import java.sql.SQLException;
  * });
  * }</pre>
  *
+ * <p>The executor is built once per transaction by the function given to
+ * {@link #JdbcTransactions(DataSource, Function)}, which defaults to
+ * {@code JdbcQueryExecutor::new}, so an application that decorates its executor
+ * keeps that decoration inside every transaction.
+ *
  * <p>Each call manages the transaction as follows:
  *
  * <ul>
@@ -36,6 +44,9 @@ import java.sql.SQLException;
  * {@link #inTransaction} returns the callback's value.</li>
  * <li>Any exception or error the callback throws rolls the transaction back and
  * is rethrown unchanged, as the same instance.</li>
+ * <li>Any exception or error the executor function throws rolls the transaction
+ * back and is rethrown unchanged in the same way, and the callback does not
+ * run.</li>
  * <li>A failure to begin raises {@link TransactionException} carrying the
  * {@code SQLException} as its cause, and the callback does not run.</li>
  * <li>A failure to commit raises the database-neutral type its SQLSTATE
@@ -82,13 +93,45 @@ public final class JdbcTransactions {
 
     private final DataSource dataSource;
 
+    private final Function<Connection, QueryExecutor> executorFactory;
+
     /**
      * Creates a helper that obtains one connection from the given
-     * {@code dataSource} per transaction and closes it before the transaction
-     * returns.
+     * {@code dataSource} per transaction, closes it before the transaction
+     * returns, and hands the callback a {@link JdbcQueryExecutor} over that
+     * connection.
      */
     public JdbcTransactions(DataSource dataSource) {
+        this(dataSource, JdbcQueryExecutor::new);
+    }
+
+    /**
+     * Creates a helper that obtains one connection from the given
+     * {@code dataSource} per transaction, closes it before the transaction
+     * returns, and hands the callback the {@link QueryExecutor} the given
+     * {@code executorFactory} builds from that connection.
+     *
+     * <p>The function is applied once per transaction, after auto-commit was
+     * disabled and before the callback runs, so an application that decorates
+     * its executor keeps that decoration inside the transaction:
+     *
+     * <pre>{@code
+     * JdbcTransactions transactions = new JdbcTransactions(
+     *     dataSource,
+     *     connection -> new TimedQueryExecutor(new JdbcQueryExecutor(connection))
+     * );
+     * }</pre>
+     *
+     * <p>Any exception or error the function throws rolls the transaction back,
+     * releases its connection, and is rethrown unchanged, exactly as a failure
+     * of the callback is, and the callback does not run.
+     */
+    public JdbcTransactions(
+        DataSource dataSource,
+        Function<Connection, QueryExecutor> executorFactory
+    ) {
         this.dataSource = dataSource;
+        this.executorFactory = executorFactory;
     }
 
     /**
@@ -104,7 +147,11 @@ public final class JdbcTransactions {
         T result;
 
         try {
-            result = callback.run(transaction.connection());
+            Connection connection = transaction.connection();
+
+            result = callback.run(
+                new JdbcTransaction(executorFactory.apply(connection), connection)
+            );
         } catch (Throwable failure) {
             rollBack(transaction, failure);
 
@@ -121,8 +168,8 @@ public final class JdbcTransactions {
      * committing on a normal return and rolling back on any failure.
      */
     public <X extends Exception> void useTransaction(TransactionConsumer<X> callback) throws X {
-        this.<@Nullable Void, X>inTransaction(connection -> {
-            callback.accept(connection);
+        this.<@Nullable Void, X>inTransaction(transaction -> {
+            callback.accept(transaction);
 
             return null;
         });
