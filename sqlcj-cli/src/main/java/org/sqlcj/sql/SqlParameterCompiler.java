@@ -2,9 +2,14 @@ package org.sqlcj.sql;
 
 import net.sf.jsqlparser.expression.CastExpression;
 import net.sf.jsqlparser.expression.Expression;
+import net.sf.jsqlparser.expression.ExpressionVisitorAdapter;
+import net.sf.jsqlparser.expression.Function;
 import net.sf.jsqlparser.expression.JdbcNamedParameter;
 import net.sf.jsqlparser.expression.JdbcParameter;
 import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
+import net.sf.jsqlparser.expression.operators.relational.IsDistinctExpression;
+import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
+import net.sf.jsqlparser.expression.operators.relational.ParenthesedExpressionList;
 import net.sf.jsqlparser.parser.CCJSqlParserConstants;
 import net.sf.jsqlparser.parser.Node;
 import net.sf.jsqlparser.parser.Token;
@@ -13,10 +18,12 @@ import net.sf.jsqlparser.statement.select.Select;
 import net.sf.jsqlparser.statement.select.SelectItem;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
@@ -38,9 +45,9 @@ import java.util.regex.Pattern;
  * anonymous {@code ?} placeholder, which has no parameter to bind.
  *
  * <p>The same walk reports the placeholder occurrences of the source in
- * textual order, each with the cast that casts it and with where it stands as
- * the source writes it, which is the syntax-level order in which semantic
- * analysis binds them.
+ * textual order, each with the cast that casts it, with where it stands as
+ * the source writes it, and with whether the source tests it for null, which
+ * is the syntax-level order in which semantic analysis binds them.
  *
  * <p>It also reports each wildcard select item of the source with the span the
  * item takes in the compiled SQL, so that the replacements made for the
@@ -95,6 +102,14 @@ final class SqlParameterCompiler {
         "SET",
         "RETURNING"
     );
+
+    /**
+     * The functions whose arguments test their own value for null, each named
+     * unqualified and compared ignoring case, because a qualified name such as
+     * {@code pg_catalog.coalesce} names a function of a schema sqlcj does not
+     * model.
+     */
+    private static final List<String> NULL_TESTING_FUNCTIONS = List.of("COALESCE", "NULLIF");
 
     /** The image that opens a parenthesized group. */
     private static final String OPEN_PARENTHESIS = "(";
@@ -214,7 +229,7 @@ final class SqlParameterCompiler {
 
         List<String> uncompiled = new ArrayList<>();
 
-        collectPlaceholders(astRoot, names, uncompiled, placeholders);
+        collectPlaceholders(astRoot, names, uncompiled, placeholders, nullTestedPlaceholders(astRoot));
 
         return new SqlParameters(
             executableSql.toString(),
@@ -318,7 +333,8 @@ final class SqlParameterCompiler {
         Node node,
         List<String> names,
         List<String> uncompiled,
-        List<PlaceholderOccurrence> placeholders
+        List<PlaceholderOccurrence> placeholders,
+        Set<Expression> nullTested
     ) {
         Object value = node.jjtGetValue();
 
@@ -329,15 +345,136 @@ final class SqlParameterCompiler {
             Expression operand = innermost.getLeftExpression();
 
             collectUncompiledPlaceholder(operand, names, uncompiled);
-            collectPlaceholder(operand, innermost, node, placeholders);
+            collectPlaceholder(operand, innermost, node, placeholders, nullTested);
         }
 
         if (value instanceof Expression expression) {
-            collectPlaceholder(expression, null, node, placeholders);
+            collectPlaceholder(expression, null, node, placeholders, nullTested);
         }
 
         for (int child = 0; child < node.jjtGetNumChildren(); child++) {
-            collectPlaceholders(node.jjtGetChild(child), names, uncompiled, placeholders);
+            collectPlaceholders(
+                node.jjtGetChild(child),
+                names,
+                uncompiled,
+                placeholders,
+                nullTested
+            );
+        }
+    }
+
+    /**
+     * The placeholders of one parse tree the source tests for null, identified
+     * by the expression object of the occurrence itself, so that two
+     * occurrences of one placeholder name are told apart.
+     *
+     * <p>A null-testing operator or function is an expression rather than a
+     * clause, and the parser gives an {@code IS NULL} no parse-tree node of its
+     * own when another expression encloses it, as the {@code OR} of a criteria
+     * guard does, so the operators are searched for inside the expression each
+     * node reports rather than among the nodes themselves. The search does not
+     * descend into a subquery, whose own expressions the node walk reaches.
+     */
+    private Set<Expression> nullTestedPlaceholders(Node astRoot) {
+        Set<Expression> nullTested = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        collectNullTestedPlaceholders(astRoot, new NullTestVisitor(nullTested));
+
+        return nullTested;
+    }
+
+    private void collectNullTestedPlaceholders(Node node, NullTestVisitor visitor) {
+        if (node.jjtGetValue() instanceof Expression expression) {
+            expression.accept(visitor, null);
+        }
+
+        for (int child = 0; child < node.jjtGetNumChildren(); child++) {
+            collectNullTestedPlaceholders(node.jjtGetChild(child), visitor);
+        }
+    }
+
+    /**
+     * Collects the placeholders one expression tests for null, which are the
+     * operands of {@code IS [NOT] NULL}, including its {@code ISNULL} and
+     * {@code NOTNULL} spellings, both sides of {@code IS [NOT] DISTINCT FROM},
+     * and the arguments of an unqualified {@code COALESCE} or {@code NULLIF}.
+     *
+     * <p>The visitor is given no select visitor, so it reports the expressions
+     * of one query level and stops at a subquery.
+     */
+    private static final class NullTestVisitor extends ExpressionVisitorAdapter<Void> {
+
+        private final Set<Expression> nullTested;
+
+        private NullTestVisitor(Set<Expression> nullTested) {
+            this.nullTested = nullTested;
+        }
+
+        @Override
+        public <S> Void visit(IsNullExpression isNull, S context) {
+            collect(isNull.getLeftExpression());
+
+            return super.visit(isNull, context);
+        }
+
+        @Override
+        public <S> Void visit(IsDistinctExpression isDistinct, S context) {
+            collect(isDistinct.getLeftExpression());
+            collect(isDistinct.getRightExpression());
+
+            return super.visit(isDistinct, context);
+        }
+
+        @Override
+        public <S> Void visit(Function function, S context) {
+            if (isNullTesting(function) && function.getParameters() != null) {
+                for (Expression argument : function.getParameters()) {
+                    collect(argument);
+                }
+            }
+
+            return super.visit(function, context);
+        }
+
+        /**
+         * Reports whether a function tests each of its arguments for null,
+         * which only an unqualified {@code COALESCE} or {@code NULLIF} does.
+         */
+        private boolean isNullTesting(Function function) {
+            String name = function.getName();
+
+            return name != null
+                && NULL_TESTING_FUNCTIONS.stream().anyMatch(name::equalsIgnoreCase);
+        }
+
+        /**
+         * Collects one tested expression when it is a placeholder itself, a
+         * cast chain of one, or a parenthesized one, and otherwise nothing: a
+         * placeholder another expression computes with, as in
+         * {@code lower(:x) IS NULL}, is not the tested value.
+         */
+        private void collect(Expression tested) {
+            Expression operand = operand(tested);
+
+            if (operand instanceof JdbcParameter || operand instanceof JdbcNamedParameter) {
+                nullTested.add(operand);
+            }
+        }
+
+        /** One tested expression with its casts and its parentheses removed. */
+        private Expression operand(Expression tested) {
+            if (tested instanceof CastExpression cast) {
+                return operand(cast.getLeftExpression());
+            }
+
+            if (
+                tested instanceof ParenthesedExpressionList<?> parentheses
+                    && parentheses.size() == 1
+            ) {
+                return operand(parentheses.get(0));
+            }
+
+            return tested;
         }
     }
 
@@ -364,7 +501,8 @@ final class SqlParameterCompiler {
         Object value,
         CastExpression cast,
         Node node,
-        List<PlaceholderOccurrence> placeholders
+        List<PlaceholderOccurrence> placeholders,
+        Set<Expression> nullTested
     ) {
         if (!(value instanceof JdbcParameter) && !(value instanceof JdbcNamedParameter)) {
             return;
@@ -379,7 +517,12 @@ final class SqlParameterCompiler {
                 if (cast != null && collected.cast() == null) {
                     placeholders.set(
                         index,
-                        new PlaceholderOccurrence(placeholder, cast, collected.enclosing())
+                        new PlaceholderOccurrence(
+                            placeholder,
+                            cast,
+                            collected.enclosing(),
+                            collected.nullTested()
+                        )
                     );
                 }
 
@@ -388,7 +531,12 @@ final class SqlParameterCompiler {
         }
 
         placeholders.add(
-            new PlaceholderOccurrence(placeholder, cast, enclosing(node, placeholder))
+            new PlaceholderOccurrence(
+                placeholder,
+                cast,
+                enclosing(node, placeholder),
+                nullTested.contains(placeholder)
+            )
         );
     }
 

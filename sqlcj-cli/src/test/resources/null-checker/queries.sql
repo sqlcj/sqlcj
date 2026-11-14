@@ -1,6 +1,7 @@
 -- The queries of the null-checker fixture: every result shape a generated
 -- repository has, over a table that holds every mapped type, scalar and
--- array, nullable and NOT NULL.
+-- array, nullable and NOT NULL, and a parameter of each nullness for the
+-- types whose argument reads a method of its value.
 
 -- name: GetReading :one
 SELECT *
@@ -70,6 +71,27 @@ WHERE id = $1;
 -- name: InsertSensors :batchexec
 INSERT INTO sensors (name, note)
 VALUES ($1, $2);
+
+-- Parameters of every nullness, bound as one execution and as a batch: an
+-- enum and an INTERVAL the query only compares, which are non-null, and one of
+-- each the query tests for null or writes into a nullable column, which are
+-- nullable.
+
+-- name: ListReadingsByMoodAndSpan :many
+SELECT id
+FROM readings
+WHERE nn_mood = :mood
+  AND nn_interval = :span
+  AND (:optionalMood::mood IS NULL OR null_mood = :optionalMood)
+  AND (:optionalSpan::interval IS NULL OR null_interval = :optionalSpan);
+
+-- name: UpdateReadingMoodsAndSpans :batchexec
+UPDATE readings
+SET nn_mood       = :mood,
+    null_mood     = :optionalMood,
+    nn_interval   = :span,
+    null_interval = :optionalSpan
+WHERE id = :id;
 
 -- One value query per NOT NULL column, each returning the value itself.
 

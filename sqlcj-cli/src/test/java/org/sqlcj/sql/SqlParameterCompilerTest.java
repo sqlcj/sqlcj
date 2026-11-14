@@ -232,6 +232,105 @@ class SqlParameterCompilerTest {
         assertTrue(parameters.uncompiledPlaceholders().isEmpty());
     }
 
+    /**
+     * A placeholder the query tests for null is reported as null tested: the
+     * operand of {@code IS [NOT] NULL}, including its {@code ISNULL} and
+     * {@code NOTNULL} spellings, either side of
+     * {@code IS [NOT] DISTINCT FROM}, and an argument of an unqualified
+     * {@code COALESCE} or {@code NULLIF}.
+     */
+    @Test
+    void shouldReportTheNullTestedPositionsOfAPlaceholder() {
+        assertEquals(List.of(true), nullTests("SELECT id FROM users WHERE :a IS NULL"));
+        assertEquals(List.of(true), nullTests("SELECT id FROM users WHERE :a IS NOT NULL"));
+        assertEquals(List.of(true), nullTests("SELECT id FROM users WHERE :a ISNULL"));
+        assertEquals(List.of(true), nullTests("SELECT id FROM users WHERE :a NOTNULL"));
+
+        assertEquals(
+            List.of(true, true),
+            nullTests("SELECT id FROM users WHERE :a IS DISTINCT FROM :b")
+        );
+
+        assertEquals(
+            List.of(true),
+            nullTests("SELECT id FROM users WHERE name IS NOT DISTINCT FROM :a")
+        );
+
+        assertEquals(
+            List.of(true, true),
+            nullTests("SELECT id FROM users WHERE COALESCE(:a, :b) = name")
+        );
+
+        assertEquals(
+            List.of(true, true),
+            nullTests("SELECT id FROM users WHERE NULLIF(:a, :b) = name")
+        );
+    }
+
+    /**
+     * The tested value is the placeholder itself, a cast chain of it, or a
+     * parenthesized one, so a placeholder another expression computes with is
+     * not tested, and neither is one a clause only compares.
+     */
+    @Test
+    void shouldReportOnlyTheTestedValueItselfAsNullTested() {
+        assertEquals(List.of(true), nullTests("SELECT id FROM users WHERE :a::text IS NULL"));
+
+        assertEquals(
+            List.of(true),
+            nullTests("SELECT id FROM users WHERE :a::text::varchar IS NULL")
+        );
+
+        assertEquals(List.of(true), nullTests("SELECT id FROM users WHERE (:a) IS NULL"));
+        assertEquals(List.of(true), nullTests("SELECT id FROM users WHERE (:a)::text IS NULL"));
+
+        assertEquals(List.of(false), nullTests("SELECT id FROM users WHERE lower(:a) IS NULL"));
+        assertEquals(List.of(false), nullTests("SELECT id FROM users WHERE name = :a"));
+        assertEquals(List.of(false), nullTests("SELECT id FROM users WHERE id IN (:a)"));
+        assertEquals(
+            List.of(false),
+            nullTests("SELECT id FROM users WHERE pg_catalog.coalesce(:a, name) = name")
+        );
+    }
+
+    /**
+     * A null test is reported wherever it stands, which includes an
+     * {@code IS NULL} the parse tree gives no node of its own, as the guard of
+     * a criteria query does, and one inside a subquery, while the other
+     * occurrences of the same name stay untested.
+     */
+    @Test
+    void shouldReportANullTestAtEveryNestingDepth() {
+        assertEquals(
+            List.of(true, false),
+            nullTests("SELECT id FROM users WHERE (:a::text IS NULL OR name = :a)")
+        );
+
+        assertEquals(
+            List.of(false, true),
+            nullTests("SELECT id FROM users WHERE name = :a AND (:a IS NULL OR id > 0)")
+        );
+
+        assertEquals(
+            List.of(true),
+            nullTests(
+                "SELECT id FROM users WHERE EXISTS (SELECT 1 FROM orders WHERE :a::text IS NULL)"
+            )
+        );
+
+        assertEquals(
+            List.of(true),
+            nullTests("UPDATE users SET name = 'x' WHERE :a::text IS NULL")
+        );
+    }
+
+    /** Whether the query tests each of its placeholder occurrences for null. */
+    private List<Boolean> nullTests(String sql) {
+        return new SqlParser().parse(sql).placeholders().stream()
+            .map(PlaceholderOccurrence::nullTested)
+            .toList();
+    }
+
     private SqlParameters compile(String sql, Token... tokens) {
         return compiler.compile(sql, node(tokens), new ArrayList<>(), new ArrayList<>());
     }

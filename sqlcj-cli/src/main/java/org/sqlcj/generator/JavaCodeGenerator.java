@@ -118,6 +118,18 @@ public final class JavaCodeGenerator implements CodeGenerator {
     private static final int PARAMETER_INDENT = 4;
 
     /**
+     * The indentation one generated method body or compact constructor gives
+     * each of its statements.
+     */
+    private static final int BODY_INDENT = 4;
+
+    /**
+     * The indentation one wrapped statement gives each of its arguments, which
+     * is one call continuation past the line that opens the call.
+     */
+    private static final int CONTINUATION_INDENT = 8;
+
+    /**
      * The indentation one wrapped bound-argument list gives each of its
      * arguments, one call continuation past the line that opens the list.
      */
@@ -943,7 +955,9 @@ public final class JavaCodeGenerator implements CodeGenerator {
             }
 
             if (isBatchExec(query)) {
-                members.add(generateParamsRecord(query, queryNames));
+                members.add(
+                    generateParamsRecord(query, names.repositoryClassName(), queryNames)
+                );
             }
 
             if (returnsValue(query)) {
@@ -1018,8 +1032,17 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * single execution of the same query are. A query that binds no parameter
      * generates a record without components, written on one line so that the
      * generated source carries no blank line of its own.
+     *
+     * <p>A record with a non-null component declares a compact constructor
+     * that rejects a {@code null} for each of them, so a row fails where it is
+     * built rather than where the batch binds it. A record whose every
+     * component is nullable declares no constructor.
      */
-    private String generateParamsRecord(QueryModel query, JavaNames.QueryNames names) {
+    private String generateParamsRecord(
+        QueryModel query,
+        String repositoryClassName,
+        JavaNames.QueryNames names
+    ) {
         if (query.parameters().isEmpty()) {
             return """
                 public record %s() {
@@ -1032,11 +1055,45 @@ public final class JavaCodeGenerator implements CodeGenerator {
             public record %s(
             %s
             ) {
-            }
+            %s}
             """
             .formatted(
                 names.paramsTypeName(),
-                generateParamsComponents(query, names)
+                generateParamsComponents(query, names),
+                generateParamsConstructor(query, repositoryClassName, names)
+            );
+    }
+
+    /**
+     * Generates the compact constructor of one parameter record, which runs one
+     * null check per non-null component in logical parameter order, and nothing
+     * at all when the record has no non-null component.
+     */
+    private String generateParamsConstructor(
+        QueryModel query,
+        String repositoryClassName,
+        JavaNames.QueryNames names
+    ) {
+        List<String> checks = generateNullChecks(
+            query,
+            repositoryClassName,
+            names.parameterNames(),
+            MEMBER_INDENT + BODY_INDENT
+        );
+
+        if (checks.isEmpty()) {
+            return "";
+        }
+
+        return """
+
+                public %s {
+            %s
+                }
+            """
+            .formatted(
+                names.paramsTypeName(),
+                String.join("\n", checks)
             );
     }
 
@@ -1047,7 +1104,12 @@ public final class JavaCodeGenerator implements CodeGenerator {
 
                 return "%s %s"
                     .formatted(
-                        javaType(parameter.type(), parameter.enumType(), parameter.array(), true),
+                        javaType(
+                            parameter.type(),
+                            parameter.enumType(),
+                            parameter.array(),
+                            parameter.nullable()
+                        ),
                         names.parameterNames().get(index)
                     )
                     .indent(4)
@@ -1136,7 +1198,12 @@ public final class JavaCodeGenerator implements CodeGenerator {
             .mapToObj(index -> {
                 QueryParameter parameter = query.parameters().get(index);
 
-                return javaType(parameter.type(), parameter.enumType(), parameter.array(), true)
+                return javaType(
+                    parameter.type(),
+                    parameter.enumType(),
+                    parameter.array(),
+                    parameter.nullable()
+                )
                     + " "
                     + names.parameterNames().get(index);
             })
@@ -1178,6 +1245,94 @@ public final class JavaCodeGenerator implements CodeGenerator {
             + "\n) {";
     }
 
+    /**
+     * Writes the declaration of one generated method together with the null
+     * checks its body runs before anything else, separated from the statement
+     * that follows by a blank line. A method whose every parameter is nullable
+     * writes its declaration alone.
+     */
+    private String generateCheckedDeclaration(
+        QueryModel query,
+        String repositoryClassName,
+        JavaNames.QueryNames names
+    ) {
+        String declaration = generateMethodDeclaration(
+            "public %s %s".formatted(generateReturnType(query, names), names.methodName()),
+            generateMethodParameters(query, names)
+        );
+
+        List<String> checks = generateNullChecks(
+            query,
+            repositoryClassName,
+            names.parameterNames(),
+            BODY_INDENT
+        );
+
+        return checks.isEmpty()
+            ? declaration
+            : declaration + "\n" + String.join("\n", checks) + "\n";
+    }
+
+    /**
+     * Writes one null check per non-null parameter of one query, in logical
+     * parameter order and each on its own line indented by {@code indent}, so
+     * that a {@code null} argument fails where the caller passes it rather than
+     * as an empty result or a constraint violation. A nullable parameter is
+     * checked nowhere, because the query gives its {@code null} a meaning.
+     */
+    private List<String> generateNullChecks(
+        QueryModel query,
+        String repositoryClassName,
+        List<String> parameterNames,
+        int indent
+    ) {
+        return IntStream.range(0, query.parameters().size())
+            .filter(index -> !query.parameters().get(index).nullable())
+            .mapToObj(
+                index -> generateNullCheck(
+                    parameterNames.get(index),
+                    query,
+                    repositoryClassName,
+                    indent
+                )
+            )
+            .toList();
+    }
+
+    /**
+     * Writes one null check, which names the parameter, the query, and the
+     * repository, so that the failure says which argument of which call was
+     * {@code null}. A check that does not fit the limit writes its two
+     * arguments one per line, one call continuation past the line that opens
+     * the call, with the closing parenthesis at that line's column, the layout
+     * a wrapped bound-argument list already uses.
+     */
+    private String generateNullCheck(
+        String parameterName,
+        QueryModel query,
+        String repositoryClassName,
+        int indent
+    ) {
+        String margin = " ".repeat(indent);
+        String message = generateStringLiteral(
+            "Parameter '%s' of query '%s' in %s must not be null"
+                .formatted(parameterName, query.name(), repositoryClassName)
+        );
+        String call = "java.util.Objects.requireNonNull(";
+        String oneLine = call + parameterName + ", " + message + ");";
+
+        if (fits(indent, oneLine)) {
+            return margin + oneLine;
+        }
+
+        String argumentMargin = " ".repeat(indent + CONTINUATION_INDENT);
+
+        return margin + call + "\n"
+            + argumentMargin + parameterName + ",\n"
+            + argumentMargin + message + "\n"
+            + margin + ");";
+    }
+
     private String generateMethod(
         QueryModel query,
         String repositoryClassName,
@@ -1208,10 +1363,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             }
             """
             .formatted(
-                generateMethodDeclaration(
-                    "public %s %s".formatted(generateReturnType(query, names), names.methodName()),
-                    generateMethodParameters(query, names)
-                ),
+                generateCheckedDeclaration(query, repositoryClassName, names),
                 generateExecutorMethod(query),
                 generateStringLiteral(repositoryClassName),
                 generateStringLiteral(query.name()),
@@ -1237,10 +1389,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             }
             """
             .formatted(
-                generateMethodDeclaration(
-                    "public %s %s".formatted(generateReturnType(query, names), names.methodName()),
-                    generateMethodParameters(query, names)
-                ),
+                generateCheckedDeclaration(query, repositoryClassName, names),
                 generateStringLiteral(repositoryClassName),
                 generateStringLiteral(query.name()),
                 generateSql(query),
@@ -1439,6 +1588,16 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * {@code java.util.Arrays.asList}. Each of the three accepts a null
      * argument, unlike {@code List.of}, so a null parameter can be bound.
      *
+     * <p>A list of two or more arguments states its element type rather than
+     * leaving it to be inferred, so that the list's type follows from the
+     * arguments' nullness alone and not from the Java types they happen to
+     * have: {@code Object} when no argument can be null, and a nullable
+     * {@code Object} when one can. Only a parameter bound as its own value can
+     * be null, because every wrapper the generator writes around an argument
+     * is itself non-null. An inferred element type is the least upper bound of
+     * the argument types, which for several non-null arguments of different
+     * types is an intersection type that NullAway 0.14.3 cannot annotate.
+     *
      * <p>A list of at least one argument whose line would pass the limit writes
      * each argument on a line of its own, one call continuation past the line
      * that opens the list, with the closing parenthesis at that line's column.
@@ -1463,7 +1622,12 @@ public final class JavaCodeGenerator implements CodeGenerator {
 
         String factory = arguments.size() == 1
             ? "java.util.Collections.singletonList"
-            : "java.util.Arrays.asList";
+            : "java.util.Arrays.<%s>asList"
+                .formatted(
+                    bindsNull(query, valueNames)
+                        ? nullable("Object")
+                        : "Object"
+                );
         String oneLine = arguments.stream()
             .collect(Collectors.joining(", ", factory + "(", ")"));
 
@@ -1479,6 +1643,20 @@ public final class JavaCodeGenerator implements CodeGenerator {
             + "\n"
             + SQL_INDENT
             + ")";
+    }
+
+    /**
+     * Reports whether one bound-argument list can hold a null, which only a
+     * nullable parameter the list binds as its own value can.
+     */
+    private boolean bindsNull(QueryModel query, List<String> valueNames) {
+        return IntStream.range(0, query.parameters().size())
+            .anyMatch(index -> {
+                QueryParameter parameter = query.parameters().get(index);
+                String name = valueNames.get(index);
+
+                return parameter.nullable() && generateArgument(parameter, name).equals(name);
+            });
     }
 
     /**
@@ -1526,13 +1704,11 @@ public final class JavaCodeGenerator implements CodeGenerator {
         }
 
         if (parameter.type() == ColumnType.ENUM) {
-            return "new org.sqlcj.runtime.UntypedText(%s == null ? null : %s.label())"
-                .formatted(name, name);
+            return generateUntypedTextArgument(parameter, name, "label");
         }
 
         if (parameter.type() == ColumnType.INTERVAL) {
-            return "new org.sqlcj.runtime.UntypedText(%s == null ? null : %s.format())"
-                .formatted(name, name);
+            return generateUntypedTextArgument(parameter, name, "format");
         }
 
         if (isUntypedText(parameter.type())) {
@@ -1540,6 +1716,26 @@ public final class JavaCodeGenerator implements CodeGenerator {
         }
 
         return name;
+    }
+
+    /**
+     * Renders one executor argument the runtime binds as the text a method of
+     * its Java value writes. A nullable parameter writes that text only for a
+     * value, because its {@code null} is bound as a SQL {@code NULL}, while a
+     * non-null one reads the value directly, so the generated body carries no
+     * test a null checker reads as always false.
+     */
+    private String generateUntypedTextArgument(
+        QueryParameter parameter,
+        String name,
+        String method
+    ) {
+        if (!parameter.nullable()) {
+            return "new org.sqlcj.runtime.UntypedText(%s.%s())".formatted(name, method);
+        }
+
+        return "new org.sqlcj.runtime.UntypedText(%s == null ? null : %s.%s())"
+            .formatted(name, name, method);
     }
 
     /**

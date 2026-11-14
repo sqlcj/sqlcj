@@ -739,7 +739,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
             ),
             model.parameters()
         );
@@ -787,8 +787,8 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
-                new QueryParameter(3, "active", ColumnType.BOOLEAN)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(3, "active", ColumnType.BOOLEAN).asNullable()
             ),
             model.parameters()
         );
@@ -5838,7 +5838,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable()),
             model.parameters()
         );
     }
@@ -6171,7 +6171,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(2, "nickname", ColumnType.VARCHAR),
                 new QueryParameter(3, "total", ColumnType.DECIMAL)
             ),
@@ -6664,7 +6664,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "newName", ColumnType.VARCHAR),
+                new QueryParameter(1, "newName", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(2, "id", ColumnType.BIGINT)
             ),
             model.parameters()
@@ -6691,7 +6691,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
             ),
             model.parameters()
         );
@@ -6896,7 +6896,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            List.of(new QueryParameter(1, "name", ColumnType.TEXT)),
+            List.of(new QueryParameter(1, "name", ColumnType.TEXT).asNullable()),
             model.parameters()
         );
 
@@ -6925,7 +6925,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            List.of(new QueryParameter(1, "q", ColumnType.TEXT)),
+            List.of(new QueryParameter(1, "q", ColumnType.TEXT).asNullable()),
             model.parameters()
         );
 
@@ -6936,6 +6936,205 @@ class QueryAnalyzerTest {
                 + " WHERE (?::text IS NULL OR name ILIKE '%' || ?::text || '%')",
             model.executableSql()
         );
+    }
+
+    /**
+     * A parameter is nullable exactly where the query gives a {@code null}
+     * bound at it a meaning: an occurrence the query tests for null, and a
+     * value written into a nullable column. Every other position is non-null.
+     */
+    @Test
+    void shouldMakeANullTestedParameterNullable() {
+        assertEquals(
+            List.of(true),
+            nullness("SELECT id FROM users WHERE (:name::text IS NULL OR name = :name)", schema)
+        );
+
+        assertEquals(
+            List.of(true),
+            nullness("SELECT id FROM users WHERE :name::text IS NOT NULL", schema)
+        );
+
+        assertEquals(
+            List.of(true),
+            nullness("SELECT id FROM users WHERE :name::text ISNULL", schema)
+        );
+
+        assertEquals(
+            List.of(true),
+            nullness("SELECT id FROM users WHERE :name::text NOTNULL", schema)
+        );
+
+        assertEquals(
+            List.of(true),
+            nullness("SELECT id FROM users WHERE name IS NOT DISTINCT FROM :name::text", schema)
+        );
+
+        assertEquals(
+            List.of(true),
+            nullness("SELECT id FROM users WHERE :name::text IS DISTINCT FROM name", schema)
+        );
+
+        assertEquals(
+            List.of(true),
+            nullness("SELECT id FROM users WHERE COALESCE(:name::text, name) = name", schema)
+        );
+
+        assertEquals(
+            List.of(true),
+            nullness("SELECT id FROM users WHERE NULLIF(:name::text, name) IS NULL", schema)
+        );
+    }
+
+    /**
+     * An occurrence inside another expression is not the tested value, so a
+     * computed null test leaves its parameter non-null, and so does every
+     * clause that only reads the value: a comparison, {@code IN},
+     * {@code BETWEEN}, {@code LIKE}, {@code = ANY}, a {@code CASE} comparison,
+     * and the pagination clauses.
+     */
+    @Test
+    void shouldKeepAParameterThatIsOnlyReadNonNull() {
+        assertEquals(
+            List.of(false),
+            nullness("SELECT id FROM users WHERE lower(:name::text) IS NULL", schema)
+        );
+
+        assertEquals(List.of(false), nullness("SELECT id FROM users WHERE name = :name", schema));
+        assertEquals(List.of(false), nullness("SELECT id FROM users WHERE name <> :name", schema));
+        assertEquals(List.of(false), nullness("SELECT id FROM users WHERE id < :id", schema));
+        assertEquals(List.of(false), nullness("SELECT id FROM users WHERE id IN (:id)", schema));
+        assertEquals(
+            List.of(false),
+            nullness("SELECT id FROM users WHERE name LIKE :name", schema)
+        );
+        assertEquals(
+            List.of(false, false),
+            nullness("SELECT id FROM users WHERE id BETWEEN :first AND :last", schema)
+        );
+        assertEquals(
+            List.of(false),
+            nullness("SELECT id FROM users WHERE id = ANY(:ids)", anyListSchema)
+        );
+        assertEquals(
+            List.of(false),
+            nullness(
+                "SELECT id FROM users ORDER BY CASE WHEN :sort::text = 'name' THEN name END, id",
+                schema
+            )
+        );
+        assertEquals(
+            List.of(false, false),
+            nullness("SELECT id FROM users LIMIT :pageSize OFFSET :skip", schema)
+        );
+    }
+
+    /**
+     * A value written into a nullable column stores SQL {@code NULL} for a
+     * {@code null} argument, so it is nullable in {@code INSERT ... VALUES}, in
+     * {@code UPDATE ... SET}, and in {@code ON CONFLICT DO UPDATE SET}, while a
+     * {@code NOT NULL} target keeps its parameter non-null.
+     */
+    @Test
+    void shouldMakeAValueOfANullableTargetColumnNullable() {
+        assertEquals(
+            List.of(false, true),
+            nullness("INSERT INTO users (id, name) VALUES ($1, $2)", writeSchema)
+        );
+
+        assertEquals(
+            List.of(false, true),
+            nullness("UPDATE users SET name = $2 WHERE id = $1", writeSchema)
+        );
+
+        assertEquals(
+            List.of(false, true),
+            nullness(
+                "INSERT INTO users (id, version) VALUES ($1, 1)"
+                    + " ON CONFLICT (id) DO UPDATE SET name = $2",
+                writeSchema
+            )
+        );
+
+        assertEquals(
+            List.of(false, true),
+            nullness("INSERT INTO users (version, name) VALUES ($1, $2)", writeSchema)
+        );
+
+        assertEquals(
+            List.of(true),
+            nullness("UPDATE users SET name = $1::text WHERE version = 1", writeSchema)
+        );
+    }
+
+    /**
+     * An item of an insert's {@code SELECT} is non-null whatever its target
+     * column, and so is a placeholder a subscripted target writes into one
+     * element of its array column.
+     */
+    @Test
+    void shouldKeepAnInsertSelectItemNonNull() {
+        assertEquals(
+            List.of(false),
+            nullness(
+                "INSERT INTO memberships (project_id, user_id, role)"
+                    + " SELECT invitations.project_id, invitations.user_id, $1::text"
+                    + " FROM invitations",
+                insertSourceSchema
+            )
+        );
+    }
+
+    /**
+     * One parameter is nullable when any of its occurrences is, wherever its
+     * name and its type come from, so the guard of a criteria query is
+     * nullable at the occurrence a comparison types as well.
+     */
+    @Test
+    void shouldMakeARepeatedParameterNullableWhenAnyOccurrenceIs() {
+        String sql = "UPDATE users SET bio = :bio WHERE (:bio IS NULL OR nickname = :bio)";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ClearBio", QueryType.EXEC, sql),
+            parser.parse(sql),
+            writeSchema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "bio", ColumnType.TEXT).asNullable()),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1, 1), model.bindingParameterIndexes());
+
+        String nonNull = "UPDATE users SET version = :version WHERE version = :version";
+
+        assertEquals(
+            List.of(new QueryParameter(1, "version", ColumnType.INTEGER)),
+            analyzer.analyze(
+                new Query("TouchUser", QueryType.EXEC, nonNull),
+                parser.parse(nonNull),
+                writeSchema
+            )
+                .parameters()
+        );
+    }
+
+    /** Whether each logical parameter of one query is nullable, in logical order. */
+    private List<Boolean> nullness(String sql, Schema analyzedSchema) {
+        QueryType type = sql.startsWith("SELECT")
+            ? QueryType.MANY
+            : QueryType.EXEC;
+
+        return analyzer.analyze(
+            new Query("Analyzed", type, sql),
+            parser.parse(sql),
+            analyzedSchema
+        )
+            .parameters()
+            .stream()
+            .map(QueryParameter::nullable)
+            .toList();
     }
 
     /**
@@ -6953,7 +7152,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable()),
             model.parameters()
         );
 
@@ -6980,7 +7179,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable()),
             model.parameters()
         );
 
@@ -7008,7 +7207,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            List.of(new QueryParameter(1, "email", ColumnType.TEXT)),
+            List.of(new QueryParameter(1, "email", ColumnType.TEXT).asNullable()),
             model.parameters()
         );
 
@@ -7033,7 +7232,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "setting", ColumnType.ENUM, "stage_setting")
+                new QueryParameter(1, "setting", ColumnType.ENUM, "stage_setting").asNullable()
             ),
             model.parameters()
         );
@@ -7058,7 +7257,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            List.of(new QueryParameter(1, "ids", ColumnType.BIGINT, null, true)),
+            List.of(new QueryParameter(1, "ids", ColumnType.BIGINT, null, true).asNullable()),
             model.parameters()
         );
 
@@ -7091,8 +7290,8 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "q", ColumnType.TEXT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR)
+                new QueryParameter(1, "q", ColumnType.TEXT).asNullable(),
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
             ),
             model.parameters()
         );
@@ -7160,7 +7359,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "name", ColumnType.TEXT),
+                new QueryParameter(1, "name", ColumnType.TEXT).asNullable(),
                 new QueryParameter(2, "id", ColumnType.BIGINT)
             ),
             model.parameters()
@@ -7269,7 +7468,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "bio", ColumnType.TEXT),
+                new QueryParameter(1, "bio", ColumnType.TEXT).asNullable(),
                 new QueryParameter(2, "id", ColumnType.BIGINT)
             ),
             model.parameters()
@@ -7475,7 +7674,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            List.of(new QueryParameter(1, "param1", ColumnType.TEXT)),
+            List.of(new QueryParameter(1, "param1", ColumnType.TEXT).asNullable()),
             model.parameters()
         );
 
@@ -7499,7 +7698,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "param2", ColumnType.TEXT)
+                new QueryParameter(2, "param2", ColumnType.TEXT).asNullable()
             ),
             model.parameters()
         );
@@ -8182,7 +8381,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
             ),
             model.parameters()
         );
@@ -8247,8 +8446,8 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
-                new QueryParameter(3, "active", ColumnType.BOOLEAN)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(3, "active", ColumnType.BOOLEAN).asNullable()
             ),
             model.parameters()
         );
@@ -8332,7 +8531,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
             ),
             model.parameters()
         );
@@ -8360,7 +8559,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
             ),
             model.parameters()
         );
@@ -8848,7 +9047,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "tags", ColumnType.VARCHAR, null, true)
+                new QueryParameter(2, "tags", ColumnType.VARCHAR, null, true).asNullable()
             ),
             inserted.parameters()
         );
@@ -8869,7 +9068,7 @@ class QueryAnalyzerTest {
                     ColumnType.ENUM,
                     "stage_setting",
                     true
-                ),
+                ).asNullable(),
                 new QueryParameter(2, "id", ColumnType.BIGINT)
             ),
             updated.parameters()
@@ -9306,7 +9505,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
             ),
             model.parameters()
         );
@@ -9715,7 +9914,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "role", ColumnType.VARCHAR),
+                new QueryParameter(1, "role", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(2, "owner", ColumnType.BIGINT)
             ),
             model.parameters()
@@ -9745,7 +9944,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "role", ColumnType.VARCHAR),
+                new QueryParameter(1, "role", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(2, "user_id", ColumnType.BIGINT),
                 new QueryParameter(3, "project_id", ColumnType.BIGINT),
                 new QueryParameter(4, "user_id", ColumnType.BIGINT)
@@ -9963,7 +10162,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "nickname", ColumnType.VARCHAR)
+                new QueryParameter(2, "nickname", ColumnType.VARCHAR).asNullable()
             ),
             model.parameters()
         );
@@ -10277,8 +10476,8 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
-                new QueryParameter(3, "active", ColumnType.BOOLEAN)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(3, "active", ColumnType.BOOLEAN).asNullable()
             ),
             model.parameters()
         );
@@ -10325,8 +10524,8 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
-                new QueryParameter(3, "active", ColumnType.BOOLEAN)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(3, "active", ColumnType.BOOLEAN).asNullable()
             ),
             model.parameters()
         );
@@ -10358,8 +10557,8 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
-                new QueryParameter(3, "bio", ColumnType.TEXT)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(3, "bio", ColumnType.TEXT).asNullable()
             ),
             model.parameters()
         );
@@ -10385,7 +10584,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
             ),
             model.parameters()
         );
@@ -10414,7 +10613,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
             ),
             model.parameters()
         );
@@ -10429,7 +10628,7 @@ class QueryAnalyzerTest {
     void shouldAnalyzeUpsertWithoutAConflictTarget() {
         List<QueryParameter> parameters = List.of(
             new QueryParameter(1, "id", ColumnType.BIGINT),
-            new QueryParameter(2, "name", ColumnType.VARCHAR)
+            new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
         );
 
         QueryModel model = analyzeConflict(QueryType.EXEC, "ON CONFLICT DO NOTHING");
@@ -10465,7 +10664,7 @@ class QueryAnalyzerTest {
     void shouldAnalyzeUpsertOnANamedConstraint() {
         List<QueryParameter> parameters = List.of(
             new QueryParameter(1, "id", ColumnType.BIGINT),
-            new QueryParameter(2, "name", ColumnType.VARCHAR)
+            new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
         );
 
         for (QueryType type : List.of(QueryType.EXEC, QueryType.OPTIONAL)) {
@@ -10488,8 +10687,8 @@ class QueryAnalyzerTest {
             assertEquals(
                 List.of(
                     new QueryParameter(1, "id", ColumnType.BIGINT),
-                    new QueryParameter(2, "name", ColumnType.VARCHAR),
-                    new QueryParameter(3, "active", ColumnType.BOOLEAN)
+                    new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
+                    new QueryParameter(3, "active", ColumnType.BOOLEAN).asNullable()
                 ),
                 doUpdate.parameters()
             );
@@ -10514,7 +10713,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(3, "active", ColumnType.BOOLEAN)
             ),
             model.parameters()
@@ -10551,7 +10750,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(3, "flag", ColumnType.BOOLEAN)
             ),
             model.parameters()
@@ -10576,8 +10775,8 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
-                new QueryParameter(3, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(3, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(4, "version", ColumnType.INTEGER),
                 new QueryParameter(5, "nickname", ColumnType.VARCHAR)
             ),
@@ -10609,7 +10808,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(3, "version", ColumnType.INTEGER)
             ),
             model.parameters()
@@ -10634,8 +10833,8 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
-                new QueryParameter(3, "bio", ColumnType.TEXT),
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(3, "bio", ColumnType.TEXT).asNullable(),
                 new QueryParameter(4, "version", ColumnType.INTEGER),
                 new QueryParameter(5, "active", ColumnType.BOOLEAN)
             ),
@@ -10815,7 +11014,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(3, "version", ColumnType.INTEGER)
             ),
             model.parameters()
@@ -10958,7 +11157,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(2, "id", ColumnType.BIGINT, null, true)
             ),
             updated.parameters()
@@ -12157,7 +12356,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(2, "total", ColumnType.DECIMAL)
             ),
             model.parameters()
@@ -12211,8 +12410,8 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
-                new QueryParameter(3, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(3, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(4, "total", ColumnType.DECIMAL)
             ),
             model.parameters()
@@ -12665,7 +12864,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(2, "nickname", ColumnType.VARCHAR)
             ),
             model.parameters()
@@ -12748,7 +12947,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(2, "total", ColumnType.DECIMAL),
                 new QueryParameter(3, "id", ColumnType.BIGINT)
             ),
@@ -12782,7 +12981,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(2, "total", ColumnType.DECIMAL)
             ),
             model.parameters()
@@ -13011,7 +13210,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(2, "total", ColumnType.DECIMAL)
             ),
             model.parameters()
@@ -13225,7 +13424,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(3, "nickname", ColumnType.VARCHAR)
             ),
             model.parameters()
@@ -13259,7 +13458,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             List.of(
-                new QueryParameter(1, "nickname", ColumnType.VARCHAR),
+                new QueryParameter(1, "nickname", ColumnType.VARCHAR).asNullable(),
                 new QueryParameter(2, "total", ColumnType.DECIMAL),
                 new QueryParameter(3, "id", ColumnType.BIGINT)
             ),
@@ -14542,7 +14741,7 @@ class QueryAnalyzerTest {
         assertEquals(
             List.of(
                 new QueryParameter(1, "rootId", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR)
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
             ),
             updateModel.parameters()
         );

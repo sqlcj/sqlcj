@@ -197,15 +197,13 @@ class JavaCodeGeneratorNamingTest {
 
         assertTrue(
             source.contains(
-                "    public List<FindUsersResult> findUsers(\n"
-                    + "        @org.jspecify.annotations.Nullable Long executor1,\n"
-                    + "        @org.jspecify.annotations.Nullable String userId1,\n"
-                    + "        @org.jspecify.annotations.Nullable String userId2\n"
-                    + "    ) {"
+                "    public List<FindUsersResult> findUsers("
+                    + "Long executor1, String userId1, String userId2"
+                    + ") {"
             )
         );
 
-        assertTrue(source.contains("java.util.Arrays.asList(executor1, userId1, userId2)"));
+        assertTrue(source.contains("java.util.Arrays.<Object>asList(executor1, userId1, userId2)"));
 
         assertCompiles(file);
     }

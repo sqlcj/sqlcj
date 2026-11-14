@@ -144,8 +144,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "        @org.jspecify.annotations.Nullable Long id,\n"
-                    + "        @org.jspecify.annotations.Nullable String name\n"
+                "listUsersByIdAndName(Long id, String name)"
             )
         );
     }
@@ -412,10 +411,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "    public List<ListUsersByIdAndNameResult> listUsersByIdAndName(\n"
-                    + "        @org.jspecify.annotations.Nullable Long id,\n"
-                    + "        @org.jspecify.annotations.Nullable String name\n"
-                    + "    ) {"
+                "    public List<ListUsersByIdAndNameResult> listUsersByIdAndName(Long id, String name) {"
             )
         );
     }
@@ -442,7 +438,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "public GetUserResult getUser(@org.jspecify.annotations.Nullable Long id)"
+                "public GetUserResult getUser(Long id)"
             )
         );
     }
@@ -485,8 +481,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "        @org.jspecify.annotations.Nullable Long userId,\n"
-                    + "        @org.jspecify.annotations.Nullable Boolean enabled\n"
+                "getUser(Long userId, Boolean enabled)"
             )
         );
     }
@@ -567,7 +562,7 @@ class JavaCodeGeneratorTest {
                 "GetUser",
                 QueryType.ONE,
                 List.of(
-                    new QueryParameter(1, "value", columnType)
+                    new QueryParameter(1, "value", columnType).asNullable()
                 )
             )
         );
@@ -665,7 +660,7 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertTrue(
-            source.contains("public Optional<UUID> findUserExternalId(@org.jspecify.annotations.Nullable Long id)"),
+            source.contains("public Optional<UUID> findUserExternalId(Long id)"),
             source
         );
 
@@ -735,7 +730,7 @@ class JavaCodeGeneratorTest {
 
         String source = file.content();
 
-        assertTrue(source.contains("public Long insertUser(@org.jspecify.annotations.Nullable String name)"), source);
+        assertTrue(source.contains("public Long insertUser(String name)"), source);
 
         assertTrue(
             source.contains(
@@ -776,7 +771,7 @@ class JavaCodeGeneratorTest {
         String source = repository.content();
 
         assertTrue(
-            source.contains("public StageSetting getStageSetting(@org.jspecify.annotations.Nullable String handle)"),
+            source.contains("public StageSetting getStageSetting(String handle)"),
             source
         );
 
@@ -814,8 +809,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public List<@org.jspecify.annotations.Nullable String> getUserTags("
-                    + "@org.jspecify.annotations.Nullable Long id)"
+                "public List<@org.jspecify.annotations.Nullable String> getUserTags(Long id)"
             ),
             source
         );
@@ -942,7 +936,7 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertTrue(
-            source.contains("public GetUserNameResult getUserName(@org.jspecify.annotations.Nullable Long id)"), source
+            source.contains("public GetUserNameResult getUserName(Long id)"), source
         );
 
         assertEquals(
@@ -1006,7 +1000,7 @@ class JavaCodeGeneratorTest {
 
         String source = file.content();
 
-        assertTrue(source.contains("public CodesRow getCode(@org.jspecify.annotations.Nullable String code)"), source);
+        assertTrue(source.contains("public CodesRow getCode(String code)"), source);
 
         assertTrue(
             source.contains("private static final RowMapper<CodesRow> codesRowMapper ="),
@@ -1161,12 +1155,12 @@ class JavaCodeGeneratorTest {
                     1,
                     "externalId",
                     ColumnType.UUID
-                ),
+                ).asNullable(),
                 new QueryParameter(
                     2,
                     "createdAt",
                     ColumnType.TIMESTAMP_WITH_TIME_ZONE
-                )
+                ).asNullable()
             ),
             null
         );
@@ -1490,10 +1484,10 @@ class JavaCodeGeneratorTest {
                 new QueryColumn("name", ColumnType.VARCHAR, true)
             ),
             List.of(
-                new QueryParameter(1, "metadata", ColumnType.JSONB),
-                new QueryParameter(2, "profile", ColumnType.JSON),
-                new QueryParameter(3, "name", ColumnType.VARCHAR),
-                new QueryParameter(4, "bio", ColumnType.TEXT)
+                new QueryParameter(1, "metadata", ColumnType.JSONB).asNullable(),
+                new QueryParameter(2, "profile", ColumnType.JSON).asNullable(),
+                new QueryParameter(3, "name", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(4, "bio", ColumnType.TEXT).asNullable()
             ),
             null
         );
@@ -1515,7 +1509,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "                java.util.Arrays.asList(\n"
+                "                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
                     + "                        name,\n"
                     + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
                     + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
@@ -1575,13 +1569,13 @@ class JavaCodeGeneratorTest {
                 new QueryColumn("bio", ColumnType.TEXT, true)
             ),
             List.of(
-                new QueryParameter(1, "handle", ColumnType.CITEXT),
-                new QueryParameter(2, "address", ColumnType.INET),
-                new QueryParameter(3, "network", ColumnType.CIDR),
-                new QueryParameter(4, "mac", ColumnType.MACADDR),
-                new QueryParameter(5, "mac8", ColumnType.MACADDR8),
-                new QueryParameter(6, "handles", ColumnType.CITEXT, null, true),
-                new QueryParameter(7, "bio", ColumnType.TEXT)
+                new QueryParameter(1, "handle", ColumnType.CITEXT).asNullable(),
+                new QueryParameter(2, "address", ColumnType.INET).asNullable(),
+                new QueryParameter(3, "network", ColumnType.CIDR).asNullable(),
+                new QueryParameter(4, "mac", ColumnType.MACADDR).asNullable(),
+                new QueryParameter(5, "mac8", ColumnType.MACADDR8).asNullable(),
+                new QueryParameter(6, "handles", ColumnType.CITEXT, null, true).asNullable(),
+                new QueryParameter(7, "bio", ColumnType.TEXT).asNullable()
             ),
             null
         );
@@ -1606,7 +1600,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "                java.util.Arrays.asList(\n"
+                "                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
                     + "                        new org.sqlcj.runtime.UntypedText(handle),\n"
                     + "                        new org.sqlcj.runtime.UntypedText(address),\n"
                     + "                        new org.sqlcj.runtime.UntypedText(network),\n"
@@ -1663,8 +1657,8 @@ class JavaCodeGeneratorTest {
                 new QueryColumn("ages", ColumnType.INTERVAL, true, null, true)
             ),
             List.of(
-                new QueryParameter(1, "age", ColumnType.INTERVAL),
-                new QueryParameter(2, "ages", ColumnType.INTERVAL, null, true)
+                new QueryParameter(1, "age", ColumnType.INTERVAL).asNullable(),
+                new QueryParameter(2, "ages", ColumnType.INTERVAL, null, true).asNullable()
             ),
             null
         );
@@ -1684,7 +1678,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "                java.util.Arrays.asList(\n"
+                "                java.util.Arrays.<Object>asList(\n"
                     + "                        new org.sqlcj.runtime.UntypedText(age == null ? null : age.format()),\n"
                     + "                        org.sqlcj.runtime.SqlArray.of("
                     + "\"interval\", ages, org.sqlcj.runtime.SqlInterval::format)\n"
@@ -1931,10 +1925,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             file.content().contains(
-                "    public List<FindUsersResult> findUsers(\n"
-                    + "        @org.jspecify.annotations.Nullable Long id1,\n"
-                    + "        @org.jspecify.annotations.Nullable Long id2\n"
-                    + "    ) {"
+                "    public List<FindUsersResult> findUsers(Long id1, Long id2) {"
             )
         );
     }
@@ -2312,7 +2303,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "java.util.Arrays.asList(active, id, name)"
+                "java.util.Arrays.<Object>asList(active, id, name)"
             )
         );
     }
@@ -2347,16 +2338,13 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "    public FindUserResult findUser(\n"
-                    + "        @org.jspecify.annotations.Nullable Long id,\n"
-                    + "        @org.jspecify.annotations.Nullable Boolean active\n"
-                    + "    ) {"
+                "    public FindUserResult findUser(Long id, Boolean active) {"
             )
         );
 
         assertTrue(source.contains("WHERE active = ?"));
         assertTrue(source.contains("AND id = ?"));
-        assertTrue(source.contains("java.util.Arrays.asList(active, id)"));
+        assertTrue(source.contains("java.util.Arrays.<Object>asList(active, id)"));
 
         assertCompiles(file);
     }
@@ -2391,14 +2379,11 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "    public FindUserResult findUser(\n"
-                    + "        @org.jspecify.annotations.Nullable Long id,\n"
-                    + "        @org.jspecify.annotations.Nullable String name\n"
-                    + "    ) {"
+                "    public FindUserResult findUser(Long id, String name) {"
             )
         );
 
-        assertTrue(source.contains("java.util.Arrays.asList(name, id, id)"));
+        assertTrue(source.contains("java.util.Arrays.<Object>asList(name, id, id)"));
 
         assertCompiles(file);
     }
@@ -2430,8 +2415,8 @@ class JavaCodeGeneratorTest {
 
         String source = file.content();
 
-        assertTrue(source.contains("public Long findUser(@org.jspecify.annotations.Nullable Long id)"), source);
-        assertTrue(source.contains("java.util.Arrays.asList(id, id)"), source);
+        assertTrue(source.contains("public Long findUser(Long id)"), source);
+        assertTrue(source.contains("java.util.Arrays.<Object>asList(id, id)"), source);
 
         assertCompiles(file);
     }
@@ -2461,7 +2446,7 @@ class JavaCodeGeneratorTest {
             "DELETE FROM users\nWHERE id = ?",
             List.of(1),
             List.of(),
-            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT).asNullable()),
             null
         );
 
@@ -2628,13 +2613,13 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public int insertUser(@org.jspecify.annotations.Nullable Long id, @org.jspecify.annotations.Nullable String name)"
+                "public int insertUser(Long id, String name)"
             )
         );
 
         assertTrue(source.contains("return executor.execute("));
         assertTrue(source.contains("INSERT INTO users (id, name)"));
-        assertTrue(source.contains("java.util.Arrays.asList(id, name)"));
+        assertTrue(source.contains("java.util.Arrays.<Object>asList(id, name)"));
 
         assertFalse(source.contains("public record InsertUserResult("));
         assertFalse(source.contains("RowMapper"));
@@ -2677,9 +2662,20 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         public record InsertUserParams(
-                            @org.jspecify.annotations.Nullable Long id,
-                            @org.jspecify.annotations.Nullable String name
+                            Long id,
+                            String name
                         ) {
+
+                            public InsertUserParams {
+                                java.util.Objects.requireNonNull(
+                                        id,
+                                        "Parameter 'id' of query 'InsertUser' in UsersRepository must not be null"
+                                );
+                                java.util.Objects.requireNonNull(
+                                        name,
+                                        "Parameter 'name' of query 'InsertUser' in UsersRepository must not be null"
+                                );
+                            }
                         }
                     """
                     .stripTrailing()
@@ -2697,7 +2693,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "batch.stream().map(params -> java.util.Arrays.asList("
+                "batch.stream().map(params -> java.util.Arrays.<Object>asList("
                     + "params.id(), params.name())).toList()"
             )
         );
@@ -2819,9 +2815,9 @@ class JavaCodeGeneratorTest {
             List.of(1, 2, 3, 2),
             List.of(),
             List.of(
-                new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, "name", ColumnType.VARCHAR),
-                new QueryParameter(3, "id", ColumnType.BIGINT)
+                new QueryParameter(1, "id", ColumnType.BIGINT).asNullable(),
+                new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(3, "id", ColumnType.BIGINT).asNullable()
             ),
             null
         );
@@ -2846,7 +2842,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "                batch.stream().map(params -> java.util.Arrays.asList(\n"
+                "                batch.stream().map(params -> java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
                     + "                        params.id1(),\n"
                     + "                        params.name(),\n"
                     + "                        params.id2(),\n"
@@ -2877,10 +2873,10 @@ class JavaCodeGeneratorTest {
             List.of(1, 2, 3, 4),
             List.of(),
             List.of(
-                new QueryParameter(1, "setting", ColumnType.ENUM, "stage_setting"),
-                new QueryParameter(2, "payload", ColumnType.JSONB),
-                new QueryParameter(3, "span", ColumnType.INTERVAL),
-                new QueryParameter(4, "tags", ColumnType.VARCHAR, null, true)
+                new QueryParameter(1, "setting", ColumnType.ENUM, "stage_setting").asNullable(),
+                new QueryParameter(2, "payload", ColumnType.JSONB).asNullable(),
+                new QueryParameter(3, "span", ColumnType.INTERVAL).asNullable(),
+                new QueryParameter(4, "tags", ColumnType.VARCHAR, null, true).asNullable()
             ),
             null
         );
@@ -2912,7 +2908,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "                batch.stream().map(params -> java.util.Arrays.asList(\n"
+                "                batch.stream().map(params -> java.util.Arrays.<Object>asList(\n"
                     + "                        new org.sqlcj.runtime.UntypedText("
                     + "params.setting() == null ? null : params.setting().label()),\n"
                     + "                        new org.sqlcj.runtime.UntypedText(params.payload()),\n"
@@ -3001,11 +2997,365 @@ class JavaCodeGeneratorTest {
             List.of(2, 1),
             List.of(),
             List.of(
-                new QueryParameter(1, "id", ColumnType.BIGINT),
-                new QueryParameter(2, parameterName, ColumnType.VARCHAR)
+                new QueryParameter(1, "id", ColumnType.BIGINT).asNullable(),
+                new QueryParameter(2, parameterName, ColumnType.VARCHAR).asNullable()
             ),
             null
         );
+    }
+
+    /**
+     * A generated method rejects a {@code null} argument for each of its
+     * non-null parameters before it does anything else, in logical parameter
+     * order, naming the parameter, the query, and the repository. A nullable
+     * parameter is not checked, because the query gives its {@code null} a
+     * meaning.
+     */
+    @Test
+    void shouldCheckEveryNonNullParameterOfAQueryMethod() throws IOException {
+        GeneratedFile file = generate(
+            new QueryModel(
+                "GetUser",
+                QueryType.ONE,
+                "users",
+                SQL,
+                List.of(1, 2, 3),
+                List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+                List.of(
+                    new QueryParameter(1, "id", ColumnType.BIGINT),
+                    new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable(),
+                    new QueryParameter(3, "live", ColumnType.BOOLEAN)
+                ),
+                null
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                "        java.util.Objects.requireNonNull(id, "
+                    + "\"Parameter 'id' of query 'GetUser' in UsersRepository must not be null\");\n"
+                    + "        java.util.Objects.requireNonNull(\n"
+                    + "                live,\n"
+                    + "                \"Parameter 'live' of query 'GetUser' in UsersRepository"
+                    + " must not be null\"\n"
+                    + "        );\n"
+                    + "\n"
+                    + "        return executor.queryOne("
+            ),
+            source
+        );
+
+        assertFalse(source.contains("requireNonNull(name"), source);
+
+        assertCompiles(file);
+    }
+
+    /** An {@code :exec} method checks its non-null parameters the same way. */
+    @Test
+    void shouldCheckEveryNonNullParameterOfAnExecMethod() throws IOException {
+        GeneratedFile file = generate(
+            query(
+                "DeleteUser",
+                QueryType.EXEC,
+                List.of(new QueryParameter(1, "id", ColumnType.BIGINT))
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                "    public int deleteUser(Long id) {\n"
+                    + "        java.util.Objects.requireNonNull(\n"
+                    + "                id,\n"
+                    + "                \"Parameter 'id' of query 'DeleteUser' in UsersRepository"
+                    + " must not be null\"\n"
+                    + "        );\n"
+                    + "\n"
+                    + "        return executor.execute("
+            ),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A method whose every parameter is nullable, and one that binds none,
+     * carries no check at all.
+     */
+    @Test
+    void shouldCheckNothingWhenNoParameterIsNonNull() throws IOException {
+        GeneratedFile file = generate(
+            query(
+                "FilterUsers",
+                QueryType.MANY,
+                List.of(new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable())
+            )
+        );
+
+        String source = file.content();
+
+        assertFalse(source.contains("requireNonNull"), source);
+
+        assertTrue(
+            source.contains(
+                "    public List<FilterUsersResult> filterUsers("
+                    + "@org.jspecify.annotations.Nullable String name) {\n"
+                    + "        return executor.queryMany("
+            ),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A check whose line would pass the limit writes its two arguments one per
+     * line, one call continuation past the line that opens the call, with the
+     * closing parenthesis at that line's column.
+     */
+    @Test
+    void shouldWrapANullCheckThatPassesTheLimit() throws IOException {
+        GeneratedFile file = generate(
+            query(
+                "DeleteScheduledMaintenanceWindow",
+                QueryType.EXEC,
+                List.of(new QueryParameter(1, "windowId", ColumnType.BIGINT))
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                "        java.util.Objects.requireNonNull(\n"
+                    + "                windowId,\n"
+                    + "                \"Parameter 'windowId' of query "
+                    + "'DeleteScheduledMaintenanceWindow' in UsersRepository must not be null\"\n"
+                    + "        );\n"
+            ),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * The parameter record of a batch query rejects a {@code null} for each of
+     * its non-null components in its compact constructor, so a row fails where
+     * it is built, and keeps no constructor when every component is nullable.
+     */
+    @Test
+    void shouldCheckEveryNonNullComponentOfABatchParamsRecord() throws IOException {
+        GeneratedFile file = generate(
+            query(
+                "InsertUsers",
+                QueryType.BATCH_EXEC,
+                List.of(
+                    new QueryParameter(1, "id", ColumnType.BIGINT),
+                    new QueryParameter(2, "bio", ColumnType.TEXT).asNullable()
+                )
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public record InsertUsersParams(
+                            Long id,
+                            @org.jspecify.annotations.Nullable String bio
+                        ) {
+
+                            public InsertUsersParams {
+                                java.util.Objects.requireNonNull(
+                                        id,
+                                        "Parameter 'id' of query 'InsertUsers' in UsersRepository \
+                    must not be null"
+                                );
+                            }
+                        }
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /** A record of nullable components alone declares no constructor. */
+    @Test
+    void shouldGenerateNoCompactConstructorForNullableBatchComponentsAlone() throws IOException {
+        GeneratedFile file = generate(
+            query(
+                "InsertUsers",
+                QueryType.BATCH_EXEC,
+                List.of(new QueryParameter(1, "bio", ColumnType.TEXT).asNullable())
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public record InsertUsersParams(
+                            @org.jspecify.annotations.Nullable String bio
+                        ) {
+                        }
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertFalse(source.contains("requireNonNull"), source);
+
+        assertCompiles(file);
+    }
+
+    /**
+     * The method of a query type sqlcj does not generate yet keeps the
+     * nullness of its parameters and checks nothing, because it throws instead
+     * of binding them.
+     */
+    @Test
+    void shouldCheckNothingInTheMethodOfAnUnsupportedQueryType() {
+        GeneratedFile file = generate(
+            query(
+                "CountUsers",
+                QueryType.EXEC_RESULT,
+                List.of(
+                    new QueryParameter(1, "id", ColumnType.BIGINT),
+                    new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
+                )
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                "countUsers(Long id, @org.jspecify.annotations.Nullable String name) {\n"
+                    + "        throw new UnsupportedOperationException(\"Not implemented\");"
+            ),
+            source
+        );
+
+        assertFalse(source.contains("requireNonNull"), source);
+    }
+
+    /**
+     * A non-null enum or {@code INTERVAL} argument is bound without the null
+     * test a nullable one needs, so no generated body carries a test a null
+     * checker reads as always false.
+     */
+    @Test
+    void shouldBindANonNullEnumAndIntervalArgumentWithoutANullTest() throws IOException {
+        QueryModel query = new QueryModel(
+            "InsertStage",
+            QueryType.EXEC,
+            "stages",
+            SQL,
+            List.of(1, 2, 3, 4),
+            List.of(),
+            List.of(
+                new QueryParameter(1, "setting", ColumnType.ENUM, "stage_setting"),
+                new QueryParameter(2, "state", ColumnType.ENUM, "stage_setting").asNullable(),
+                new QueryParameter(3, "span", ColumnType.INTERVAL),
+                new QueryParameter(4, "pause", ColumnType.INTERVAL).asNullable()
+            ),
+            null
+        );
+
+        GeneratedFile file = codeGenerator.generate(
+            new QueryGroupModel(
+                "Stages",
+                List.of(query),
+                List.of(new EnumType("stage_setting", List.of("indoor", "outdoor")))
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains("new org.sqlcj.runtime.UntypedText(setting.label())"),
+            source
+        );
+        assertTrue(
+            source.contains(
+                "new org.sqlcj.runtime.UntypedText(state == null ? null : state.label())"
+            ),
+            source
+        );
+        assertTrue(
+            source.contains("new org.sqlcj.runtime.UntypedText(span.format())"),
+            source
+        );
+        assertTrue(
+            source.contains(
+                "new org.sqlcj.runtime.UntypedText(pause == null ? null : pause.format())"
+            ),
+            source
+        );
+
+        List<GeneratedFile> files = new ArrayList<>();
+
+        files.add(file);
+        files.addAll(codeGenerator.generateEnums());
+
+        assertCompiles(files.toArray(new GeneratedFile[0]));
+    }
+
+    /**
+     * A bound-argument list of two or more arguments states its element type,
+     * which is {@code Object} when no argument can be null and a nullable
+     * {@code Object} when one can, so the list's type never follows from the
+     * Java types its arguments happen to have.
+     */
+    @Test
+    void shouldStateTheElementTypeOfABoundArgumentList() throws IOException {
+        GeneratedFile nonNull = generate(
+            query(
+                "DeleteUser",
+                QueryType.EXEC,
+                List.of(
+                    new QueryParameter(1, "id", ColumnType.BIGINT),
+                    new QueryParameter(2, "name", ColumnType.VARCHAR)
+                )
+            )
+        );
+
+        assertTrue(
+            nonNull.content().contains("java.util.Arrays.<Object>asList(id, name)"),
+            nonNull.content()
+        );
+
+        GeneratedFile nullable = generate(
+            query(
+                "DeleteUser",
+                QueryType.EXEC,
+                List.of(
+                    new QueryParameter(1, "id", ColumnType.BIGINT),
+                    new QueryParameter(2, "name", ColumnType.VARCHAR).asNullable()
+                )
+            )
+        );
+
+        assertTrue(
+            nullable.content().contains(
+                "java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(id, name)"
+            ),
+            nullable.content()
+        );
+
+        assertCompiles(nonNull);
+        assertCompiles(nullable);
     }
 
     /**
@@ -3049,7 +3399,7 @@ class JavaCodeGeneratorTest {
                     + "                INSERT INTO tasks (project_id, title, metadata, tags)\n"
                     + "                VALUES (?, ?, ?, ?)\n"
                     + "                \"\"\",\n"
-                    + "                java.util.Arrays.asList(\n"
+                    + "                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
                     + "                        projectId,\n"
                     + "                        title,\n"
                     + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
@@ -3112,7 +3462,7 @@ class JavaCodeGeneratorTest {
                     + "                  AND metadata = ?\n"
                     + "                  AND tags = ?\n"
                     + "                \"\"\",\n"
-                    + "                java.util.Arrays.asList(\n"
+                    + "                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
                     + "                        projectId,\n"
                     + "                        title,\n"
                     + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
@@ -3131,10 +3481,10 @@ class JavaCodeGeneratorTest {
     /** The parameters both long single executions bind, in logical order. */
     private List<QueryParameter> taskParameters() {
         return List.of(
-            new QueryParameter(1, "projectId", ColumnType.BIGINT),
-            new QueryParameter(2, "title", ColumnType.VARCHAR),
-            new QueryParameter(3, "metadata", ColumnType.JSONB),
-            new QueryParameter(4, "tags", ColumnType.VARCHAR, null, true)
+            new QueryParameter(1, "projectId", ColumnType.BIGINT).asNullable(),
+            new QueryParameter(2, "title", ColumnType.VARCHAR).asNullable(),
+            new QueryParameter(3, "metadata", ColumnType.JSONB).asNullable(),
+            new QueryParameter(4, "tags", ColumnType.VARCHAR, null, true).asNullable()
         );
     }
 
@@ -3178,7 +3528,7 @@ class JavaCodeGeneratorTest {
                     + "                INSERT INTO assignments (window_id, assignee_id, starts_at)\n"
                     + "                VALUES (?, ?, ?)\n"
                     + "                \"\"\",\n"
-                    + "                batch.stream().map(params -> java.util.Arrays.asList(\n"
+                    + "                batch.stream().map(params -> java.util.Arrays.<Object>asList(\n"
                     + "                        params.windowId(),\n"
                     + "                        params.assigneeId(),\n"
                     + "                        params.startsAt()\n"
@@ -3217,7 +3567,7 @@ class JavaCodeGeneratorTest {
                         ColumnType.TIMESTAMP_WITH_TIME_ZONE,
                         null,
                         true
-                    )
+                    ).asNullable()
                 ),
                 null
             )
@@ -3306,7 +3656,7 @@ class JavaCodeGeneratorTest {
                 """,
             List.of(1),
             List.of(),
-            List.of(new QueryParameter(1, "hash_code", ColumnType.VARCHAR)),
+            List.of(new QueryParameter(1, "hash_code", ColumnType.VARCHAR).asNullable()),
             null
         );
 
@@ -3510,11 +3860,11 @@ class JavaCodeGeneratorTest {
         );
 
         assertTrue(
-            source.contains("public CreateUserResult createUser(@org.jspecify.annotations.Nullable String name)")
+            source.contains("public CreateUserResult createUser(String name)")
         );
-        assertTrue(source.contains("public GetUserResult getUser(@org.jspecify.annotations.Nullable Long id)"));
+        assertTrue(source.contains("public GetUserResult getUser(Long id)"));
         assertTrue(source.contains("public List<ListUsersResult> listUsers()"));
-        assertTrue(source.contains("public int deleteUser(@org.jspecify.annotations.Nullable Long id)"));
+        assertTrue(source.contains("public int deleteUser(Long id)"));
 
         assertTrue(source.contains("public record CreateUserResult("));
         assertTrue(source.contains("public record GetUserResult("));
@@ -3625,8 +3975,8 @@ class JavaCodeGeneratorTest {
 
         assertFalse(source.contains("Result"));
 
-        assertTrue(source.contains("public UsersRow createUser(@org.jspecify.annotations.Nullable String name)"));
-        assertTrue(source.contains("public UsersRow getUser(@org.jspecify.annotations.Nullable Long id)"));
+        assertTrue(source.contains("public UsersRow createUser(String name)"));
+        assertTrue(source.contains("public UsersRow getUser(Long id)"));
         assertTrue(source.contains("public List<UsersRow> listUsers()"));
 
         assertEquals(
@@ -3708,7 +4058,7 @@ class JavaCodeGeneratorTest {
             source.contains("private static final RowMapper<FindUserResult> findUserRowMapper =")
         );
         assertTrue(
-            source.contains("public Optional<FindUserResult> findUser(@org.jspecify.annotations.Nullable Long id)")
+            source.contains("public Optional<FindUserResult> findUser(Long id)")
         );
         assertTrue(source.contains("return executor.queryOptional("));
         assertTrue(source.contains("java.util.Collections.singletonList(id)"));
@@ -3767,8 +4117,8 @@ class JavaCodeGeneratorTest {
                 .count()
         );
 
-        assertTrue(source.contains("public UsersRow getUser(@org.jspecify.annotations.Nullable Long id)"));
-        assertTrue(source.contains("public Optional<UsersRow> findUser(@org.jspecify.annotations.Nullable Long id)"));
+        assertTrue(source.contains("public UsersRow getUser(Long id)"));
+        assertTrue(source.contains("public Optional<UsersRow> findUser(Long id)"));
 
         assertEquals(
             1,
@@ -3962,7 +4312,10 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 """
-                        public List<Long> listUsers(@org.jspecify.annotations.Nullable Long id) {
+                        public List<Long> listUsers(Long id) {
+                            java.util.Objects.requireNonNull(id, \
+                    "Parameter 'id' of query 'ListUsers' in UsersRepository must not be null");
+
                             return executor.queryMany(
                                     "UsersRepository",
                                     "ListUsers",
@@ -3983,18 +4336,22 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 """
-                    public int deleteUser(@org.jspecify.annotations.Nullable Long id) {
-                        return executor.execute(
-                                "UsersRepository",
-                                "DeleteUser",
-                                \"""
-                                DELETE FROM users
-                                WHERE id = ?\""",
-                                java.util.Collections.singletonList(id)
-                        );
-                    }
+                        public int deleteUser(Long id) {
+                            java.util.Objects.requireNonNull(
+                                    id,
+                                    "Parameter 'id' of query 'DeleteUser' in UsersRepository must not be null"
+                            );
+
+                            return executor.execute(
+                                    "UsersRepository",
+                                    "DeleteUser",
+                                    \"""
+                                    DELETE FROM users
+                                    WHERE id = ?\""",
+                                    java.util.Collections.singletonList(id)
+                            );
+                        }
                     """
-                    .indent(4)
             ),
             source
         );
@@ -4218,7 +4575,7 @@ class JavaCodeGeneratorTest {
                 new QueryColumn("payload", ColumnType.BYTEA, true),
                 new QueryColumn("checksum", ColumnType.BYTEA, false)
             ),
-            List.of(new QueryParameter(1, "payload", ColumnType.BYTEA)),
+            List.of(new QueryParameter(1, "payload", ColumnType.BYTEA).asNullable()),
             null
         );
 
@@ -4478,8 +4835,8 @@ class JavaCodeGeneratorTest {
         assertFalse(source.contains("public record"));
         assertTrue(source.contains("private static final RowMapper<UsersRow> usersRowMapper"));
         assertTrue(source.contains("private static final RowMapper<OrdersRow> ordersRowMapper"));
-        assertTrue(source.contains("public UsersRow getUser(@org.jspecify.annotations.Nullable Long id)"));
-        assertTrue(source.contains("public OrdersRow getOrder(@org.jspecify.annotations.Nullable Long id)"));
+        assertTrue(source.contains("public UsersRow getUser(Long id)"));
+        assertTrue(source.contains("public OrdersRow getOrder(Long id)"));
 
         List<GeneratedFile> rows = codeGenerator.generateRows();
 
@@ -4544,7 +4901,7 @@ class JavaCodeGeneratorTest {
         assertTrue(source.contains("private static final RowMapper<AuthorsResult> authorsRowMapper ="));
         assertTrue(source.contains("private static final RowMapper<AuthorsRow> authorsRowMapper1 ="));
         assertTrue(source.contains("public List<AuthorsResult> authors()"));
-        assertTrue(source.contains("public AuthorsRow getAuthor(@org.jspecify.annotations.Nullable Long id)"));
+        assertTrue(source.contains("public AuthorsRow getAuthor(Long id)"));
 
         assertCompilesWithRows(file);
     }
@@ -4995,8 +5352,8 @@ class JavaCodeGeneratorTest {
         assertEquals(1, rows.size());
         assertEquals(Path.of("generated", "rows", "UsersRow.java"), rows.get(0).path());
 
-        assertTrue(users.content().contains("public UsersRow getUser(@org.jspecify.annotations.Nullable Long id)"));
-        assertTrue(admins.content().contains("public UsersRow getAdmin(@org.jspecify.annotations.Nullable Long id)"));
+        assertTrue(users.content().contains("public UsersRow getUser(Long id)"));
+        assertTrue(admins.content().contains("public UsersRow getAdmin(Long id)"));
 
         assertFalse(users.content().contains("public record"));
         assertFalse(admins.content().contains("public record"));
@@ -5156,8 +5513,8 @@ class JavaCodeGeneratorTest {
                 new QueryColumn("handle", ColumnType.VARCHAR, true)
             ),
             List.of(
-                new QueryParameter(1, "setting", ColumnType.ENUM, "stage_setting"),
-                new QueryParameter(2, "handle", ColumnType.VARCHAR)
+                new QueryParameter(1, "setting", ColumnType.ENUM, "stage_setting").asNullable(),
+                new QueryParameter(2, "handle", ColumnType.VARCHAR).asNullable()
             ),
             null
         );
@@ -5183,7 +5540,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "                java.util.Arrays.asList(\n"
+                "                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
                     + "                        handle,\n"
                     + "                        new org.sqlcj.runtime.UntypedText(setting == null ? null : setting.label()),\n"
                     + "                        new org.sqlcj.runtime.UntypedText(setting == null ? null : setting.label())\n"
@@ -5524,7 +5881,7 @@ class JavaCodeGeneratorTest {
             SQL,
             List.of(1),
             List.of(new QueryColumn("values", elementType, true, null, true)),
-            List.of(new QueryParameter(1, "values", elementType, null, true)),
+            List.of(new QueryParameter(1, "values", elementType, null, true).asNullable()),
             null
         );
 
@@ -5588,6 +5945,7 @@ class JavaCodeGeneratorTest {
             List.of(new QueryColumn("marks", ColumnType.VARCHAR, true, null, true)),
             List.of(
                 new QueryParameter(1, "marks", ColumnType.VARCHAR, null, true, blankPadded)
+                    .asNullable()
             ),
             null
         );
@@ -5637,6 +5995,7 @@ class JavaCodeGeneratorTest {
             ),
             List.of(
                 new QueryParameter(1, "past_settings", ColumnType.ENUM, "stage_setting", true)
+                    .asNullable()
             ),
             null
         );
@@ -5661,7 +6020,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "                java.util.Arrays.asList(\n"
+                "                java.util.Arrays.<Object>asList(\n"
                     + "                        org.sqlcj.runtime.SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label),\n"
                     + "                        org.sqlcj.runtime.SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label)\n"
                     + "                ),"

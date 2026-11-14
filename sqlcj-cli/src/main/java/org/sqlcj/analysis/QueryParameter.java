@@ -15,6 +15,10 @@ import org.sqlcj.schema.ColumnType;
  *                    blank-padded {@code CHAR} or {@code CHARACTER} spelling of
  *                    {@link ColumnType#VARCHAR}, which PostgreSQL names
  *                    {@code bpchar}
+ * @param nullable    whether the query gives a {@code null} bound at this
+ *                    occurrence a meaning, which a null test of the occurrence
+ *                    and a nullable column the occurrence is written into both
+ *                    do, and every other position does not
  */
 public record QueryParameter(
     int index,
@@ -22,7 +26,8 @@ public record QueryParameter(
     ColumnType type,
     String enumType,
     boolean array,
-    boolean blankPadded
+    boolean blankPadded,
+    boolean nullable
 ) {
 
     /** A parameter of a type whose Java type is decided by {@code type} alone. */
@@ -44,5 +49,24 @@ public record QueryParameter(
         boolean array
     ) {
         this(index, name, type, enumType, array, false);
+    }
+
+    /** A parameter a {@code null} argument has no meaning for. */
+    public QueryParameter(
+        int index,
+        String name,
+        ColumnType type,
+        String enumType,
+        boolean array,
+        boolean blankPadded
+    ) {
+        this(index, name, type, enumType, array, blankPadded, false);
+    }
+
+    /** The same parameter, nullable. */
+    public QueryParameter asNullable() {
+        return nullable
+            ? this
+            : new QueryParameter(index, name, type, enumType, array, blankPadded, true);
     }
 }

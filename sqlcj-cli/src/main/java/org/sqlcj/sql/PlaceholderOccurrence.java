@@ -20,10 +20,21 @@ import net.sf.jsqlparser.expression.Expression;
  *                    it: the smallest enclosing expression the parse tree
  *                    reports, on one line, or the keyword of the clause the
  *                    placeholder stands alone in, in upper case
+ * @param nullTested  whether the query tests this occurrence for null, which
+ *                    gives a {@code null} bound at it a meaning of its own: it
+ *                    is the operand of {@code IS [NOT] NULL}, either side of
+ *                    {@code IS [NOT] DISTINCT FROM}, or an argument of an
+ *                    unqualified {@code COALESCE} or {@code NULLIF}. The
+ *                    placeholder itself, a cast chain of it, and a
+ *                    parenthesized one count as that operand or argument,
+ *                    while an occurrence inside any other expression, such as
+ *                    the {@code lower(:x)} of {@code lower(:x) IS NULL}, does
+ *                    not
  */
 public record PlaceholderOccurrence(
     Expression placeholder,
     CastExpression cast,
-    String enclosing
+    String enclosing,
+    boolean nullTested
 ) {
 }
