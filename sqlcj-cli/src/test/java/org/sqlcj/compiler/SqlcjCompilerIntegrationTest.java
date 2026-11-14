@@ -3471,13 +3471,15 @@ class SqlcjCompilerIntegrationTest {
                 ":many",
                 "SELECT COUNT(*) OVER () AS n FROM users",
                 "Cannot infer the type of COUNT(*) OVER () in SELECT;"
-                    + " state it with a cast and an alias, such as SUM(amount)::numeric AS total"
+                    + " state it with a cast and an alias,"
+                    + " such as (COUNT(*) OVER ())::<type> AS n"
             ),
             Arguments.of(
                 ":many",
                 "SELECT name || 'x' AS n FROM users",
                 "Cannot infer the type of name || 'x' in SELECT;"
-                    + " state it with a cast and an alias, such as SUM(amount)::numeric AS total"
+                    + " state it with a cast and an alias,"
+                    + " such as (name || 'x')::<type> AS n"
             ),
             Arguments.of(
                 ":one",
@@ -3790,7 +3792,7 @@ class SqlcjCompilerIntegrationTest {
             "%s:1: Invalid query 'ListUsers': "
                 .formatted(tempDir.resolve("queries.sql"))
                 + "Cannot infer the type of :name in lower(name) = :name; "
-                + "state it with a cast, such as :name::text",
+                + "state it with a cast, such as :name::<type>",
             exception.getMessage()
         );
 

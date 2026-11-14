@@ -406,8 +406,12 @@ configuration entry.
   below — such as another function call, an arithmetic expression, or a
   literal — is rejected as
   `Cannot infer the type of <expression> in SELECT; state it with a cast and an
-  alias, such as SUM(amount)::numeric AS total`, naming the expression as the
-  query writes it, on one line.
+  alias, such as <expression>::<type> AS <alias>`, naming the expression as the
+  query writes it, on one line, twice: once as the rejected item and once as the
+  operand of the named cast, bare for a function call and in parentheses for
+  every other expression. The example ends with the query's own alias, or
+  `<alias>` where the query writes none, and names no type of its own, because
+  sqlcj infers none for a result expression.
 - An explicit alias names the result column, so `SELECT id AS author_id`
   generates the record component `authorId` while the component's type still
   comes from the column and its nullability from the column and its source.
@@ -707,6 +711,11 @@ A `WHERE` clause may combine:
   `code BETWEEN $1 AND $2`,
 - `= ANY` between a direct column and one `$N` list placeholder, such as
   `id = ANY($1)`,
+- `IS DISTINCT FROM` and `IS NOT DISTINCT FROM` between a direct column and a
+  `$N` placeholder, in either order, such as `n IS DISTINCT FROM $1`,
+- the regular-expression matches `~`, `~*`, `!~`, and `!~*` between a direct
+  column and a `$N` pattern placeholder, in either order, such as
+  `name ~* $1`,
 - the JSONB key-existence operators `?`, `?|`, and `?&` between a direct column
   and a key or a key list, such as `meta ? 'vip'`,
   `meta ?| array['a','b']`, and `meta ?& array['a']`,
@@ -735,6 +744,32 @@ for the operator, so it needs no cast: a `String` key for `?`, as in
 `meta ?| $1`. A named placeholder keeps its own name and an indexed one is
 named `param<N>`. Every other operand keeps the rules of the expression it is,
 so a placeholder written as the left operand still needs a cast.
+
+`IS [NOT] DISTINCT FROM` and the regular-expression matches `~`, `~*`, `!~`,
+and `!~*` read their operands as the comparisons do: an uncast placeholder
+written beside a direct column takes that column's type and name, so it needs
+no cast and an indexed one is named after the column; a cast placeholder states
+its own type and keeps the column's name; and an operand that is a subquery is
+analyzed as the level inside the one the predicate stands in. Both operands of
+`IS [NOT] DISTINCT FROM` are tested for null, so a placeholder typed there is a
+nullable parameter, as [Parameter nullness](#parameter-nullness) states, and a
+`null` argument matches the rows the operator matches for `NULL`. A match
+pattern takes the compared column's own type rather than requiring a text
+column, as a `LIKE` pattern does, and PostgreSQL itself checks that the
+operator applies to that type.
+
+A placeholder compared with the `text` result of the JSON path operators `->>`
+and `#>>` binds `text` without a cast, written on either side of the
+comparison, and keeps its own name when it is named and is `param<N>`
+otherwise, as in `meta ->> 'k' = :v` and `$1 = meta #>> '{a,b}'`. Both
+operators always return `text`, so nothing is inferred. The rule holds under
+the comparisons `=`, `<>`, `<`, `<=`, `>`, `>=` and under the five operators
+above, and the last step of the path decides it, so
+`meta -> 'a' ->> 'b' = :v` types `:v` while `meta ->> 'a' -> 'b' = :v` does
+not. A path that ends in `->` or `#>` returns `json` or `jsonb`, which sqlcj
+infers no parameter type from, a parenthesized path is another expression, and
+`LIKE`, `IN`, `BETWEEN`, and `= ANY` read no such result, so a placeholder in
+any of those positions keeps needing a cast.
 
 A placeholder written as a direct operand of `+`, `-`, `*`, or `/` beside a
 direct column of one of the numeric types `SMALLINT`, `INTEGER`, `BIGINT`,
@@ -1719,10 +1754,11 @@ reads as the operator itself rather than as a placeholder.
   `ORDER BY $1`, `lower(name) = :name`, or `(:x)::int`, whose placeholder is not
   the direct operand of its cast — is rejected rather than left unbound, as
   `Cannot infer the type of :name in lower(name) = :name; state it with a cast,
-  such as :name::text`. The diagnostic writes the placeholder as the query
-  spells it, `$1` or `:name`, and names where the query writes it: the smallest
-  expression written around the placeholder, on one line, with whatever
-  separates two tokens written as one space. A concatenated pattern is
+  such as :name::<type>`, which names no type of its own, because sqlcj infers
+  none for such a placeholder. The diagnostic writes the placeholder as the
+  query spells it, `$1` or `:name`, and names where the query writes it: the
+  smallest expression written around the placeholder, on one line, with
+  whatever separates two tokens written as one space. A concatenated pattern is
   therefore named in its whole `LIKE` predicate and an `IN` list in its `IN`
   predicate, while a placeholder written inside no expression stands alone in
   its clause and is named by the keyword that opens that clause, in upper case:
@@ -2435,7 +2471,7 @@ header-line order, before the run exits with status `1` having written nothing.
   `EXISTS (SELECT 1 FROM users)::boolean AS present`, and the `FILTER` and
   `OVER` forms are rejected as
   `Cannot infer the type of COUNT(*) OVER () in SELECT; state it with a cast
-  and an alias, such as SUM(amount)::numeric AS total`. A branch of a set
+  and an alias, such as (COUNT(*) OVER ())::<type> AS n`. A branch of a set
   operation other than the leftmost names no result column, and a position a
   column list on a `WITH` name renames is named by that list, so an aggregate,
   a cast, and an `EXISTS` in either place may omit the alias each requires
@@ -2505,7 +2541,7 @@ header-line order, before the run exits with status `1` having written nothing.
   [Predicates](#predicates) types such a placeholder only from a numeric
   column, and a `FETCH FIRST $1 ROWS ONLY` clause, so dynamic `IN`
   expansion is unavailable. Each is rejected as `Cannot infer the type of $1 in
-  $1 + 1; state it with a cast, such as $1::text`, which names the placeholder
+  $1 + 1; state it with a cast, such as $1::<type>`, which names the placeholder
   as the query spells it and, after `in`, the smallest expression the query
   writes around it, on one line, or the upper-case keyword of the clause the
   placeholder stands alone in, such as `ORDER BY` for `ORDER BY $1` and
