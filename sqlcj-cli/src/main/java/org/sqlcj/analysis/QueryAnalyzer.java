@@ -10,6 +10,7 @@ import net.sf.jsqlparser.expression.ExpressionVisitorAdapter;
 import net.sf.jsqlparser.expression.Function;
 import net.sf.jsqlparser.expression.JdbcNamedParameter;
 import net.sf.jsqlparser.expression.JdbcParameter;
+import net.sf.jsqlparser.expression.JsonExpression;
 import net.sf.jsqlparser.expression.NotExpression;
 import net.sf.jsqlparser.expression.operators.arithmetic.Addition;
 import net.sf.jsqlparser.expression.operators.arithmetic.Division;
@@ -25,6 +26,7 @@ import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
 import net.sf.jsqlparser.expression.operators.relational.GreaterThan;
 import net.sf.jsqlparser.expression.operators.relational.GreaterThanEquals;
 import net.sf.jsqlparser.expression.operators.relational.InExpression;
+import net.sf.jsqlparser.expression.operators.relational.IsDistinctExpression;
 import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
 import net.sf.jsqlparser.expression.operators.relational.JsonOperator;
 import net.sf.jsqlparser.expression.operators.relational.LikeExpression;
@@ -32,6 +34,7 @@ import net.sf.jsqlparser.expression.operators.relational.MinorThan;
 import net.sf.jsqlparser.expression.operators.relational.MinorThanEquals;
 import net.sf.jsqlparser.expression.operators.relational.NotEqualsTo;
 import net.sf.jsqlparser.expression.operators.relational.ParenthesedExpressionList;
+import net.sf.jsqlparser.expression.operators.relational.RegExpMatchOperator;
 import net.sf.jsqlparser.schema.MultiPartName;
 import net.sf.jsqlparser.schema.Table;
 import net.sf.jsqlparser.statement.ParenthesedStatement;
@@ -159,11 +162,14 @@ public final class QueryAnalyzer {
      * {@code EXISTS} the parser reports around anything but the subquery
      * itself, such as {@code NOT EXISTS (...)} or {@code EXISTS (...)::boolean}.
      * A cast states the type of such a projection, so the rejection names that
-     * fix.
+     * fix: the query's own expression, cast to a type the user writes in place
+     * of {@code <type>}, under the query's own alias or {@code <alias>} where
+     * it writes none. sqlcj types no result expression, so the example names no
+     * type of its own rather than one the expression may not have.
      */
     private static final String COMPUTED_PROJECTION_REJECTION = """
         Cannot infer the type of %s in SELECT; state it with a cast and an alias, \
-        such as SUM(amount)::numeric AS total""";
+        such as %s::<type> AS %s""";
 
     /**
      * The rejection of a typed aggregate projection without a result alias,
@@ -452,11 +458,12 @@ public final class QueryAnalyzer {
     /**
      * The rejection of a placeholder that no clause of the query types and no
      * cast states the type of, which names the placeholder as the query spells
-     * it and where the query writes it. The suggested cast is always
-     * {@code ::text}, because sqlcj infers no type for such a placeholder.
+     * it and where the query writes it. The suggested cast names no type of its
+     * own and writes {@code <type>} for the user to fill in, because sqlcj
+     * infers no type for such a placeholder and must not name a wrong one.
      */
     private static final String UNTYPED_PLACEHOLDER_REJECTION = """
-        Cannot infer the type of %s in %s; state it with a cast, such as %s::text""";
+        Cannot infer the type of %s in %s; state it with a cast, such as %s::<type>""";
 
     /** The character that opens a supported named placeholder. */
     private static final String NAME_PREFIX = ":";
@@ -485,6 +492,15 @@ public final class QueryAnalyzer {
      * {@code ?&} tests all of them.
      */
     private static final List<String> JSON_KEY_OPERATORS = List.of(JSON_KEY_OPERATOR, "?|", "?&");
+
+    /**
+     * The JSON path operators whose result is {@code text}, written as the
+     * parser reports them: {@code ->>} reads one key or one element and
+     * {@code #>>} reads one path. Both always return {@code text}, so a
+     * placeholder compared with such a result needs no cast, while {@code ->}
+     * and {@code #>} return {@code json} or {@code jsonb} and type nothing.
+     */
+    private static final List<String> JSON_TEXT_OPERATORS = List.of("->>", "#>>");
 
     /**
      * The qualifier an {@code ON CONFLICT DO UPDATE} assignment writes to read
@@ -5245,6 +5261,16 @@ public final class QueryAnalyzer {
 
         if (expression instanceof ComparisonOperator comparison) {
             resolveParameterComparison(comparison, scope, analysis);
+            return;
+        }
+
+        if (expression instanceof IsDistinctExpression isDistinct) {
+            resolveParameterComparison(isDistinct, scope, analysis);
+            return;
+        }
+
+        if (expression instanceof RegExpMatchOperator match) {
+            resolveParameterComparison(match, scope, analysis);
         }
     }
 
@@ -5613,9 +5639,15 @@ public final class QueryAnalyzer {
      *
      * <p>Arithmetic inside either operand types the placeholders it writes
      * beside a numeric column, which the comparison's own rules never reach.
+     *
+     * <p>{@code IS [NOT] DISTINCT FROM} and the regular-expression matches
+     * {@code ~}, {@code ~*}, {@code !~}, and {@code !~*}, which the parser
+     * reports as plain binary expressions rather than comparisons, compare one
+     * column value as a comparison does and so are resolved by these same
+     * rules.
      */
     private void resolveParameterComparison(
-        ComparisonOperator comparison,
+        BinaryExpression comparison,
         Scope scope,
         Analysis analysis
     ) {
@@ -5665,6 +5697,16 @@ public final class QueryAnalyzer {
         }
 
         if (isColumnTypedComparison(comparison)) {
+            if (rightPlaceholder != null && readsJsonText(left)) {
+                addJsonTextParameter(rightPlaceholder, placeholders);
+                return;
+            }
+
+            if (leftPlaceholder != null && readsJsonText(right)) {
+                addJsonTextParameter(leftPlaceholder, placeholders);
+                return;
+            }
+
             if (leftColumn != null) {
                 CastPlaceholder cast = placeholders.ofCast(right);
 
@@ -5687,6 +5729,65 @@ public final class QueryAnalyzer {
                 }
             }
         }
+    }
+
+    /**
+     * Records the parameter of one uncast placeholder compared with the
+     * {@code text} result of a JSON path, which binds {@code text} named after
+     * itself when it is named and after its own index otherwise, as a key of
+     * the key-existence operators does.
+     */
+    private void addJsonTextParameter(Placeholder placeholder, Placeholders placeholders) {
+        addParameter(
+            placeholder,
+            indexedParameterName(placeholder),
+            ColumnType.TEXT,
+            placeholders
+        );
+    }
+
+    /**
+     * Reports whether one operand is a JSON path whose written result is
+     * {@code text}, which is a path whose last step is {@code ->>} or
+     * {@code #>>}. A path whose last step is {@code ->} or {@code #>} returns
+     * {@code json} or {@code jsonb}, and a parenthesized path is another
+     * expression, so neither types a placeholder written beside it.
+     */
+    private boolean readsJsonText(Expression operand) {
+        if (!(operand instanceof JsonExpression json)) {
+            return false;
+        }
+
+        String operator = lastJsonOperator(json);
+
+        return operator != null && JSON_TEXT_OPERATORS.contains(operator);
+    }
+
+    /**
+     * The operator of the last step of one JSON path, and {@code null} for a
+     * path that writes no step. The parser nests a chain of steps into the key
+     * of the step before it, so {@code meta -> 'a' ->> 'b'} is one {@code ->}
+     * step whose key is the path {@code 'a' ->> 'b'}, and the last step of the
+     * written path is the last step of that key.
+     */
+    private String lastJsonOperator(JsonExpression json) {
+        List<Map.Entry<Expression, String>> steps = json.getIdentList();
+
+        if (steps.isEmpty()) {
+            return null;
+        }
+
+        Map.Entry<Expression, String> last = steps.get(steps.size() - 1);
+
+        if (last.getKey() instanceof JsonExpression nested) {
+            String nestedOperator = lastJsonOperator(nested);
+
+            if (nestedOperator != null) {
+                return nestedOperator;
+            }
+        }
+
+        return last.getValue();
     }
 
     /**
@@ -5820,14 +5921,21 @@ public final class QueryAnalyzer {
      * parser reports as a comparison, such as the array overlap {@code &&},
      * compares something other than one column value, so a cast placeholder
      * there is named after itself.
+     *
+     * <p>{@code IS [NOT] DISTINCT FROM} compares one column value as
+     * {@code =} does, apart from its reading of {@code NULL}, and each
+     * regular-expression match compares one column value with a pattern of the
+     * column's own type, so all five are column-typed comparisons.
      */
-    private boolean isColumnTypedComparison(ComparisonOperator comparison) {
+    private boolean isColumnTypedComparison(BinaryExpression comparison) {
         return comparison instanceof EqualsTo
             || comparison instanceof NotEqualsTo
             || comparison instanceof GreaterThan
             || comparison instanceof GreaterThanEquals
             || comparison instanceof MinorThan
-            || comparison instanceof MinorThanEquals;
+            || comparison instanceof MinorThanEquals
+            || comparison instanceof IsDistinctExpression
+            || comparison instanceof RegExpMatchOperator;
     }
 
     /**
@@ -6560,8 +6668,37 @@ public final class QueryAnalyzer {
         }
 
         throw new UnsupportedOperationException(
-            COMPUTED_PROJECTION_REJECTION.formatted(written(expression))
+            COMPUTED_PROJECTION_REJECTION.formatted(
+                written(expression),
+                castOperand(expression),
+                hintAlias(selectItem.getAlias())
+            )
         );
+    }
+
+    /**
+     * One computed projection as the cast that states its type writes its
+     * operand: the expression as the query writes it, which a function call is
+     * cast directly, and every other expression in parentheses, because
+     * {@code ::} binds tighter than an operator the expression writes.
+     */
+    private String castOperand(Expression expression) {
+        String written = written(expression);
+
+        return expression instanceof Function
+            ? written
+            : "(" + written + ")";
+    }
+
+    /**
+     * The result alias a cast hint writes, which is the alias the query writes
+     * as it spells it, and {@code <alias>} for the user to fill in where the
+     * query writes none.
+     */
+    private String hintAlias(Alias alias) {
+        return alias == null
+            ? "<alias>"
+            : alias.getName();
     }
 
     /**

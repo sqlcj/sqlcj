@@ -135,6 +135,26 @@ class QueryAnalyzerTest {
     );
 
     /**
+     * A schema whose {@code probes} table carries the integer, text, and
+     * {@code JSONB} columns the distinct, regular-expression-match, and JSON
+     * text predicates type a placeholder from.
+     */
+    private static final Schema operatorSchema = new Schema(
+        List.of(
+            new Table(
+                "probes",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("n", ColumnType.INTEGER, true),
+                    new Column("name", ColumnType.TEXT, true),
+                    new Column("meta", ColumnType.JSONB, true)
+                ),
+                List.of()
+            )
+        )
+    );
+
+    /**
      * A schema whose {@code users} table carries one column of every kind a
      * projected aggregate reads: each scalar type {@code SUM} and {@code AVG}
      * are defined for, the orderable text, temporal, enum, array, and
@@ -2631,55 +2651,55 @@ class QueryAnalyzerTest {
             "SELECT COUNT(DISTINCT *) AS n FROM users"
                 + "|Cannot infer the type of COUNT(DISTINCT *) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as COUNT(DISTINCT *)::<type> AS n",
             "SELECT COUNT(ALL *) AS n FROM users"
                 + "|Cannot infer the type of COUNT(ALL *) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as COUNT(ALL *)::<type> AS n",
             "SELECT MAX(active) AS n FROM users"
                 + "|Cannot infer the type of MAX(active) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as MAX(active)::<type> AS n",
             "SELECT MIN(external_id) AS n FROM users"
                 + "|Cannot infer the type of MIN(external_id) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as MIN(external_id)::<type> AS n",
             "SELECT SUM(bio) AS n FROM users"
                 + "|Cannot infer the type of SUM(bio) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as SUM(bio)::<type> AS n",
             "SELECT SUM(labels) AS n FROM users"
                 + "|Cannot infer the type of SUM(labels) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as SUM(labels)::<type> AS n",
             "SELECT MIN(labels[1]) AS n FROM users"
                 + "|Cannot infer the type of MIN(labels[1]) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as MIN(labels[1])::<type> AS n",
             "SELECT MAX(id, name) AS n FROM users"
                 + "|Cannot infer the type of MAX(id, name) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as MAX(id, name)::<type> AS n",
             "SELECT pg_catalog.count(*) AS n FROM users"
                 + "|Cannot infer the type of pg_catalog.count(*) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as pg_catalog.count(*)::<type> AS n",
             "SELECT pg_catalog.max(id) AS n FROM users"
                 + "|Cannot infer the type of pg_catalog.max(id) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as pg_catalog.max(id)::<type> AS n",
             "SELECT lower(name) AS n FROM users"
                 + "|Cannot infer the type of lower(name) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as lower(name)::<type> AS n",
             "SELECT COUNT(*) FILTER (WHERE id > 1) AS n FROM users"
                 + "|Cannot infer the type of COUNT(*) FILTER (WHERE id > 1) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as (COUNT(*) FILTER (WHERE id > 1))::<type> AS n",
             "SELECT COUNT(*) OVER () AS n FROM users"
                 + "|Cannot infer the type of COUNT(*) OVER () in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as (COUNT(*) OVER ())::<type> AS n",
             "SELECT MAX(tags) AS n FROM users"
                 + "|Column 'tags' has unsupported type JSONB[]"
         }
@@ -2694,6 +2714,81 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(message, exception.getMessage());
+    }
+
+    /**
+     * The computed-projection rejection quotes the user's own expression and
+     * alias rather than a fixed example: the expression as the query writes it,
+     * cast directly where it is a function call and in parentheses otherwise,
+     * followed by {@code <type>} for the user to fill in and the query's own
+     * alias, or {@code <alias>} where the query writes none.
+     */
+    @Test
+    void shouldQuoteTheProjectionAndItsAliasInTheComputedProjectionRejection() {
+        assertEquals(
+            "Cannot infer the type of date_trunc('day', created_at) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as date_trunc('day', created_at)::<type> AS day",
+            aggregateRejection("SELECT date_trunc('day', created_at) AS day FROM users")
+        );
+
+        assertEquals(
+            "Cannot infer the type of visits + score in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (visits + score)::<type> AS <alias>",
+            aggregateRejection("SELECT visits + score FROM users")
+        );
+
+        assertEquals(
+            "Cannot infer the type of visits + score in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (visits + score)::<type> AS \"My Sum\"",
+            aggregateRejection("SELECT visits + score AS \"My Sum\" FROM users")
+        );
+    }
+
+    /**
+     * The cast the rejection names is accepted once the user writes a type and,
+     * where the query wrote none, an alias in place of the quoted placeholders,
+     * so the named fix compiles.
+     */
+    @Test
+    void shouldAcceptTheQuotedComputedProjectionCast() {
+        String function = "SELECT date_trunc('day', created_at)::timestamp AS day FROM users";
+
+        assertEquals(
+            List.of(new QueryColumn("day", ColumnType.TIMESTAMP, true)),
+            analyzer.analyze(
+                new Query("ListDays", QueryType.MANY, function),
+                parser.parse(function),
+                aggregateSchema
+            )
+                .columns()
+        );
+
+        String arithmetic = "SELECT (visits + score)::int AS total FROM users";
+
+        assertEquals(
+            List.of(new QueryColumn("total", ColumnType.INTEGER, true)),
+            analyzer.analyze(
+                new Query("ListTotals", QueryType.MANY, arithmetic),
+                parser.parse(arithmetic),
+                aggregateSchema
+            )
+                .columns()
+        );
+    }
+
+    /** The rejection one read of the aggregate schema reports. */
+    private String aggregateRejection(String sql) {
+        Query query = new Query("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        return assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, aggregateSchema)
+        )
+            .getMessage();
     }
 
     @Test
@@ -6553,7 +6648,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Cannot infer the type of $2 in $2 + 1;"
-                + " state it with a cast, such as $2::text",
+                + " state it with a cast, such as $2::<type>",
             exception.getMessage()
         );
     }
@@ -6697,6 +6792,180 @@ class QueryAnalyzerTest {
         assertEquals(
             "Anonymous '?' parameters are not supported; use an indexed placeholder such as $1",
             exception.getMessage()
+        );
+    }
+
+    /**
+     * A placeholder written as an operand of {@code IS [NOT] DISTINCT FROM} or
+     * of one of the regular-expression matches {@code ~}, {@code ~*},
+     * {@code !~}, and {@code !~*} takes the type of the direct column written
+     * as the other operand, in either order, as a comparison's operand does, so
+     * it needs no cast. A named placeholder keeps its own name. Both operands
+     * of {@code IS [NOT] DISTINCT FROM} are tested for null, so a placeholder
+     * typed there is nullable, while a match only reads its pattern.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "n IS DISTINCT FROM :n|n|INTEGER|true",
+            ":n IS DISTINCT FROM n|n|INTEGER|true",
+            "n IS NOT DISTINCT FROM :n|n|INTEGER|true",
+            ":n IS NOT DISTINCT FROM n|n|INTEGER|true",
+            "name ~ :pattern|pattern|TEXT|false",
+            ":pattern ~ name|pattern|TEXT|false",
+            "name ~* :pattern|pattern|TEXT|false",
+            ":pattern ~* name|pattern|TEXT|false",
+            "name !~ :pattern|pattern|TEXT|false",
+            ":pattern !~ name|pattern|TEXT|false",
+            "name !~* :pattern|pattern|TEXT|false",
+            ":pattern !~* name|pattern|TEXT|false"
+        }
+    )
+    void shouldTypeADistinctOrMatchParameterFromTheComparedColumn(
+        String predicate,
+        String name,
+        ColumnType type,
+        boolean nullable
+    ) {
+        assertEquals(
+            List.of(new QueryParameter(1, name, type, null, false, false, nullable)),
+            analyzeOperators("SELECT id FROM probes WHERE " + predicate).parameters()
+        );
+    }
+
+    /**
+     * An indexed placeholder of either operator is named after the column that
+     * types it, as an indexed comparison operand is, and a cast one keeps that
+     * name while stating its own type.
+     */
+    @Test
+    void shouldNameAnIndexedDistinctOrMatchParameterAfterTheColumn() {
+        assertEquals(
+            List.of(new QueryParameter(1, "n", ColumnType.INTEGER, null, false, false, true)),
+            analyzeOperators("SELECT id FROM probes WHERE n IS DISTINCT FROM $1").parameters()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "name", ColumnType.TEXT)),
+            analyzeOperators("SELECT id FROM probes WHERE name !~* $1").parameters()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            analyzeOperators("SELECT id FROM probes WHERE name ~ $1::varchar").parameters()
+        );
+    }
+
+    /**
+     * The operands of either operator read a column of the query's sources and
+     * a predicate subquery of the level inside the one the operator stands in,
+     * as a comparison's operands do.
+     */
+    @Test
+    void shouldResolveDistinctAndMatchOperandsAsAComparisonDoes() {
+        String sql = "SELECT id FROM probes WHERE missing ~ :pattern";
+
+        Query query = new Query("ListProbes", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, operatorSchema)
+        );
+
+        assertEquals("Column not found in sources probes: missing", exception.getMessage());
+
+        assertEquals(
+            List.of(new QueryParameter(1, "n", ColumnType.INTEGER)),
+            analyzeOperators(
+                "SELECT id FROM probes"
+                    + " WHERE name IS DISTINCT FROM (SELECT name FROM probes WHERE n = :n)"
+            )
+                .parameters()
+        );
+    }
+
+    /**
+     * {@code ->>} and {@code #>>} always return {@code text}, so an uncast
+     * placeholder compared with one, on either side, binds {@code text} without
+     * a cast, named after itself when it is named and {@code param<N>}
+     * otherwise. The last step of a chained path decides, so a path that ends
+     * in {@code ->>} types its placeholder whatever its earlier steps are.
+     */
+    @Test
+    void shouldTypeAPlaceholderComparedWithAJsonTextResultAsText() {
+        QueryModel key = analyzeUntyped("SELECT id FROM users WHERE metadata ->> 'k' = :v");
+
+        assertEquals(List.of(new QueryParameter(1, "v", ColumnType.TEXT)), key.parameters());
+
+        assertEquals("SELECT id FROM users WHERE metadata ->> 'k' = ?", key.executableSql());
+
+        assertEquals(
+            List.of(new QueryParameter(1, "param1", ColumnType.TEXT)),
+            analyzeUntyped("SELECT id FROM users WHERE $1 = metadata #>> '{a,b}'").parameters()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "v", ColumnType.TEXT, null, false, false, true)),
+            analyzeUntyped(
+                "SELECT id FROM users WHERE metadata -> 'a' ->> 'b' IS DISTINCT FROM :v"
+            )
+                .parameters()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "v", ColumnType.TEXT)),
+            analyzeUntyped("SELECT id FROM users WHERE metadata ->> 'k' ~ :v").parameters()
+        );
+    }
+
+    /**
+     * Only the two text operators type such a placeholder: a path that ends in
+     * {@code ->} or {@code #>} returns {@code jsonb}, which sqlcj infers no
+     * parameter type from, so the placeholder keeps needing a cast.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "SELECT id FROM users WHERE metadata -> 'k' = :v",
+            "SELECT id FROM users WHERE metadata #> '{a,b}' = :v",
+            "SELECT id FROM users WHERE metadata ->> 'a' -> 'b' = :v"
+        }
+    )
+    void shouldRejectAPlaceholderComparedWithAJsonResult(String sql) {
+        Query query = new Query("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, untypedSchema)
+        );
+
+        assertTrue(
+            exception.getMessage().endsWith("state it with a cast, such as :v::<type>"),
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A cast placeholder compared with a text path states its own type, as a
+     * cast placeholder does anywhere else, and is named after itself.
+     */
+    @Test
+    void shouldKeepACastPlaceholderComparedWithAJsonTextResult() {
+        assertEquals(
+            List.of(new QueryParameter(1, "param1", ColumnType.INTEGER)),
+            analyzeUntyped("SELECT id FROM users WHERE metadata ->> 'k' = $1::int").parameters()
+        );
+    }
+
+    /** One analyzed read of the schema whose columns the five operators type. */
+    private QueryModel analyzeOperators(String sql) {
+        return analyzer.analyze(
+            new Query("ListProbes", QueryType.MANY, sql),
+            parser.parse(sql),
+            operatorSchema
         );
     }
 
@@ -6971,7 +7240,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Cannot infer the type of :name in lower(name) = :name;"
-                + " state it with a cast, such as :name::text",
+                + " state it with a cast, such as :name::<type>",
             exception.getMessage()
         );
     }
@@ -7510,7 +7779,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Cannot infer the type of :q in lower(name) = :q;"
-                + " state it with a cast, such as :q::text",
+                + " state it with a cast, such as :q::<type>",
             exception.getMessage()
         );
     }
@@ -7534,7 +7803,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Cannot infer the type of :name in SELECT;"
-                + " state it with a cast, such as :name::text",
+                + " state it with a cast, such as :name::<type>",
             exception.getMessage()
         );
     }
@@ -8167,7 +8436,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "Cannot infer the type of %s in %s; state it with a cast, such as %s::text"
+            "Cannot infer the type of %s in %s; state it with a cast, such as %s::<type>"
                 .formatted(placeholder, enclosing, placeholder),
             exception.getMessage()
         );
@@ -8209,7 +8478,7 @@ class QueryAnalyzerTest {
         value = {
             "SELECT id FROM users WHERE email = lower(:email)|:email|lower(:email)",
             "SELECT id FROM users WHERE email = lower($1)|$1|lower($1)",
-            "SELECT id FROM users WHERE metadata->>'k' = :v|:v|metadata->>'k' = :v",
+            "SELECT id FROM users WHERE metadata->'k' = :v|:v|metadata->'k' = :v",
             "SELECT id FROM users ORDER BY :sort|:sort|ORDER BY",
             "SELECT id FROM users ORDER BY name, $1|$1|ORDER BY",
             "SELECT id FROM users LIMIT :n + 1|:n|:n + 1",
@@ -8228,7 +8497,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "Cannot infer the type of %s in %s; state it with a cast, such as %s::text"
+            "Cannot infer the type of %s in %s; state it with a cast, such as %s::<type>"
                 .formatted(placeholder, enclosing, placeholder),
             exception.getMessage()
         );
@@ -8252,7 +8521,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Cannot infer the type of :q in name LIKE '%' || :q || '%';"
-                + " state it with a cast, such as :q::text",
+                + " state it with a cast, such as :q::<type>",
             exception.getMessage()
         );
     }
@@ -8275,7 +8544,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Cannot infer the type of :a in lower(name) = :a;"
-                + " state it with a cast, such as :a::text",
+                + " state it with a cast, such as :a::<type>",
             exception.getMessage()
         );
     }
@@ -9257,12 +9526,12 @@ class QueryAnalyzerTest {
         delimiter = '|',
         quoteCharacter = '"',
         value = {
-            "SELECT tags[1] AS first FROM stages|tags[1]",
-            "SELECT tags[1:2] AS s FROM stages|tags[1 : 2]",
-            "SELECT s.tags[1] FROM stages s|s.tags[1]"
+            "SELECT tags[1] AS first FROM stages|tags[1]|first",
+            "SELECT tags[1:2] AS s FROM stages|tags[1 : 2]|s",
+            "SELECT s.tags[1] FROM stages s|s.tags[1]|<alias>"
         }
     )
-    void shouldRejectASubscriptedProjection(String sql, String written) {
+    void shouldRejectASubscriptedProjection(String sql, String written, String alias) {
         Query query = new Query("ListStages", QueryType.MANY, sql);
         ParsedSql parsedSql = parser.parse(sql);
 
@@ -9274,7 +9543,8 @@ class QueryAnalyzerTest {
         assertEquals(
             "Cannot infer the type of %s in SELECT;"
                 .formatted(written)
-                + " state it with a cast and an alias, such as SUM(amount)::numeric AS total",
+                + " state it with a cast and an alias, such as (%s)::<type> AS %s"
+                    .formatted(written, alias),
             exception.getMessage()
         );
     }
@@ -9393,7 +9663,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "Cannot infer the type of %s in %s; state it with a cast, such as %s::text"
+            "Cannot infer the type of %s in %s; state it with a cast, such as %s::<type>"
                 .formatted(placeholder, enclosing, placeholder),
             exception.getMessage()
         );
@@ -10386,7 +10656,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Cannot infer the type of $2 in $2 || 'x';"
-                + " state it with a cast, such as $2::text",
+                + " state it with a cast, such as $2::<type>",
             exception.getMessage()
         );
     }
@@ -10405,7 +10675,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Cannot infer the type of :n in :n || name;"
-                + " state it with a cast, such as :n::text",
+                + " state it with a cast, such as :n::<type>",
             exception.getMessage()
         );
     }
@@ -10521,7 +10791,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Cannot infer the type of :d in " + value
-                + "; state it with a cast, such as :d::text",
+                + "; state it with a cast, such as :d::<type>",
             exception.getMessage()
         );
     }
@@ -10541,7 +10811,7 @@ class QueryAnalyzerTest {
 
         assertEquals(
             "Cannot infer the type of :d in amount + :d;"
-                + " state it with a cast, such as :d::text",
+                + " state it with a cast, such as :d::<type>",
             exception.getMessage()
         );
     }
@@ -11403,7 +11673,7 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "Cannot infer the type of $1 in %s; state it with a cast, such as $1::text"
+            "Cannot infer the type of $1 in %s; state it with a cast, such as $1::<type>"
                 .formatted(enclosing),
             exception.getMessage()
         );
@@ -15218,12 +15488,12 @@ class QueryAnalyzerTest {
             () -> analyzer.analyze(query, parsedSql, networkSchema)
         );
 
+        String aggregate = sql.substring("SELECT ".length(), sql.indexOf(" AS n"));
+
         assertEquals(
-            "Cannot infer the type of %s in SELECT;".formatted(
-                sql.substring("SELECT ".length(), sql.indexOf(" AS n"))
-            )
+            "Cannot infer the type of %s in SELECT;".formatted(aggregate)
                 + " state it with a cast and an alias,"
-                + " such as SUM(amount)::numeric AS total",
+                + " such as %s::<type> AS n".formatted(aggregate),
             exception.getMessage()
         );
     }

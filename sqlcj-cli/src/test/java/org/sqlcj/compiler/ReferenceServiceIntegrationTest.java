@@ -113,7 +113,7 @@ class ReferenceServiceIntegrationTest {
             "uncast_lower.sql",
             "FindUserByEmail",
             "Cannot infer the type of :email in lower(:email); "
-                + "state it with a cast, such as :email::text"
+                + "state it with a cast, such as :email::<type>"
         ),
         new UnsupportedQuery(
             "unmapped_wildcard.sql",
@@ -131,7 +131,7 @@ class ReferenceServiceIntegrationTest {
             "subscripted_column.sql",
             "ListTasksByFirstLabel",
             "Cannot infer the type of :label in labels[1] = :label; "
-                + "state it with a cast, such as :label::text"
+                + "state it with a cast, such as :label::<type>"
         ),
         new UnsupportedQuery(
             "function_source.sql",

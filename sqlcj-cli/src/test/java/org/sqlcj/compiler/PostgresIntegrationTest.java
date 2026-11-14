@@ -402,6 +402,22 @@ class PostgresIntegrationTest {
         """;
 
     /**
+     * A snapshot declaring the integer, text, and {@code JSONB} columns that
+     * type a placeholder of {@code IS [NOT] DISTINCT FROM}, of a
+     * regular-expression match, and of a comparison with a {@code ->>} result,
+     * each nullable so that one row can carry nulls.
+     */
+    private static final String MATCH_SCHEMA = """
+        CREATE TABLE probes
+        (
+            id   BIGINT PRIMARY KEY,
+            n    INT,
+            name TEXT,
+            meta JSONB
+        );
+        """;
+
+    /**
      * A snapshot declaring a nullable scalar and a nullable one-dimensional
      * array column of {@code citext} and of each network address type, so that
      * one row can carry values of every one of them and another can carry
@@ -993,6 +1009,7 @@ class PostgresIntegrationTest {
         execute("DROP TABLE IF EXISTS readings");
         execute("DROP TABLE IF EXISTS categories");
         execute("DROP TABLE IF EXISTS documents");
+        execute("DROP TABLE IF EXISTS probes");
         execute("DROP TABLE IF EXISTS network_values");
         execute("DROP TABLE IF EXISTS duration_values");
         execute("DROP TABLE IF EXISTS drifted");
@@ -3687,6 +3704,138 @@ class PostgresIntegrationTest {
                 repository.getClass()
                     .getMethod("findDocumentsByKeys", List.class)
                     .invoke(repository, List.of("b", "c"))
+            );
+        }
+    }
+
+    /**
+     * Proves that a placeholder the compared column types runs without a cast
+     * under {@code IS [NOT] DISTINCT FROM} and the regular-expression matches
+     * {@code ~}, {@code ~*}, {@code !~}, and {@code !~*}, and that a
+     * placeholder compared with a {@code ->>} result binds {@code text}: each
+     * query selects the rows PostgreSQL 16 matches for it, including a
+     * {@code null} argument of {@code IS [NOT] DISTINCT FROM}, which the
+     * operator reads as a value of its own.
+     */
+    @Test
+    void shouldRunColumnTypedPredicateOperators() throws Exception {
+        execute(MATCH_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(
+            MATCH_SCHEMA,
+            """
+                -- name: InsertProbe :exec
+                INSERT INTO probes (id, n, name, meta)
+                VALUES ($1, $2, $3, $4);
+
+                -- name: FindProbesDistinctFromN :many
+                SELECT id
+                FROM probes
+                WHERE n IS DISTINCT FROM :n
+                ORDER BY id;
+
+                -- name: FindProbesNotDistinctFromN :many
+                SELECT id
+                FROM probes
+                WHERE n IS NOT DISTINCT FROM :n
+                ORDER BY id;
+
+                -- name: FindProbesMatching :many
+                SELECT id
+                FROM probes
+                WHERE name ~ :pattern
+                ORDER BY id;
+
+                -- name: FindProbesMatchingAnyCase :many
+                SELECT id
+                FROM probes
+                WHERE name ~* :pattern
+                ORDER BY id;
+
+                -- name: FindProbesNotMatching :many
+                SELECT id
+                FROM probes
+                WHERE name !~ :pattern
+                ORDER BY id;
+
+                -- name: FindProbesNotMatchingAnyCase :many
+                SELECT id
+                FROM probes
+                WHERE name !~* :pattern
+                ORDER BY id;
+
+                -- name: FindProbesByMetaKey :many
+                SELECT id
+                FROM probes
+                WHERE meta ->> 'k' = :v
+                ORDER BY id;
+                """
+        );
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Method insertMethod = repository.getClass().getMethod(
+                "insertProbe",
+                Long.class,
+                Integer.class,
+                String.class,
+                String.class
+            );
+
+            insertMethod.invoke(repository, 1L, 1, "Alpha", "{\"k\": \"one\"}");
+            insertMethod.invoke(repository, 2L, 2, "beta", "{\"k\": \"two\"}");
+            insertMethod.invoke(repository, 3L, null, null, null);
+
+            Method distinct = repository.getClass().getMethod(
+                "findProbesDistinctFromN",
+                Integer.class
+            );
+
+            assertEquals(List.of(2L, 3L), distinct.invoke(repository, 1));
+            assertEquals(List.of(1L, 2L), distinct.invoke(repository, new Object[] { null }));
+
+            Method notDistinct = repository.getClass().getMethod(
+                "findProbesNotDistinctFromN",
+                Integer.class
+            );
+
+            assertEquals(List.of(1L), notDistinct.invoke(repository, 1));
+            assertEquals(List.of(3L), notDistinct.invoke(repository, new Object[] { null }));
+
+            assertEquals(
+                List.of(1L),
+                repository.getClass()
+                    .getMethod("findProbesMatching", String.class)
+                    .invoke(repository, "^Al")
+            );
+
+            assertEquals(
+                List.of(1L),
+                repository.getClass()
+                    .getMethod("findProbesMatchingAnyCase", String.class)
+                    .invoke(repository, "^al")
+            );
+
+            assertEquals(
+                List.of(2L),
+                repository.getClass()
+                    .getMethod("findProbesNotMatching", String.class)
+                    .invoke(repository, "^Al")
+            );
+
+            assertEquals(
+                List.of(2L),
+                repository.getClass()
+                    .getMethod("findProbesNotMatchingAnyCase", String.class)
+                    .invoke(repository, "^al")
+            );
+
+            assertEquals(
+                List.of(2L),
+                repository.getClass()
+                    .getMethod("findProbesByMetaKey", String.class)
+                    .invoke(repository, "two")
             );
         }
     }
