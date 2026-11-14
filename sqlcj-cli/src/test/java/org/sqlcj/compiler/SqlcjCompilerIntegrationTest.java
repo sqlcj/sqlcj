@@ -222,11 +222,11 @@ class SqlcjCompilerIntegrationTest {
         assertEquals(
             List.of(
                 "Long id",
-                "@org.jspecify.annotations.Nullable String name",
-                "@org.jspecify.annotations.Nullable Boolean active",
-                "@org.jspecify.annotations.Nullable LocalDate birthDate",
-                "@org.jspecify.annotations.Nullable LocalDateTime createdAt",
-                "@org.jspecify.annotations.Nullable BigDecimal balance"
+                "@Nullable String name",
+                "@Nullable Boolean active",
+                "@Nullable LocalDate birthDate",
+                "@Nullable LocalDateTime createdAt",
+                "@Nullable BigDecimal balance"
             ),
             recordComponents(row, "UsersRow")
         );
@@ -234,7 +234,7 @@ class SqlcjCompilerIntegrationTest {
         assertTrue(repository.contains("private static final RowMapper<UsersRow> usersRowMapper"));
         assertTrue(
             repository.contains(
-                "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)"
+                "NotNullColumn.getObject(resultSet, 1, Long.class)"
             )
         );
         assertTrue(repository.contains("resultSet.getObject(2, String.class)"));
@@ -253,9 +253,9 @@ class SqlcjCompilerIntegrationTest {
         assertEquals(
             List.of(
                 "Long id",
-                "@org.jspecify.annotations.Nullable LocalDate birthDate",
-                "@org.jspecify.annotations.Nullable LocalDateTime createdAt",
-                "@org.jspecify.annotations.Nullable BigDecimal balance"
+                "@Nullable LocalDate birthDate",
+                "@Nullable LocalDateTime createdAt",
+                "@Nullable BigDecimal balance"
             ),
             recordComponents(repository, "ListUsersResult")
         );
@@ -627,7 +627,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        assertTrue(source.contains("java.util.Arrays.<Object>asList(active, id)"));
+        assertTrue(source.contains("Arrays.<Object>asList(active, id)"));
 
         QueryExecutor executor = new JdbcQueryExecutor(usersDataSource());
 
@@ -686,7 +686,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertTrue(source.contains("WHERE name = ?::text OR name = ?"), source);
-        assertTrue(source.contains("java.util.Arrays.<Object>asList(name1, name2)"), source);
+        assertTrue(source.contains("Arrays.<Object>asList(name1, name2)"), source);
     }
 
     /**
@@ -714,7 +714,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        assertTrue(source.contains("java.util.Arrays.<Object>asList(term, term, userId)"));
+        assertTrue(source.contains("Arrays.<Object>asList(term, term, userId)"));
         assertTrue(source.contains("WHERE (name = ? OR name = ?)"));
         assertTrue(source.contains("AND id = ?"));
 
@@ -766,7 +766,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        assertTrue(source.contains("java.util.Arrays.<Object>asList(name, id, id)"));
+        assertTrue(source.contains("Arrays.<Object>asList(name, id, id)"));
         assertTrue(source.contains("AND (id = ? OR id = ?)"));
 
         QueryExecutor executor = new JdbcQueryExecutor(usersDataSource());
@@ -879,7 +879,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        assertTrue(source.contains("java.util.Collections.emptyList()"));
+        assertTrue(source.contains("Collections.emptyList()"));
 
         QueryExecutor executor = new JdbcQueryExecutor(usersDataSource());
 
@@ -924,15 +924,14 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             source.contains(
-                "    public int insertUser(\n" + "        Long id,\n"
-                    + "        @org.jspecify.annotations.Nullable String name,\n"
-                    + "        @org.jspecify.annotations.Nullable Boolean active\n" + "    ) {"
+                "    public int insertUser("
+                    + "Long id, @Nullable String name, @Nullable Boolean active) {"
             )
         );
 
         assertTrue(source.contains("return executor.execute("));
         assertTrue(
-            source.contains("java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(id, name, active)")
+            source.contains("Arrays.<@Nullable Object>asList(id, name, active)")
         );
         assertFalse(source.contains("public record InsertUserResult("));
         assertFalse(source.contains("RowMapper"));
@@ -984,11 +983,11 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             source.contains(
-                "    public int updateUserName(Long id, @org.jspecify.annotations.Nullable String name) {"
+                "    public int updateUserName(Long id, @Nullable String name) {"
             )
         );
 
-        assertTrue(source.contains("java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(name, id)"));
+        assertTrue(source.contains("Arrays.<@Nullable Object>asList(name, id)"));
 
         QueryExecutor executor = new JdbcQueryExecutor(usersDataSource());
 
@@ -1035,7 +1034,7 @@ class SqlcjCompilerIntegrationTest {
         String source = Files.readString(tempDir.resolve("generated/generated/repositories/UsersRepository.java"));
 
         assertTrue(source.contains("public int deleteUser(Long id)"));
-        assertTrue(source.contains("java.util.Collections.singletonList(id)"));
+        assertTrue(source.contains("Collections.singletonList(id)"));
 
         QueryExecutor executor = new JdbcQueryExecutor(usersDataSource());
 
@@ -1084,7 +1083,7 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(source.contains("public GetUserResult getUser(Long id)"));
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 1, Long.class)")
         );
         assertTrue(source.contains("resultSet.getObject(2, String.class)"));
 
@@ -1130,7 +1129,7 @@ class SqlcjCompilerIntegrationTest {
             )
         );
 
-        assertTrue(source.contains("java.util.Arrays.<Object>asList(nickname, id)"));
+        assertTrue(source.contains("Arrays.<Object>asList(nickname, id)"));
         assertTrue(source.contains("Long id1"));
         assertTrue(source.contains("Long id2"));
 
@@ -1191,15 +1190,15 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            List.of("Long userId", "Long profileId", "@org.jspecify.annotations.Nullable String nickname"),
+            List.of("Long userId", "Long profileId", "@Nullable String nickname"),
             recordComponents(source, "ListUserProfilesResult")
         );
 
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 1, Long.class)")
         );
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 2, Long.class)")
         );
         assertTrue(source.contains("resultSet.getObject(3, String.class)"));
 
@@ -1327,12 +1326,12 @@ class SqlcjCompilerIntegrationTest {
             source
         );
 
-        assertTrue(source.contains("java.util.Arrays.<Object>asList(nickname, id)"), source);
+        assertTrue(source.contains("Arrays.<Object>asList(nickname, id)"), source);
 
         assertEquals(
             List.of(
-                "Long id", "@org.jspecify.annotations.Nullable Long profileId",
-                "@org.jspecify.annotations.Nullable String nickname"
+                "Long id", "@Nullable Long profileId",
+                "@Nullable String nickname"
             ),
             recordComponents(source, "ListNicknamedProfilesResult")
         );
@@ -1390,13 +1389,13 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            List.of("@org.jspecify.annotations.Nullable Long id", "Long profileId"),
+            List.of("@Nullable Long id", "Long profileId"),
             recordComponents(source, "ListProfileUsersResult")
         );
 
         assertEquals(
             List.of(
-                "@org.jspecify.annotations.Nullable UsersRow u", "@org.jspecify.annotations.Nullable ProfilesRow p"
+                "@Nullable UsersRow u", "@Nullable ProfilesRow p"
             ),
             recordComponents(source, "ListUsersAndProfilesResult")
         );
@@ -1473,24 +1472,24 @@ class SqlcjCompilerIntegrationTest {
 
         assertEquals(
             List.of(
-                "Long userId", "@org.jspecify.annotations.Nullable String nickname",
-                "@org.jspecify.annotations.Nullable BigDecimal total"
+                "Long userId", "@Nullable String nickname",
+                "@Nullable BigDecimal total"
             ),
             recordComponents(source, "ListOrderingProfilesResult")
         );
 
         assertEquals(
             List.of(
-                "Long id", "Long userId", "@org.jspecify.annotations.Nullable String nickname",
-                "@org.jspecify.annotations.Nullable BigDecimal total"
+                "Long id", "Long userId", "@Nullable String nickname",
+                "@Nullable BigDecimal total"
             ),
             recordComponents(source, "ListNaturalProfileOrdersResult")
         );
 
         assertEquals(
             List.of(
-                "Long id", "@org.jspecify.annotations.Nullable String name",
-                "@org.jspecify.annotations.Nullable Long userId", "@org.jspecify.annotations.Nullable String nickname"
+                "Long id", "@Nullable String name",
+                "@Nullable Long userId", "@Nullable String nickname"
             ),
             recordComponents(source, "ListUserProfileColumnsResult")
         );
@@ -1562,7 +1561,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            List.of("OrdersRow o", "@org.jspecify.annotations.Nullable String email"),
+            List.of("OrdersRow o", "@Nullable String email"),
             recordComponents(source, "ListOrderCustomerEmailsResult")
         );
 
@@ -1648,19 +1647,19 @@ class SqlcjCompilerIntegrationTest {
 
         assertEquals(
             List.of(
-                "Long id", "@org.jspecify.annotations.Nullable String userName",
-                "@org.jspecify.annotations.Nullable BigDecimal total"
+                "Long id", "@Nullable String userName",
+                "@Nullable BigDecimal total"
             ),
             recordComponents(source, "ListLatestOrdersResult")
         );
 
         assertEquals(
-            List.of("Long id", "@org.jspecify.annotations.Nullable Long profileId"),
+            List.of("Long id", "@Nullable Long profileId"),
             recordComponents(source, "ListOptionalLatestOrdersResult")
         );
 
         assertEquals(
-            List.of("Long id", "@org.jspecify.annotations.Nullable String nickname"),
+            List.of("Long id", "@Nullable String nickname"),
             recordComponents(source, "ListCommaLateralProfilesResult")
         );
 
@@ -1673,7 +1672,7 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             source.contains(
-                "    public int renameOrderingUsers(@org.jspecify.annotations.Nullable String name, String nickname, BigDecimal total) {"
+                "    public int renameOrderingUsers(@Nullable String name, String nickname, BigDecimal total) {"
             ),
             source
         );
@@ -1750,7 +1749,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            List.of("@org.jspecify.annotations.Nullable String label"), recordComponents(source, "ListNamesResult")
+            List.of("@Nullable String label"), recordComponents(source, "ListNamesResult")
         );
 
         assertTrue(
@@ -2057,7 +2056,7 @@ class SqlcjCompilerIntegrationTest {
         String previous = Files.readString(generatedFile);
 
         assertTrue(
-            previous.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+            previous.contains("NotNullColumn.getObject(resultSet, 1, Long.class)")
         );
 
         byte[] previousManifest = Files.readAllBytes(
@@ -2415,12 +2414,12 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            List.of("BooksRow b", "@org.jspecify.annotations.Nullable AuthorsRow a"),
+            List.of("BooksRow b", "@Nullable AuthorsRow a"),
             recordComponents(authorRepository, "ListBooksWithAuthorsResult")
         );
 
         assertTrue(
-            authorRepository.contains("org.sqlcj.runtime.SqlRow.isNull(resultSet, 4, 5)"),
+            authorRepository.contains("SqlRow.isNull(resultSet, 4, 5)"),
             authorRepository
         );
 
@@ -3979,7 +3978,7 @@ class SqlcjCompilerIntegrationTest {
         assertTrue(source.contains("Long userId"));
         assertTrue(source.contains("String class_"));
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 1, Long.class)")
         );
         assertTrue(source.contains("resultSet.getObject(2, String.class)"));
         assertTrue(source.contains("listUserData(String class_)"));
@@ -4083,7 +4082,7 @@ class SqlcjCompilerIntegrationTest {
         assertTrue(repository.contains("Boolean active"));
         assertTrue(
             repository.contains(
-                "    public UsersRow insertUser(Long id, @org.jspecify.annotations.Nullable String name) {"
+                "    public UsersRow insertUser(Long id, @Nullable String name) {"
             )
         );
         assertTrue(repository.contains("private static final RowMapper<UsersRow> usersRowMapper"));
@@ -4098,16 +4097,16 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             repository.contains(
-                "    public UpdateUserResult updateUser(Long id, @org.jspecify.annotations.Nullable String name) {"
+                "    public UpdateUserResult updateUser(Long id, @Nullable String name) {"
             )
         );
         assertTrue(repository.contains("resultSet.getObject(1, String.class)"));
         assertTrue(
             repository.contains(
-                "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, Long.class)"
+                "NotNullColumn.getObject(resultSet, 2, Long.class)"
             )
         );
-        assertTrue(repository.contains("java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(name, id)"));
+        assertTrue(repository.contains("Arrays.<@Nullable Object>asList(name, id)"));
         assertTrue(repository.contains("RETURNING name, id"));
 
         assertTrue(
@@ -4233,19 +4232,19 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             repository.contains(
-                "public Long insertSession(@org.jspecify.annotations.Nullable String note)"
+                "public Long insertSession(@Nullable String note)"
             )
         );
         assertTrue(repository.contains("public List<Long> listSessionIds()"));
         assertTrue(
             repository.contains(
-                "public UUID insertTicket(@org.jspecify.annotations.Nullable String note)"
+                "public UUID insertTicket(@Nullable String note)"
             )
         );
         assertTrue(repository.contains("import java.util.UUID;"));
         assertTrue(
             repository.contains(
-                "public Long insertVisit(@org.jspecify.annotations.Nullable String note)"
+                "public Long insertVisit(@Nullable String note)"
             )
         );
         assertTrue(repository.contains("public List<Long> listAuditIds()"));
@@ -4259,7 +4258,7 @@ class SqlcjCompilerIntegrationTest {
         assertEquals(
             List.of(
                 "Long id",
-                "@org.jspecify.annotations.Nullable String note"
+                "@Nullable String note"
             ),
             recordComponents(
                 Files.readString(generatedDirectory.resolve("generated/rows/SessionsRow.java")),
@@ -4271,7 +4270,7 @@ class SqlcjCompilerIntegrationTest {
             List.of(
                 "Long userId",
                 "Long groupId",
-                "@org.jspecify.annotations.Nullable String note"
+                "@Nullable String note"
             ),
             recordComponents(
                 Files.readString(generatedDirectory.resolve("generated/rows/MembershipsRow.java")),
@@ -4324,7 +4323,7 @@ class SqlcjCompilerIntegrationTest {
         assertFalse(repository.contains("CountActiveUsersResult"), repository);
 
         assertEquals(
-            List.of("@org.jspecify.annotations.Nullable String label"),
+            List.of("@Nullable String label"),
             recordComponents(repository, "ReadUserLabelResult")
         );
 
@@ -4399,12 +4398,12 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             repository.contains(
-                "    public InsertUserResult insertUser(Long id, @org.jspecify.annotations.Nullable String name) {"
+                "    public InsertUserResult insertUser(Long id, @Nullable String name) {"
             )
         );
 
         assertEquals(
-            List.of("Long userId", "@org.jspecify.annotations.Nullable String name"),
+            List.of("Long userId", "@Nullable String name"),
             recordComponents(repository, "InsertUserResult")
         );
 
@@ -4412,12 +4411,12 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             repository.contains(
-                "    public UpdateUserResult updateUser(Long id, @org.jspecify.annotations.Nullable String name) {"
+                "    public UpdateUserResult updateUser(Long id, @Nullable String name) {"
             )
         );
 
         assertEquals(
-            List.of("Long newId", "@org.jspecify.annotations.Nullable String name"),
+            List.of("Long newId", "@Nullable String name"),
             recordComponents(repository, "UpdateUserResult")
         );
 
@@ -4430,7 +4429,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            List.of("Long uid", "@org.jspecify.annotations.Nullable String fullName"),
+            List.of("Long uid", "@Nullable String fullName"),
             recordComponents(repository, "DeleteUsersResult")
         );
 
@@ -5862,8 +5861,8 @@ class SqlcjCompilerIntegrationTest {
 
         assertEquals(
             List.of(
-                "@org.jspecify.annotations.Nullable String label", "Long id",
-                "@org.jspecify.annotations.Nullable String name"
+                "@Nullable String label", "Long id",
+                "@Nullable String name"
             ),
             recordComponents(repository, "ListUsersResult")
         );
@@ -5925,7 +5924,7 @@ class SqlcjCompilerIntegrationTest {
 
         assertEquals(
             List.of(
-                "@org.jspecify.annotations.Nullable String name", "@org.jspecify.annotations.Nullable BigDecimal amount"
+                "@Nullable String name", "@Nullable BigDecimal amount"
             ),
             recordComponents(source, "ListUserOrderTotalsResult")
         );
@@ -5938,7 +5937,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            List.of("Long id", "@org.jspecify.annotations.Nullable BigDecimal total"),
+            List.of("Long id", "@Nullable BigDecimal total"),
             recordComponents(source, "ListRecentOrdersResult")
         );
     }
@@ -6056,15 +6055,15 @@ class SqlcjCompilerIntegrationTest {
         assertTrue(
             source.contains(
                 "    public int createTwoProfiles(\n" + "        Long firstId,\n" + "        Long userId,\n"
-                    + "        @org.jspecify.annotations.Nullable String firstNickname,\n" + "        Long secondId,\n"
-                    + "        @org.jspecify.annotations.Nullable String secondNickname\n" + "    ) {"
+                    + "        @Nullable String firstNickname,\n" + "        Long secondId,\n"
+                    + "        @Nullable String secondNickname\n" + "    ) {"
             ),
             source
         );
 
         assertTrue(
             source.contains(
-                "    public List<ProfilesRow> createUserProfiles(Long profileId, List<@org.jspecify.annotations.Nullable Long> userIds) {"
+                "    public List<ProfilesRow> createUserProfiles(Long profileId, List<@Nullable Long> userIds) {"
             ),
             source
         );
@@ -6132,24 +6131,23 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             source.contains(
-                "    public List<UsersRow> renameProfiledUsers(@org.jspecify.annotations.Nullable String name, String nickname) {"
+                "    public List<UsersRow> renameProfiledUsers(@Nullable String name, String nickname) {"
             ),
             source
         );
 
         assertTrue(
             source.contains(
-                "    public List<ListRenamedOrderTotalsResult> listRenamedOrderTotals(\n"
-                    + "        @org.jspecify.annotations.Nullable String name,\n" + "        BigDecimal total\n"
-                    + "    ) {"
+                "    public List<ListRenamedOrderTotalsResult> listRenamedOrderTotals("
+                    + "@Nullable String name, BigDecimal total) {"
             ),
             source
         );
 
         assertEquals(
             List.of(
-                "Long id", "@org.jspecify.annotations.Nullable Long orderId",
-                "@org.jspecify.annotations.Nullable BigDecimal total"
+                "Long id", "@Nullable Long orderId",
+                "@Nullable BigDecimal total"
             ),
             recordComponents(source, "ListRenamedOrderTotalsResult")
         );
@@ -6163,7 +6161,7 @@ class SqlcjCompilerIntegrationTest {
 
         assertEquals(
             List.of(
-                "@org.jspecify.annotations.Nullable String name", "@org.jspecify.annotations.Nullable BigDecimal total"
+                "@Nullable String name", "@Nullable BigDecimal total"
             ),
             recordComponents(source, "DeleteOrderingUsersResult")
         );
@@ -6204,7 +6202,7 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             repository.contains(
-                "    public List<ListUsersByIdsResult> listUsersByIds(List<@org.jspecify.annotations.Nullable Long> id) {"
+                "    public List<ListUsersByIdsResult> listUsersByIds(List<@Nullable Long> id) {"
             )
         );
 
@@ -6212,7 +6210,7 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             repository.contains(
-                "java.util.Collections.singletonList(new org.sqlcj.runtime.SqlArray(\"int8\", id))"
+                "Collections.singletonList(new SqlArray(\"int8\", id))"
             )
         );
     }
@@ -6271,7 +6269,7 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertEquals(
-            List.of("Long id", "String tenant", "@org.jspecify.annotations.Nullable String payload"),
+            List.of("Long id", "String tenant", "@Nullable String payload"),
             recordComponents(
                 Files.readString(generatedDirectory.resolve("generated/rows/EventsCopyRow.java")),
                 "EventsCopyRow"
@@ -6280,8 +6278,8 @@ class SqlcjCompilerIntegrationTest {
 
         assertEquals(
             List.of(
-                "Long id", "String tenant", "@org.jspecify.annotations.Nullable String payload",
-                "@org.jspecify.annotations.Nullable String note"
+                "Long id", "String tenant", "@Nullable String payload",
+                "@Nullable String note"
             ),
             recordComponents(
                 Files.readString(generatedDirectory.resolve("generated/rows/EventsRecentRow.java")),
@@ -6819,8 +6817,8 @@ class SqlcjCompilerIntegrationTest {
         assertTrue(
             source.contains(
                 "    public int insertTask(\n" + "        Long projectId,\n" + "        String title,\n"
-                    + "        @org.jspecify.annotations.Nullable String metadata,\n"
-                    + "        @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> tags\n"
+                    + "        @Nullable String metadata,\n"
+                    + "        @Nullable List<@Nullable String> tags\n"
                     + "    ) {"
             ),
             source
@@ -6828,23 +6826,20 @@ class SqlcjCompilerIntegrationTest {
 
         assertTrue(
             source.contains(
-                "                java.util.Arrays.<Object>asList(\n"
-                    + "                        projectId,\n"
-                    + "                        title,\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
-                    + "                        new org.sqlcj.runtime.SqlArray(\"varchar\", tags)\n"
-                    + "                )\n"
+                "                Arrays.<Object>asList("
+                    + "projectId, title, new UntypedText(metadata), "
+                    + "new SqlArray(\"varchar\", tags))\n"
             ),
             source
         );
 
         assertTrue(
             source.contains(
-                "                batch.stream().map(params -> java.util.Arrays.<Object>asList(\n"
+                "                batch.stream().map(params -> Arrays.<Object>asList(\n"
                     + "                        params.projectId(),\n"
                     + "                        params.title(),\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(params.metadata()),\n"
-                    + "                        new org.sqlcj.runtime.SqlArray(\"varchar\", params.tags())\n"
+                    + "                        new UntypedText(params.metadata()),\n"
+                    + "                        new SqlArray(\"varchar\", params.tags())\n"
                     + "                )).toList()\n"
             ),
             source

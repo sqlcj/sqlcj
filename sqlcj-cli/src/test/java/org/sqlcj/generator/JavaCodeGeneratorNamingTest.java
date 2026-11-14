@@ -152,7 +152,7 @@ class JavaCodeGeneratorNamingTest {
         assertTrue(source.contains("String userId2"));
 
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 1, Long.class)")
         );
         assertTrue(source.contains("resultSet.getObject(2, String.class)"));
         assertTrue(source.contains("resultSet.getObject(3, String.class)"));
@@ -203,7 +203,7 @@ class JavaCodeGeneratorNamingTest {
             )
         );
 
-        assertTrue(source.contains("java.util.Arrays.<Object>asList(executor1, userId1, userId2)"));
+        assertTrue(source.contains("Arrays.<Object>asList(executor1, userId1, userId2)"));
 
         assertCompiles(file);
     }

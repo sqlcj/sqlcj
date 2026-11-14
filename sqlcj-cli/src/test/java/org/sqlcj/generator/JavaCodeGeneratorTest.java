@@ -444,8 +444,13 @@ class JavaCodeGeneratorTest {
         );
     }
 
+    /**
+     * A {@code :one} query without parameters binds an empty list through
+     * {@code Collections}, which it imports, and names no {@code List} of its
+     * own, so it imports none either.
+     */
     @Test
-    void shouldGenerateListImportForSingleResultWithoutParameters() {
+    void shouldImportCollectionsAndNoListForSingleResultWithoutParameters() {
         QueryModel query = new QueryModel(
             "GetUser",
             QueryType.ONE,
@@ -463,8 +468,9 @@ class JavaCodeGeneratorTest {
 
         String source = file.content();
 
-        assertTrue(source.contains("import java.util.List;"));
-        assertTrue(source.contains("java.util.Collections.emptyList()"));
+        assertTrue(source.contains("import java.util.Collections;"));
+        assertFalse(source.contains("import java.util.List;"), source);
+        assertTrue(source.contains("Collections.emptyList()"));
     }
 
     @Test
@@ -517,10 +523,10 @@ class JavaCodeGeneratorTest {
         assertTrue(source.contains("String nickname"));
 
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 1, Long.class)")
         );
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 2, Long.class)")
         );
         assertTrue(source.contains("resultSet.getObject(3, String.class)"));
 
@@ -571,8 +577,8 @@ class JavaCodeGeneratorTest {
         assertTrue(
             file.content().contains(
                 columnType == ColumnType.BYTEA
-                    ? "byte @org.jspecify.annotations.Nullable [] value"
-                    : "@org.jspecify.annotations.Nullable " + expectedJavaType + " value"
+                    ? "byte @Nullable [] value"
+                    : "@Nullable " + expectedJavaType + " value"
             )
         );
     }
@@ -606,7 +612,7 @@ class JavaCodeGeneratorTest {
      * A {@code :one} query whose result is one column that cannot be NULL
      * returns that column's Java type and generates no result record, so its
      * row mapper reads the value itself, through
-     * {@code org.sqlcj.runtime.NotNullColumn}, which fails on a SQL
+     * {@code NotNullColumn}, which fails on a SQL
      * {@code NULL}.
      */
     @Test
@@ -631,7 +637,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "private static final RowMapper<Long> countUsersRowMapper =\n"
-                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + "            resultSet -> NotNullColumn"
                     + ".getObject(resultSet, 1, Long.class);"
             ),
             source
@@ -668,7 +674,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "private static final RowMapper<UUID> findUserExternalIdRowMapper =\n"
-                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + "            resultSet -> NotNullColumn"
                     + ".getObject(resultSet, 1, UUID.class);"
             ),
             source
@@ -702,7 +708,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "private static final RowMapper<String> listUserNamesRowMapper =\n"
-                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + "            resultSet -> NotNullColumn"
                     + ".getObject(resultSet, 1, String.class);"
             ),
             source
@@ -736,7 +742,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "private static final RowMapper<Long> insertUserRowMapper =\n"
-                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + "            resultSet -> NotNullColumn"
                     + ".getObject(resultSet, 1, Long.class);"
             ),
             source
@@ -779,7 +785,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "private static final RowMapper<StageSetting> getStageSettingRowMapper =\n"
-                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + "            resultSet -> NotNullColumn"
                     + ".getString(resultSet, 1, StageSetting::fromLabel);"
             ),
             source
@@ -810,15 +816,15 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "public List<@org.jspecify.annotations.Nullable String> getUserTags(Long id)"
+                "public List<@Nullable String> getUserTags(Long id)"
             ),
             source
         );
 
         assertTrue(
             source.contains(
-                "private static final RowMapper<List<@org.jspecify.annotations.Nullable String>> getUserTagsRowMapper =\n"
-                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                "private static final RowMapper<List<@Nullable String>> getUserTagsRowMapper =\n"
+                    + "            resultSet -> NotNullColumn"
                     + ".getList(resultSet, 1, String.class);"
             ),
             source
@@ -832,7 +838,7 @@ class JavaCodeGeneratorTest {
     /**
      * Every kind of read a result mapper writes has two forms: a column the
      * model states non-null is read through
-     * {@code org.sqlcj.runtime.NotNullColumn}, which fails on a SQL
+     * {@code NotNullColumn}, which fails on a SQL
      * {@code NULL}, and a nullable column keeps the read it had, character for
      * character.
      */
@@ -877,25 +883,25 @@ class JavaCodeGeneratorTest {
         assertReads(
             source,
             List.of(
-                "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)",
+                "NotNullColumn.getObject(resultSet, 1, Long.class)",
                 "resultSet.getObject(2, Long.class)",
-                "org.sqlcj.runtime.NotNullColumn.getString(resultSet, 3)",
+                "NotNullColumn.getString(resultSet, 3)",
                 "resultSet.getString(4)",
-                "org.sqlcj.runtime.NotNullColumn.getString(resultSet, 5, StageSetting::fromLabel)",
+                "NotNullColumn.getString(resultSet, 5, StageSetting::fromLabel)",
                 "StageSetting.fromLabel(resultSet.getString(6))",
-                "org.sqlcj.runtime.NotNullColumn.getString("
-                    + "resultSet, 7, org.sqlcj.runtime.SqlInterval::parse)",
-                "org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(8))",
-                "org.sqlcj.runtime.NotNullColumn.getList(resultSet, 9, String.class)",
-                "org.sqlcj.runtime.SqlArray.getList(resultSet, 10, String.class)",
-                "org.sqlcj.runtime.NotNullColumn.getList("
+                "NotNullColumn.getString("
+                    + "resultSet, 7, SqlInterval::parse)",
+                "SqlInterval.parse(resultSet.getString(8))",
+                "NotNullColumn.getList(resultSet, 9, String.class)",
+                "SqlArray.getList(resultSet, 10, String.class)",
+                "NotNullColumn.getList("
                     + "resultSet, 11, String.class, StageSetting::fromLabel)",
-                "org.sqlcj.runtime.SqlArray.getList("
+                "SqlArray.getList("
                     + "resultSet, 12, String.class, StageSetting::fromLabel)",
-                "org.sqlcj.runtime.NotNullColumn.getList("
-                    + "resultSet, 13, String.class, org.sqlcj.runtime.SqlInterval::parse)",
-                "org.sqlcj.runtime.SqlArray.getList("
-                    + "resultSet, 14, String.class, org.sqlcj.runtime.SqlInterval::parse)"
+                "NotNullColumn.getList("
+                    + "resultSet, 13, String.class, SqlInterval::parse)",
+                "SqlArray.getList("
+                    + "resultSet, 14, String.class, SqlInterval::parse)"
             )
         );
 
@@ -941,7 +947,7 @@ class JavaCodeGeneratorTest {
         );
 
         assertEquals(
-            List.of("@org.jspecify.annotations.Nullable String name"),
+            List.of("@Nullable String name"),
             recordComponents(source, "GetUserNameResult")
         );
 
@@ -1175,10 +1181,8 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "    public GetUserResult getUser(\n"
-                    + "        @org.jspecify.annotations.Nullable UUID externalId,\n"
-                    + "        @org.jspecify.annotations.Nullable OffsetDateTime createdAt\n"
-                    + "    ) {"
+                "    public GetUserResult getUser("
+                    + "@Nullable UUID externalId, @Nullable OffsetDateTime createdAt) {"
             )
         );
 
@@ -1323,7 +1327,7 @@ class JavaCodeGeneratorTest {
         String source = generate(query).content();
 
         assertTrue(source.contains("return executor.queryOne("));
-        assertTrue(source.contains("java.util.Collections.singletonList(id)"));
+        assertTrue(source.contains("Collections.singletonList(id)"));
         assertTrue(source.contains("getUserRowMapper"));
         assertFalse(source.contains("UnsupportedOperationException"));
     }
@@ -1449,7 +1453,7 @@ class JavaCodeGeneratorTest {
         assertTrue(source.contains("import java.time.LocalTime;"));
         assertTrue(source.contains("Float amount"));
         assertTrue(source.contains("Double ratio"));
-        assertTrue(source.contains("byte @org.jspecify.annotations.Nullable [] payload"));
+        assertTrue(source.contains("byte @Nullable [] payload"));
         assertTrue(source.contains("LocalTime openedAt"));
         assertTrue(source.contains("resultSet.getObject(3, byte[].class)"));
 
@@ -1457,11 +1461,10 @@ class JavaCodeGeneratorTest {
     }
 
     /**
-     * A JSON parameter is bound through {@code org.sqlcj.runtime.UntypedText}
+     * A JSON parameter is bound through {@code UntypedText}
      * at every position its placeholder index is bound at, and a JSON result
      * column is read as text. The other {@code String} types are bound and read
-     * exactly as before, and the wrapper is written out in full, so the
-     * generated imports are unchanged.
+     * exactly as before, and the repository imports the wrapper it names.
      */
     @Test
     void shouldWrapJsonArgumentsAndReadJsonColumnsAsText() throws IOException {
@@ -1500,46 +1503,46 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "    public FindDocumentResult findDocument(\n"
-                    + "        @org.jspecify.annotations.Nullable String metadata,\n"
-                    + "        @org.jspecify.annotations.Nullable String profile,\n"
-                    + "        @org.jspecify.annotations.Nullable String name,\n"
-                    + "        @org.jspecify.annotations.Nullable String bio\n"
+                    + "        @Nullable String metadata,\n"
+                    + "        @Nullable String profile,\n"
+                    + "        @Nullable String name,\n"
+                    + "        @Nullable String bio\n"
                     + "    ) {"
             )
         );
 
         assertTrue(
             source.contains(
-                "                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
+                "                Arrays.<@Nullable Object>asList(\n"
                     + "                        name,\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
+                    + "                        new UntypedText(metadata),\n"
+                    + "                        new UntypedText(metadata),\n"
                     + "                        bio,\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(profile)\n"
+                    + "                        new UntypedText(profile)\n"
                     + "                ),"
             )
         );
 
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 1, Long.class)")
         );
         assertTrue(source.contains("resultSet.getString(2)"));
         assertTrue(source.contains("resultSet.getString(3)"));
         assertTrue(source.contains("resultSet.getObject(4, String.class)"));
 
-        assertFalse(source.contains("import org.sqlcj.runtime.UntypedText;"));
+        assertTrue(source.contains("import org.sqlcj.runtime.UntypedText;"));
 
         assertCompiles(file);
     }
 
     /**
      * A {@code citext} and a network address parameter are bound through
-     * {@code org.sqlcj.runtime.UntypedText}, and a column of either is read as
+     * {@code UntypedText}, and a column of either is read as
      * text, exactly as JSON is, because the driver reports each of them as a
      * type of its own that is not read as a {@code String}. An array of either
-     * is bound as {@code org.sqlcj.runtime.SqlArray} of the type's PostgreSQL
+     * is bound as {@code SqlArray} of the type's PostgreSQL
      * name and read as a list of {@code String}. The generated source compiles,
-     * and both wrappers are written out in full, so the imports are unchanged.
+     * and the repository imports both wrappers it names.
      */
     @Test
     void shouldWrapCitextAndNetworkArgumentsAndReadThemAsText() throws IOException {
@@ -1588,56 +1591,56 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "    public FindHostResult findHost(\n"
-                    + "        @org.jspecify.annotations.Nullable String handle,\n"
-                    + "        @org.jspecify.annotations.Nullable String address,\n"
-                    + "        @org.jspecify.annotations.Nullable String network,\n"
-                    + "        @org.jspecify.annotations.Nullable String mac,\n"
-                    + "        @org.jspecify.annotations.Nullable String mac8,\n"
-                    + "        @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> handles,\n"
-                    + "        @org.jspecify.annotations.Nullable String bio\n"
+                    + "        @Nullable String handle,\n"
+                    + "        @Nullable String address,\n"
+                    + "        @Nullable String network,\n"
+                    + "        @Nullable String mac,\n"
+                    + "        @Nullable String mac8,\n"
+                    + "        @Nullable List<@Nullable String> handles,\n"
+                    + "        @Nullable String bio\n"
                     + "    ) {"
             )
         );
 
         assertTrue(
             source.contains(
-                "                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(handle),\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(address),\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(network),\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(mac),\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(mac8),\n"
-                    + "                        new org.sqlcj.runtime.SqlArray(\"citext\", handles),\n"
+                "                Arrays.<@Nullable Object>asList(\n"
+                    + "                        new UntypedText(handle),\n"
+                    + "                        new UntypedText(address),\n"
+                    + "                        new UntypedText(network),\n"
+                    + "                        new UntypedText(mac),\n"
+                    + "                        new UntypedText(mac8),\n"
+                    + "                        new SqlArray(\"citext\", handles),\n"
                     + "                        bio\n"
                     + "                ),"
             )
         );
 
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 1, Long.class)")
         );
         assertTrue(source.contains("resultSet.getString(2)"));
         assertTrue(source.contains("resultSet.getString(3)"));
         assertTrue(source.contains("resultSet.getString(4)"));
         assertTrue(source.contains("resultSet.getString(5)"));
         assertTrue(source.contains("resultSet.getString(6)"));
-        assertTrue(source.contains("org.sqlcj.runtime.SqlArray.getList(resultSet, 7, String.class)"));
+        assertTrue(source.contains("SqlArray.getList(resultSet, 7, String.class)"));
         assertTrue(source.contains("resultSet.getObject(8, String.class)"));
 
-        assertFalse(source.contains("import org.sqlcj.runtime.UntypedText;"));
-        assertFalse(source.contains("import org.sqlcj.runtime.SqlArray;"));
+        assertTrue(source.contains("import org.sqlcj.runtime.SqlArray;"));
+        assertTrue(source.contains("import org.sqlcj.runtime.UntypedText;"));
 
         assertCompiles(file);
     }
 
     /**
-     * An {@code INTERVAL} parameter is an {@code org.sqlcj.runtime.SqlInterval}
-     * bound through {@code org.sqlcj.runtime.UntypedText} as the text the value
+     * An {@code INTERVAL} parameter is an {@code SqlInterval}
+     * bound through {@code UntypedText} as the text the value
      * writes, and an array of one binds the text of each element; a column of
      * either is read back by parsing PostgreSQL's own text, which the driver
      * reports as a type of its own rather than as a character type. The Java
-     * type is imported as a {@code java.time} type is, while the runtime
-     * wrappers are written out in full, and the generated source compiles.
+     * type and both runtime wrappers are imported, and the generated source
+     * compiles.
      */
     @Test
     void shouldWrapIntervalArgumentsAndReadThemThroughSqlInterval() throws IOException {
@@ -1670,42 +1673,40 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "    public FindDurationResult findDuration(\n"
-                    + "        @org.jspecify.annotations.Nullable SqlInterval age,\n"
-                    + "        @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable SqlInterval> ages\n"
-                    + "    ) {"
+                "    public FindDurationResult findDuration("
+                    + "@Nullable SqlInterval age, "
+                    + "@Nullable List<@Nullable SqlInterval> ages) {"
             )
         );
 
         assertTrue(
             source.contains(
-                "                java.util.Arrays.<Object>asList(\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(age == null ? null : age.format()),\n"
-                    + "                        org.sqlcj.runtime.SqlArray.of("
-                    + "\"interval\", ages, org.sqlcj.runtime.SqlInterval::format)\n"
+                "                Arrays.<Object>asList(\n"
+                    + "                        new UntypedText(age == null ? null : age.format()),\n"
+                    + "                        SqlArray.of("
+                    + "\"interval\", ages, SqlInterval::format)\n"
                     + "                ),"
             )
         );
 
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 1, Long.class)")
         );
 
         assertTrue(
-            source.contains("org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(2))")
+            source.contains("SqlInterval.parse(resultSet.getString(2))")
         );
 
         assertTrue(
             source.contains(
-                "org.sqlcj.runtime.SqlArray.getList("
-                    + "resultSet, 3, String.class, org.sqlcj.runtime.SqlInterval::parse)"
+                "SqlArray.getList("
+                    + "resultSet, 3, String.class, SqlInterval::parse)"
             )
         );
 
+        assertTrue(source.contains("import org.sqlcj.runtime.SqlArray;"));
         assertTrue(source.contains("import org.sqlcj.runtime.SqlInterval;"));
-
-        assertFalse(source.contains("import org.sqlcj.runtime.UntypedText;"));
-        assertFalse(source.contains("import org.sqlcj.runtime.SqlArray;"));
+        assertTrue(source.contains("import org.sqlcj.runtime.UntypedText;"));
 
         assertCompiles(file);
     }
@@ -1758,8 +1759,8 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "        @org.jspecify.annotations.Nullable String metadata,\n"
-                    + "        @org.jspecify.annotations.Nullable String profile\n"
+                "        @Nullable String metadata,\n"
+                    + "        @Nullable String profile\n"
             )
         );
         assertTrue(source.contains("resultSet.getString(1)"));
@@ -1844,8 +1845,8 @@ class JavaCodeGeneratorTest {
         assertTrue(
             file.content().contains(
                 columnType == ColumnType.BYTEA
-                    ? "byte @org.jspecify.annotations.Nullable [] value"
-                    : "@org.jspecify.annotations.Nullable " + expectedJavaType + " value"
+                    ? "byte @Nullable [] value"
+                    : "@Nullable " + expectedJavaType + " value"
             )
         );
     }
@@ -1968,7 +1969,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)"
+                "NotNullColumn.getObject(resultSet, 1, Long.class)"
             )
         );
 
@@ -2018,7 +2019,7 @@ class JavaCodeGeneratorTest {
         int nameIndex = source.indexOf("resultSet.getObject(1, String.class)");
 
         int idIndex = source.indexOf(
-            "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, Long.class)"
+            "NotNullColumn.getObject(resultSet, 2, Long.class)"
         );
 
         assertTrue(nameIndex >= 0);
@@ -2057,7 +2058,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)"
+                "NotNullColumn.getObject(resultSet, 1, Long.class)"
             )
         );
 
@@ -2190,7 +2191,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "java.util.Collections.singletonList(id)"
+                "Collections.singletonList(id)"
             )
         );
 
@@ -2257,7 +2258,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "java.util.Collections.singletonList(active)"
+                "Collections.singletonList(active)"
             )
         );
 
@@ -2304,7 +2305,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "java.util.Arrays.<Object>asList(active, id, name)"
+                "Arrays.<Object>asList(active, id, name)"
             )
         );
     }
@@ -2345,7 +2346,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(source.contains("WHERE active = ?"));
         assertTrue(source.contains("AND id = ?"));
-        assertTrue(source.contains("java.util.Arrays.<Object>asList(active, id)"));
+        assertTrue(source.contains("Arrays.<Object>asList(active, id)"));
 
         assertCompiles(file);
     }
@@ -2384,7 +2385,7 @@ class JavaCodeGeneratorTest {
             )
         );
 
-        assertTrue(source.contains("java.util.Arrays.<Object>asList(name, id, id)"));
+        assertTrue(source.contains("Arrays.<Object>asList(name, id, id)"));
 
         assertCompiles(file);
     }
@@ -2417,7 +2418,7 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertTrue(source.contains("public Long findUser(Long id)"), source);
-        assertTrue(source.contains("java.util.Arrays.<Object>asList(id, id)"), source);
+        assertTrue(source.contains("Arrays.<Object>asList(id, id)"), source);
 
         assertCompiles(file);
     }
@@ -2583,8 +2584,9 @@ class JavaCodeGeneratorTest {
             )
         );
 
-        assertTrue(source.contains("import java.util.List;"));
-        assertTrue(source.contains("java.util.Collections.emptyList()"));
+        assertTrue(source.contains("import java.util.Collections;"));
+        assertFalse(source.contains("import java.util.List;"), source);
+        assertTrue(source.contains("Collections.emptyList()"));
 
         assertCompiles(file);
     }
@@ -2620,7 +2622,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(source.contains("return executor.execute("));
         assertTrue(source.contains("INSERT INTO users (id, name)"));
-        assertTrue(source.contains("java.util.Arrays.<Object>asList(id, name)"));
+        assertTrue(source.contains("Arrays.<Object>asList(id, name)"));
 
         assertFalse(source.contains("public record InsertUserResult("));
         assertFalse(source.contains("RowMapper"));
@@ -2668,14 +2670,10 @@ class JavaCodeGeneratorTest {
                         ) {
 
                             public InsertUserParams {
-                                java.util.Objects.requireNonNull(
-                                        id,
-                                        "Parameter 'id' of query 'InsertUser' in UsersRepository must not be null"
-                                );
-                                java.util.Objects.requireNonNull(
-                                        name,
-                                        "Parameter 'name' of query 'InsertUser' in UsersRepository must not be null"
-                                );
+                                Objects.requireNonNull(id, \
+                    "Parameter 'id' of query 'InsertUser' in UsersRepository must not be null");
+                                Objects.requireNonNull(name, \
+                    "Parameter 'name' of query 'InsertUser' in UsersRepository must not be null");
                             }
                         }
                     """
@@ -2694,7 +2692,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "batch.stream().map(params -> java.util.Arrays.<Object>asList("
+                "batch.stream().map(params -> Arrays.<Object>asList("
                     + "params.id(), params.name())).toList()"
             )
         );
@@ -2728,8 +2726,8 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "batch.stream().map(java.util.Objects::requireNonNull)"
-                    + ".map(params -> java.util.Collections.emptyList()).toList()"
+                "batch.stream().map(Objects::requireNonNull)"
+                    + ".map(params -> Collections.emptyList()).toList()"
             )
         );
 
@@ -2831,9 +2829,9 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         public record InsertUsersParams(
-                            @org.jspecify.annotations.Nullable Long id1,
-                            @org.jspecify.annotations.Nullable String name,
-                            @org.jspecify.annotations.Nullable Long id2
+                            @Nullable Long id1,
+                            @Nullable String name,
+                            @Nullable Long id2
                         ) {
                         }
                     """
@@ -2843,7 +2841,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "                batch.stream().map(params -> java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
+                "                batch.stream().map(params -> Arrays.<@Nullable Object>asList(\n"
                     + "                        params.id1(),\n"
                     + "                        params.name(),\n"
                     + "                        params.id2(),\n"
@@ -2896,10 +2894,10 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         public record InsertStagesParams(
-                            @org.jspecify.annotations.Nullable StageSetting setting,
-                            @org.jspecify.annotations.Nullable String payload,
-                            @org.jspecify.annotations.Nullable SqlInterval span,
-                            @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> tags
+                            @Nullable StageSetting setting,
+                            @Nullable String payload,
+                            @Nullable SqlInterval span,
+                            @Nullable List<@Nullable String> tags
                         ) {
                         }
                     """
@@ -2909,13 +2907,13 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "                batch.stream().map(params -> java.util.Arrays.<Object>asList(\n"
-                    + "                        new org.sqlcj.runtime.UntypedText("
+                "                batch.stream().map(params -> Arrays.<Object>asList(\n"
+                    + "                        new UntypedText("
                     + "params.setting() == null ? null : params.setting().label()),\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(params.payload()),\n"
-                    + "                        new org.sqlcj.runtime.UntypedText("
+                    + "                        new UntypedText(params.payload()),\n"
+                    + "                        new UntypedText("
                     + "params.span() == null ? null : params.span().format()),\n"
-                    + "                        new org.sqlcj.runtime.SqlArray(\"varchar\", params.tags())\n"
+                    + "                        new SqlArray(\"varchar\", params.tags())\n"
                     + "                )).toList()"
             )
         );
@@ -2936,9 +2934,10 @@ class JavaCodeGeneratorTest {
     void shouldKeepAMethodDeclarationOfExactlyTheColumnLimitOnOneLine() throws IOException {
         GeneratedFile file = generate(noteQuery("note"));
 
-        String declaration = "    public int updateNotes("
-            + "@org.jspecify.annotations.Nullable Long id, "
-            + "@org.jspecify.annotations.Nullable String note) {";
+        String declaration = "    public int updateTaskCompletionNote("
+            + "@Nullable Long id, "
+            + "@Nullable String note, "
+            + "@Nullable OffsetDateTime reviewedAt) {";
 
         assertEquals(120, declaration.length());
 
@@ -2958,9 +2957,10 @@ class JavaCodeGeneratorTest {
     void shouldWrapAMethodDeclarationOneColumnPastTheLimit() throws IOException {
         GeneratedFile file = generate(noteQuery("notes"));
 
-        String oneLine = "    public int updateNotes("
-            + "@org.jspecify.annotations.Nullable Long id, "
-            + "@org.jspecify.annotations.Nullable String notes) {";
+        String oneLine = "    public int updateTaskCompletionNote("
+            + "@Nullable Long id, "
+            + "@Nullable String notes, "
+            + "@Nullable OffsetDateTime reviewedAt) {";
 
         assertEquals(121, oneLine.length());
 
@@ -2970,9 +2970,10 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "    public int updateNotes(\n"
-                    + "        @org.jspecify.annotations.Nullable Long id,\n"
-                    + "        @org.jspecify.annotations.Nullable String notes\n"
+                "    public int updateTaskCompletionNote(\n"
+                    + "        @Nullable Long id,\n"
+                    + "        @Nullable String notes,\n"
+                    + "        @Nullable OffsetDateTime reviewedAt\n"
                     + "    ) {"
             ),
             source
@@ -2982,24 +2983,29 @@ class JavaCodeGeneratorTest {
     }
 
     /**
-     * The one {@code UpdateNotes} query of the two declaration tests, whose
-     * declaration reaches exactly the limit with a parameter named
+     * The one {@code UpdateTaskCompletionNote} query of the two declaration
+     * tests, whose declaration reaches exactly the limit with a parameter named
      * {@code note} and passes it by one column with one named {@code notes}.
      */
     private QueryModel noteQuery(String parameterName) {
         return new QueryModel(
-            "UpdateNotes",
+            "UpdateTaskCompletionNote",
             QueryType.EXEC,
             "tasks",
             """
-                UPDATE tasks SET note = ?
+                UPDATE tasks SET note = ?, reviewed_at = ?
                 WHERE id = ?
                 """,
-            List.of(2, 1),
+            List.of(2, 3, 1),
             List.of(),
             List.of(
                 new QueryParameter(1, "id", ColumnType.BIGINT).asNullable(),
-                new QueryParameter(2, parameterName, ColumnType.VARCHAR).asNullable()
+                new QueryParameter(2, parameterName, ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(
+                    3,
+                    "reviewedAt",
+                    ColumnType.TIMESTAMP_WITH_TIME_ZONE
+                ).asNullable()
             ),
             null
         );
@@ -3035,13 +3041,10 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "        java.util.Objects.requireNonNull(id, "
+                "        Objects.requireNonNull(id, "
                     + "\"Parameter 'id' of query 'GetUser' in UsersRepository must not be null\");\n"
-                    + "        java.util.Objects.requireNonNull(\n"
-                    + "                live,\n"
-                    + "                \"Parameter 'live' of query 'GetUser' in UsersRepository"
-                    + " must not be null\"\n"
-                    + "        );\n"
+                    + "        Objects.requireNonNull(live, "
+                    + "\"Parameter 'live' of query 'GetUser' in UsersRepository must not be null\");\n"
                     + "\n"
                     + "        return executor.queryOne("
             ),
@@ -3069,11 +3072,9 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "    public int deleteUser(Long id) {\n"
-                    + "        java.util.Objects.requireNonNull(\n"
-                    + "                id,\n"
-                    + "                \"Parameter 'id' of query 'DeleteUser' in UsersRepository"
-                    + " must not be null\"\n"
-                    + "        );\n"
+                    + "        Objects.requireNonNull(id, "
+                    + "\"Parameter 'id' of query 'DeleteUser' in UsersRepository"
+                    + " must not be null\");\n"
                     + "\n"
                     + "        return executor.execute("
             ),
@@ -3104,7 +3105,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "    public List<FilterUsersResult> filterUsers("
-                    + "@org.jspecify.annotations.Nullable String name) {\n"
+                    + "@Nullable String name) {\n"
                     + "        return executor.queryMany("
             ),
             source
@@ -3132,7 +3133,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "        java.util.Objects.requireNonNull(\n"
+                "        Objects.requireNonNull(\n"
                     + "                windowId,\n"
                     + "                \"Parameter 'windowId' of query "
                     + "'DeleteScheduledMaintenanceWindow' in UsersRepository must not be null\"\n"
@@ -3169,15 +3170,12 @@ class JavaCodeGeneratorTest {
                 """
                         public record InsertUsersParams(
                             Long id,
-                            @org.jspecify.annotations.Nullable String bio
+                            @Nullable String bio
                         ) {
 
                             public InsertUsersParams {
-                                java.util.Objects.requireNonNull(
-                                        id,
-                                        "Parameter 'id' of query 'InsertUsers' in UsersRepository \
-                    must not be null"
-                                );
+                                Objects.requireNonNull(id, \
+                    "Parameter 'id' of query 'InsertUsers' in UsersRepository must not be null");
                             }
                         }
                     """
@@ -3206,7 +3204,7 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         public record InsertUsersParams(
-                            @org.jspecify.annotations.Nullable String bio
+                            @Nullable String bio
                         ) {
                         }
                     """
@@ -3242,7 +3240,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "countUsers(Long id, @org.jspecify.annotations.Nullable String name) {\n"
+                "countUsers(Long id, @Nullable String name) {\n"
                     + "        throw new UnsupportedOperationException(\"Not implemented\");"
             ),
             source
@@ -3285,22 +3283,22 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertTrue(
-            source.contains("new org.sqlcj.runtime.UntypedText(setting.label())"),
+            source.contains("new UntypedText(setting.label())"),
             source
         );
         assertTrue(
             source.contains(
-                "new org.sqlcj.runtime.UntypedText(state == null ? null : state.label())"
+                "new UntypedText(state == null ? null : state.label())"
             ),
             source
         );
         assertTrue(
-            source.contains("new org.sqlcj.runtime.UntypedText(span.format())"),
+            source.contains("new UntypedText(span.format())"),
             source
         );
         assertTrue(
             source.contains(
-                "new org.sqlcj.runtime.UntypedText(pause == null ? null : pause.format())"
+                "new UntypedText(pause == null ? null : pause.format())"
             ),
             source
         );
@@ -3333,7 +3331,7 @@ class JavaCodeGeneratorTest {
         );
 
         assertTrue(
-            nonNull.content().contains("java.util.Arrays.<Object>asList(id, name)"),
+            nonNull.content().contains("Arrays.<Object>asList(id, name)"),
             nonNull.content()
         );
 
@@ -3350,7 +3348,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             nullable.content().contains(
-                "java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(id, name)"
+                "Arrays.<@Nullable Object>asList(id, name)"
             ),
             nullable.content()
         );
@@ -3387,11 +3385,11 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "    public int insertTask(\n"
-                    + "        @org.jspecify.annotations.Nullable Long projectId,\n"
-                    + "        @org.jspecify.annotations.Nullable String title,\n"
-                    + "        @org.jspecify.annotations.Nullable String metadata,\n"
-                    + "        @org.jspecify.annotations.Nullable List<"
-                    + "@org.jspecify.annotations.Nullable String> tags\n"
+                    + "        @Nullable Long projectId,\n"
+                    + "        @Nullable String title,\n"
+                    + "        @Nullable String metadata,\n"
+                    + "        @Nullable List<"
+                    + "@Nullable String> tags\n"
                     + "    ) {\n"
                     + "        return executor.execute(\n"
                     + "                \"UsersRepository\",\n"
@@ -3400,11 +3398,11 @@ class JavaCodeGeneratorTest {
                     + "                INSERT INTO tasks (project_id, title, metadata, tags)\n"
                     + "                VALUES (?, ?, ?, ?)\n"
                     + "                \"\"\",\n"
-                    + "                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
+                    + "                Arrays.<@Nullable Object>asList(\n"
                     + "                        projectId,\n"
                     + "                        title,\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
-                    + "                        new org.sqlcj.runtime.SqlArray(\"varchar\", tags)\n"
+                    + "                        new UntypedText(metadata),\n"
+                    + "                        new SqlArray(\"varchar\", tags)\n"
                     + "                )\n"
                     + "        );\n"
                     + "    }"
@@ -3446,11 +3444,11 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "    public FindTaskResult findTask(\n"
-                    + "        @org.jspecify.annotations.Nullable Long projectId,\n"
-                    + "        @org.jspecify.annotations.Nullable String title,\n"
-                    + "        @org.jspecify.annotations.Nullable String metadata,\n"
-                    + "        @org.jspecify.annotations.Nullable List<"
-                    + "@org.jspecify.annotations.Nullable String> tags\n"
+                    + "        @Nullable Long projectId,\n"
+                    + "        @Nullable String title,\n"
+                    + "        @Nullable String metadata,\n"
+                    + "        @Nullable List<"
+                    + "@Nullable String> tags\n"
                     + "    ) {\n"
                     + "        return executor.queryOne(\n"
                     + "                \"UsersRepository\",\n"
@@ -3463,11 +3461,11 @@ class JavaCodeGeneratorTest {
                     + "                  AND metadata = ?\n"
                     + "                  AND tags = ?\n"
                     + "                \"\"\",\n"
-                    + "                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
+                    + "                Arrays.<@Nullable Object>asList(\n"
                     + "                        projectId,\n"
                     + "                        title,\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(metadata),\n"
-                    + "                        new org.sqlcj.runtime.SqlArray(\"varchar\", tags)\n"
+                    + "                        new UntypedText(metadata),\n"
+                    + "                        new SqlArray(\"varchar\", tags)\n"
                     + "                ),\n"
                     + "                findTaskRowMapper\n"
                     + "        );\n"
@@ -3529,7 +3527,7 @@ class JavaCodeGeneratorTest {
                     + "                INSERT INTO assignments (window_id, assignee_id, starts_at)\n"
                     + "                VALUES (?, ?, ?)\n"
                     + "                \"\"\",\n"
-                    + "                batch.stream().map(params -> java.util.Arrays.<Object>asList(\n"
+                    + "                batch.stream().map(params -> Arrays.<Object>asList(\n"
                     + "                        params.windowId(),\n"
                     + "                        params.assigneeId(),\n"
                     + "                        params.startsAt()\n"
@@ -3557,15 +3555,15 @@ class JavaCodeGeneratorTest {
                 "tasks",
                 """
                     DELETE FROM tasks
-                    WHERE scheduled_at = ANY(?)
+                    WHERE duration = ANY(?)
                     """,
                 List.of(1),
                 List.of(),
                 List.of(
                     new QueryParameter(
                         1,
-                        "scheduledCompletionTimestamps",
-                        ColumnType.TIMESTAMP_WITH_TIME_ZONE,
+                        "scheduledMaintenanceWindowDurations",
+                        ColumnType.INTERVAL,
                         null,
                         true
                     ).asNullable()
@@ -3578,21 +3576,19 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "    public int deleteTasksScheduledAt(\n"
-                    + "        @org.jspecify.annotations.Nullable List<"
-                    + "@org.jspecify.annotations.Nullable OffsetDateTime> "
-                    + "scheduledCompletionTimestamps\n"
-                    + "    ) {\n"
+                "    public int deleteTasksScheduledAt("
+                    + "@Nullable List<@Nullable SqlInterval> "
+                    + "scheduledMaintenanceWindowDurations) {\n"
                     + "        return executor.execute(\n"
                     + "                \"UsersRepository\",\n"
                     + "                \"DeleteTasksScheduledAt\",\n"
                     + "                \"\"\"\n"
                     + "                DELETE FROM tasks\n"
-                    + "                WHERE scheduled_at = ANY(?)\n"
+                    + "                WHERE duration = ANY(?)\n"
                     + "                \"\"\",\n"
-                    + "                java.util.Collections.singletonList(\n"
-                    + "                        new org.sqlcj.runtime.SqlArray("
-                    + "\"timestamptz\", scheduledCompletionTimestamps)\n"
+                    + "                Collections.singletonList(\n"
+                    + "                        SqlArray.of(\"interval\", "
+                    + "scheduledMaintenanceWindowDurations, SqlInterval::format)\n"
                     + "                )\n"
                     + "        );\n"
                     + "    }"
@@ -3631,7 +3627,7 @@ class JavaCodeGeneratorTest {
             source.contains(
                 "    private static final RowMapper<String> "
                     + "listEveryProjectAndTaskTitleRowMapper =\n"
-                    + "            resultSet -> org.sqlcj.runtime.NotNullColumn"
+                    + "            resultSet -> NotNullColumn"
                     + ".getObject(resultSet, 1, String.class);"
             ),
             source
@@ -3669,7 +3665,7 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         public record InsertUserParams(
-                            @org.jspecify.annotations.Nullable String hashCode1
+                            @Nullable String hashCode1
                         ) {
                         }
                     """
@@ -3679,7 +3675,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "batch.stream().map(params -> java.util.Collections.singletonList("
+                "batch.stream().map(params -> Collections.singletonList("
                     + "params.hashCode1())).toList()"
             )
         );
@@ -4008,6 +4004,9 @@ class JavaCodeGeneratorTest {
 
                 package generated.rows;
 
+                import org.jspecify.annotations.NullMarked;
+                import org.jspecify.annotations.Nullable;
+
                 import java.time.LocalDateTime;
 
                 /**
@@ -4015,11 +4014,11 @@ class JavaCodeGeneratorTest {
                  *
                  * <p>Table: users
                  */
-                @org.jspecify.annotations.NullMarked
+                @NullMarked
                 public record UsersRow(
                     Long id,
-                    @org.jspecify.annotations.Nullable String name,
-                    @org.jspecify.annotations.Nullable LocalDateTime createdAt
+                    @Nullable String name,
+                    @Nullable LocalDateTime createdAt
                 ) {
                 }
                 """,
@@ -4062,7 +4061,7 @@ class JavaCodeGeneratorTest {
             source.contains("public Optional<FindUserResult> findUser(Long id)")
         );
         assertTrue(source.contains("return executor.queryOptional("));
-        assertTrue(source.contains("java.util.Collections.singletonList(id)"));
+        assertTrue(source.contains("Collections.singletonList(id)"));
         assertTrue(source.contains("Type: OPTIONAL"));
 
         assertFalse(source.contains("return executor.queryOne("));
@@ -4314,7 +4313,7 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         public List<Long> listUsers(Long id) {
-                            java.util.Objects.requireNonNull(id, \
+                            Objects.requireNonNull(id, \
                     "Parameter 'id' of query 'ListUsers' in UsersRepository must not be null");
 
                             return executor.queryMany(
@@ -4325,7 +4324,7 @@ class JavaCodeGeneratorTest {
                                     FROM users
 
                                     WHERE id = ?\""",
-                                    java.util.Collections.singletonList(id),
+                                    Collections.singletonList(id),
                                     listUsersRowMapper
                             );
                         }
@@ -4338,10 +4337,8 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         public int deleteUser(Long id) {
-                            java.util.Objects.requireNonNull(
-                                    id,
-                                    "Parameter 'id' of query 'DeleteUser' in UsersRepository must not be null"
-                            );
+                            Objects.requireNonNull(id, \
+                    "Parameter 'id' of query 'DeleteUser' in UsersRepository must not be null");
 
                             return executor.execute(
                                     "UsersRepository",
@@ -4349,7 +4346,7 @@ class JavaCodeGeneratorTest {
                                     \"""
                                     DELETE FROM users
                                     WHERE id = ?\""",
-                                    java.util.Collections.singletonList(id)
+                                    Collections.singletonList(id)
                             );
                         }
                     """
@@ -4368,7 +4365,7 @@ class JavaCodeGeneratorTest {
                                 INSERT INTO users (name)
                                 VALUES (?)\""",
                                 batch.stream().map(params -> \
-                    java.util.Collections.singletonList(params.name())).toList()
+                    Collections.singletonList(params.name())).toList()
                         );
                     }
                     """
@@ -4408,8 +4405,8 @@ class JavaCodeGeneratorTest {
                 """
                      * <p>Repository: Users
                      */
-                    @org.sqlcj.runtime.GeneratedRepository
-                    @org.jspecify.annotations.NullMarked
+                    @GeneratedRepository
+                    @NullMarked
                     public final class UsersRepository {
                     """
             ),
@@ -4421,7 +4418,7 @@ class JavaCodeGeneratorTest {
                 """
                      * <p>Table: users
                      */
-                    @org.jspecify.annotations.NullMarked
+                    @NullMarked
                     public record UsersRow(
                     """
             ),
@@ -4433,7 +4430,7 @@ class JavaCodeGeneratorTest {
                 """
                      * <p>Enum: stage_setting
                      */
-                    @org.jspecify.annotations.NullMarked
+                    @NullMarked
                     public enum StageSetting {
                     """
             ),
@@ -4444,9 +4441,10 @@ class JavaCodeGeneratorTest {
     }
 
     /**
-     * Every repository carries the runtime's marker, written in full directly
-     * above its declaration, so the repository's import list is unchanged. A
-     * row record and a generated enum are no repositories and carry none.
+     * Every repository carries the runtime's marker directly above its
+     * declaration, imported by its simple name beside every other type the
+     * file names, in two groups separated by one blank line. A row record and
+     * a generated enum are no repositories and carry none.
      */
     @Test
     void shouldMarkEveryRepositoryWithTheRuntimeMarker() throws IOException {
@@ -4468,8 +4466,8 @@ class JavaCodeGeneratorTest {
                 """
                      * <p>Repository: Users
                      */
-                    @org.sqlcj.runtime.GeneratedRepository
-                    @org.jspecify.annotations.NullMarked
+                    @GeneratedRepository
+                    @NullMarked
                     public final class UsersRepository {
                     """
             ),
@@ -4478,11 +4476,17 @@ class JavaCodeGeneratorTest {
 
         assertEquals(
             List.of(
+                "import generated.enums.StageSetting;",
+                "import generated.rows.UsersRow;",
+                "import org.jspecify.annotations.NullMarked;",
+                "import org.jspecify.annotations.Nullable;",
+                "import org.sqlcj.runtime.GeneratedRepository;",
+                "import org.sqlcj.runtime.NotNullColumn;",
                 "import org.sqlcj.runtime.QueryExecutor;",
                 "import org.sqlcj.runtime.RowMapper;",
-                "import java.util.List;",
-                "import generated.enums.StageSetting;",
-                "import generated.rows.UsersRow;"
+                "import org.sqlcj.runtime.UntypedText;",
+                "import java.util.Collections;",
+                "import java.util.Objects;"
             ),
             source.lines()
                 .filter(line -> line.startsWith("import "))
@@ -4520,8 +4524,8 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 """
-                    @org.sqlcj.runtime.GeneratedRepository
-                    @org.jspecify.annotations.NullMarked
+                    @GeneratedRepository
+                    @NullMarked
                     public final class UsersRepository {
                     """
             ),
@@ -4531,7 +4535,7 @@ class JavaCodeGeneratorTest {
         assertEquals(
             1,
             source.lines()
-                .filter(line -> line.contains("@org.jspecify.annotations.NullMarked"))
+                .filter(line -> line.contains("@NullMarked"))
                 .count(),
             source
         );
@@ -4539,7 +4543,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             row.content().contains(
                 """
-                    @org.jspecify.annotations.NullMarked
+                    @NullMarked
                     public record UsersRow(
                     """
             ),
@@ -4549,7 +4553,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             generatedEnum.content().contains(
                 """
-                    @org.jspecify.annotations.NullMarked
+                    @NullMarked
                     public enum StageSetting {
                     """
             ),
@@ -4598,14 +4602,14 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertEquals(
-            List.of("byte @org.jspecify.annotations.Nullable [] payload", "byte[] checksum"),
+            List.of("byte @Nullable [] payload", "byte[] checksum"),
             recordComponents(source, "ListPayloadsResult")
         );
 
         assertTrue(
             source.contains(
                 "public List<ListPayloadsResult> listPayloads("
-                    + "byte @org.jspecify.annotations.Nullable [] payload)"
+                    + "byte @Nullable [] payload)"
             ),
             source
         );
@@ -4670,9 +4674,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             generatedEnum.content().contains(
-                "    public static @org.jspecify.annotations.Nullable StageSetting fromLabel(\n"
-                    + "        @org.jspecify.annotations.Nullable String label\n"
-                    + "    ) {"
+                "    public static @Nullable StageSetting fromLabel(@Nullable String label) {"
             ),
             generatedEnum.content()
         );
@@ -5005,12 +5007,12 @@ class JavaCodeGeneratorTest {
                     private static final RowMapper<ListUserProfilesResult> listUserProfilesRowMapper =
                             resultSet -> new ListUserProfilesResult(
                                     new UsersRow(
-                                            org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
+                                            NotNullColumn.getObject(resultSet, 1, Long.class),
                                             resultSet.getObject(2, String.class)
                                     ),
                                     new ProfilesRow(
-                                            org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 3, Long.class),
-                                            org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 4, Long.class),
+                                            NotNullColumn.getObject(resultSet, 3, Long.class),
+                                            NotNullColumn.getObject(resultSet, 4, Long.class),
                                             resultSet.getObject(5, String.class)
                                     )
                             );
@@ -5064,7 +5066,7 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertEquals(
-            List.of("UsersRow u", "@org.jspecify.annotations.Nullable ProfilesRow p"),
+            List.of("UsersRow u", "@Nullable ProfilesRow p"),
             recordComponents(source, "ListUserProfilesResult")
         );
 
@@ -5074,14 +5076,14 @@ class JavaCodeGeneratorTest {
                     private static final RowMapper<ListUserProfilesResult> listUserProfilesRowMapper =
                             resultSet -> new ListUserProfilesResult(
                                     new UsersRow(
-                                            org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
+                                            NotNullColumn.getObject(resultSet, 1, Long.class),
                                             resultSet.getObject(2, String.class)
                                     ),
-                                    org.sqlcj.runtime.SqlRow.isNull(resultSet, 3, 5)
+                                    SqlRow.isNull(resultSet, 3, 5)
                                         ? null
                                         : new ProfilesRow(
-                                                org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 3, Long.class),
-                                                org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 4, Long.class),
+                                                NotNullColumn.getObject(resultSet, 3, Long.class),
+                                                NotNullColumn.getObject(resultSet, 4, Long.class),
                                                 resultSet.getObject(5, String.class)
                                         )
                             );
@@ -5136,7 +5138,7 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertEquals(
-            List.of("@org.jspecify.annotations.Nullable ProfilesRow p"),
+            List.of("@Nullable ProfilesRow p"),
             recordComponents(source, "ListProfilesResult")
         );
 
@@ -5145,11 +5147,11 @@ class JavaCodeGeneratorTest {
                 """
                     private static final RowMapper<ListProfilesResult> listProfilesRowMapper =
                             resultSet -> new ListProfilesResult(
-                                    org.sqlcj.runtime.SqlRow.isNull(resultSet, 1, 3)
+                                    SqlRow.isNull(resultSet, 1, 3)
                                         ? null
                                         : new ProfilesRow(
-                                                org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
-                                                org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, Long.class),
+                                                NotNullColumn.getObject(resultSet, 1, Long.class),
+                                                NotNullColumn.getObject(resultSet, 2, Long.class),
                                                 resultSet.getObject(3, String.class)
                                         )
                             );
@@ -5218,7 +5220,7 @@ class JavaCodeGeneratorTest {
         assertTrue(source.contains("StageSetting.fromLabel(resultSet.getString(2))"));
         assertTrue(source.contains("resultSet.getObject(3, LocalDateTime.class)"));
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 4, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 4, Long.class)")
         );
 
         assertFalse(source.contains("RowMapper<StagesRow>"));
@@ -5490,7 +5492,7 @@ class JavaCodeGeneratorTest {
 
     /**
      * An enum column and an enum parameter use the Java enum the package
-     * generates for their enum type, by its simple name and without an import:
+     * generates for their enum type, by the simple name it imports:
      * the parameter is bound as the label of its constant, wrapped so that
      * PostgreSQL types it from the context of its placeholder, and the column
      * is read from its label at every binding position of its index.
@@ -5532,19 +5534,17 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "    public FindStageResult findStage(\n"
-                    + "        @org.jspecify.annotations.Nullable StageSetting setting,\n"
-                    + "        @org.jspecify.annotations.Nullable String handle\n"
-                    + "    ) {"
+                "    public FindStageResult findStage("
+                    + "@Nullable StageSetting setting, @Nullable String handle) {"
             )
         );
 
         assertTrue(
             source.contains(
-                "                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(\n"
+                "                Arrays.<@Nullable Object>asList(\n"
                     + "                        handle,\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(setting == null ? null : setting.label()),\n"
-                    + "                        new org.sqlcj.runtime.UntypedText(setting == null ? null : setting.label())\n"
+                    + "                        new UntypedText(setting == null ? null : setting.label()),\n"
+                    + "                        new UntypedText(setting == null ? null : setting.label())\n"
                     + "                ),"
             )
         );
@@ -5552,7 +5552,7 @@ class JavaCodeGeneratorTest {
         assertTrue(source.contains("StageSetting setting"));
         assertTrue(source.contains("StageSetting.fromLabel(resultSet.getString(2))"));
         assertTrue(
-            source.contains("org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class)")
+            source.contains("NotNullColumn.getObject(resultSet, 1, Long.class)")
         );
         assertTrue(source.contains("resultSet.getObject(3, String.class)"));
 
@@ -5851,9 +5851,9 @@ class JavaCodeGeneratorTest {
     /**
      * An array column and an array parameter are a {@code List} of the
      * element's Java type. The parameter is wrapped in
-     * {@code org.sqlcj.runtime.SqlArray} with the element type's PostgreSQL
-     * name, written out in full so that the generated imports are unchanged,
-     * and the column is read through the same type.
+     * {@code SqlArray} with the element type's PostgreSQL
+     * name, imported by its simple name, and the column is read through the
+     * same type.
      */
     @ParameterizedTest
     @CsvSource(
@@ -5899,15 +5899,13 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                ("    public FindStageResult findStage(\n"
-                    + "        @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable %s> values\n"
-                    + "    ) {")
+                "    public FindStageResult findStage(@Nullable List<@Nullable %s> values) {"
                     .formatted(javaType)
             )
         );
         assertEquals(
             List.of(
-                "@org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable %s> values"
+                "@Nullable List<@Nullable %s> values"
                     .formatted(javaType)
             ),
             recordComponents(source, "FindStageResult")
@@ -5915,18 +5913,18 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "java.util.Collections.singletonList(new org.sqlcj.runtime.SqlArray(\"%s\", values))"
+                "Collections.singletonList(new SqlArray(\"%s\", values))"
                     .formatted(elementTypeName)
             )
         );
 
         assertTrue(
             source.contains(
-                "org.sqlcj.runtime.SqlArray.getList(resultSet, 1, %s.class)".formatted(javaType)
+                "SqlArray.getList(resultSet, 1, %s.class)".formatted(javaType)
             )
         );
 
-        assertFalse(source.contains("import org.sqlcj.runtime.SqlArray;"));
+        assertTrue(source.contains("import org.sqlcj.runtime.SqlArray;"));
     }
 
     /**
@@ -5964,21 +5962,20 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "    public FindStageResult findStage(\n"
-                    + "        @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> marks\n"
-                    + "    ) {"
+                "    public FindStageResult findStage("
+                    + "@Nullable List<@Nullable String> marks) {"
             )
         );
 
         assertTrue(
             source.contains(
-                "java.util.Collections.singletonList(new org.sqlcj.runtime.SqlArray(\"%s\", marks))"
+                "Collections.singletonList(new SqlArray(\"%s\", marks))"
                     .formatted(elementTypeName)
             )
         );
 
         assertTrue(
-            source.contains("org.sqlcj.runtime.SqlArray.getList(resultSet, 1, String.class)")
+            source.contains("SqlArray.getList(resultSet, 1, String.class)")
         );
     }
 
@@ -6022,24 +6019,23 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             source.contains(
-                "    public FindStageResult findStage(\n"
-                    + "        @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable StageSetting> pastSettings\n"
-                    + "    ) {"
+                "    public FindStageResult findStage("
+                    + "@Nullable List<@Nullable StageSetting> pastSettings) {"
             )
         );
 
         assertTrue(
             source.contains(
-                "                java.util.Arrays.<Object>asList(\n"
-                    + "                        org.sqlcj.runtime.SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label),\n"
-                    + "                        org.sqlcj.runtime.SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label)\n"
+                "                Arrays.<Object>asList(\n"
+                    + "                        SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label),\n"
+                    + "                        SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label)\n"
                     + "                ),"
             )
         );
 
         assertTrue(
             source.contains(
-                "org.sqlcj.runtime.SqlArray.getList(resultSet, 2, String.class, StageSetting::fromLabel)"
+                "SqlArray.getList(resultSet, 2, String.class, StageSetting::fromLabel)"
             )
         );
 
@@ -6082,6 +6078,9 @@ class JavaCodeGeneratorTest {
 
                 package generated.rows;
 
+                import org.jspecify.annotations.NullMarked;
+                import org.jspecify.annotations.Nullable;
+
                 import java.time.LocalDate;
                 import java.util.List;
 
@@ -6090,11 +6089,11 @@ class JavaCodeGeneratorTest {
                  *
                  * <p>Table: stages
                  */
-                @org.jspecify.annotations.NullMarked
+                @NullMarked
                 public record StagesRow(
-                    @org.jspecify.annotations.Nullable LocalDate openedOn,
-                    @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable String> tags,
-                    @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable LocalDate> closedOn
+                    @Nullable LocalDate openedOn,
+                    @Nullable List<@Nullable String> tags,
+                    @Nullable List<@Nullable LocalDate> closedOn
                 ) {
                 }
                 """,
@@ -6109,9 +6108,9 @@ class JavaCodeGeneratorTest {
      * package, and a repository names every generated type it uses by its
      * simple name, imported from the subpackage that holds it: the row record
      * one query returns whole, the row record another embeds, and the enum its
-     * columns read and its parameters bind. The generated imports follow the
-     * runtime and JDK imports of the same block, sorted by fully qualified
-     * name.
+     * columns read and its parameters bind. Every import outside {@code java.}
+     * comes first, sorted by qualified name, then the {@code java.} imports,
+     * separated from them by one blank line.
      */
     @Test
     void shouldImportTheRowsAndEnumsOneRepositoryNames() throws IOException {
@@ -6134,12 +6133,19 @@ class JavaCodeGeneratorTest {
 
                 package generated.repositories;
 
-                import org.sqlcj.runtime.QueryExecutor;
-                import org.sqlcj.runtime.RowMapper;
-                import java.util.List;
                 import generated.enums.StageSetting;
                 import generated.rows.StagesRow;
                 import generated.rows.UsersRow;
+                import org.jspecify.annotations.NullMarked;
+                import org.sqlcj.runtime.GeneratedRepository;
+                import org.sqlcj.runtime.NotNullColumn;
+                import org.sqlcj.runtime.QueryExecutor;
+                import org.sqlcj.runtime.RowMapper;
+                import org.sqlcj.runtime.UntypedText;
+
+                import java.util.Collections;
+                import java.util.List;
+                import java.util.Objects;
 
                 """,
             prologue(repository.content())
@@ -6185,11 +6191,16 @@ class JavaCodeGeneratorTest {
 
                 package generated.repositories;
 
-                import org.sqlcj.runtime.QueryExecutor;
-                import org.sqlcj.runtime.RowMapper;
-                import java.util.List;
                 import generated.enums.StageSetting;
                 import generated.rows.StagesRow;
+                import org.jspecify.annotations.NullMarked;
+                import org.sqlcj.runtime.GeneratedRepository;
+                import org.sqlcj.runtime.NotNullColumn;
+                import org.sqlcj.runtime.QueryExecutor;
+                import org.sqlcj.runtime.RowMapper;
+
+                import java.util.Collections;
+                import java.util.List;
 
                 """,
             prologue(repository.content())
@@ -6240,18 +6251,21 @@ class JavaCodeGeneratorTest {
 
                 package generated.rows;
 
-                import java.util.List;
                 import generated.enums.StageSetting;
+                import org.jspecify.annotations.NullMarked;
+                import org.jspecify.annotations.Nullable;
+
+                import java.util.List;
 
                 /**
                  * Generated by sqlcj.
                  *
                  * <p>Table: stages
                  */
-                @org.jspecify.annotations.NullMarked
+                @NullMarked
                 public record StagesRow(
-                    @org.jspecify.annotations.Nullable StageSetting setting,
-                    @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable StageSetting> pastSettings
+                    @Nullable StageSetting setting,
+                    @Nullable List<@Nullable StageSetting> pastSettings
                 ) {
                 }
                 """,
@@ -6262,8 +6276,8 @@ class JavaCodeGeneratorTest {
     }
 
     /**
-     * A repository that names no generated type keeps the runtime and JDK
-     * imports it had before the output was split and gains none.
+     * A repository that names no generated type imports the runtime, JSpecify,
+     * and JDK types it names and no generated type at all.
      */
     @Test
     void shouldImportNoGeneratedTypeForARepositoryNamingNone() throws IOException {
@@ -6294,8 +6308,14 @@ class JavaCodeGeneratorTest {
 
                 package generated.repositories;
 
+                import org.jspecify.annotations.NullMarked;
+                import org.jspecify.annotations.Nullable;
+                import org.sqlcj.runtime.GeneratedRepository;
+                import org.sqlcj.runtime.NotNullColumn;
                 import org.sqlcj.runtime.QueryExecutor;
                 import org.sqlcj.runtime.RowMapper;
+
+                import java.util.Collections;
                 import java.util.List;
 
                 """,
@@ -6306,6 +6326,358 @@ class JavaCodeGeneratorTest {
         assertEquals(List.of(), codeGenerator.generateEnums());
 
         assertCompiles(repository);
+    }
+
+    /**
+     * A generated enum named like a JDK type the same file names keeps its
+     * simple name, and the JDK type is written fully qualified in that file
+     * alone: the repository's {@code Optional} return type, its
+     * {@code Objects.requireNonNull} check, and the row record's
+     * {@code BigDecimal} component, with the nullable annotation before the
+     * simple-name segment. Every file compiles.
+     */
+    @Test
+    void shouldQualifyAJdkTypeAnEnumOfTheSameSimpleNameTakes() throws IOException {
+        QueryModel findReading = new QueryModel(
+            "FindReading",
+            QueryType.OPTIONAL,
+            "readings",
+            "SELECT id, total, scale, slot, bucket FROM readings WHERE id = ?",
+            List.of(1),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("total", ColumnType.DECIMAL, true),
+                new QueryColumn("scale", ColumnType.ENUM, true, "big_decimal"),
+                new QueryColumn("slot", ColumnType.ENUM, true, "optional"),
+                new QueryColumn("bucket", ColumnType.ENUM, false, "objects")
+            ),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            "readings"
+        );
+
+        GeneratedFile repository = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(findReading),
+                List.of(
+                    new EnumType("big_decimal", List.of("small")),
+                    new EnumType("optional", List.of("maybe")),
+                    new EnumType("objects", List.of("many"))
+                )
+            )
+        );
+
+        String source = repository.content();
+
+        assertTrue(
+            source.contains("public java.util.Optional<ReadingsRow> findReading(Long id) {"),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                "        java.util.Objects.requireNonNull(\n"
+                    + "                id,\n"
+                    + "                \"Parameter 'id' of query 'FindReading' in UsersRepository"
+                    + " must not be null\"\n"
+                    + "        );"
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains("resultSet.getObject(2, java.math.BigDecimal.class)"),
+            source
+        );
+
+        assertEquals(
+            List.of(
+                "import generated.enums.BigDecimal;",
+                "import generated.enums.Objects;",
+                "import generated.enums.Optional;",
+                "import generated.rows.ReadingsRow;",
+                "import org.jspecify.annotations.NullMarked;",
+                "import org.sqlcj.runtime.GeneratedRepository;",
+                "import org.sqlcj.runtime.NotNullColumn;",
+                "import org.sqlcj.runtime.QueryExecutor;",
+                "import org.sqlcj.runtime.RowMapper;",
+                "import java.util.Collections;"
+            ),
+            source.lines()
+                .filter(line -> line.startsWith("import "))
+                .toList()
+        );
+
+        GeneratedFile row = codeGenerator.generateRows().get(0);
+
+        assertEquals(
+            List.of(
+                "Long id",
+                "java.math.@Nullable BigDecimal total",
+                "@Nullable BigDecimal scale",
+                "@Nullable Optional slot",
+                "Objects bucket"
+            ),
+            recordComponents(row.content(), "ReadingsRow")
+        );
+
+        List<GeneratedFile> enums = codeGenerator.generateEnums();
+
+        assertEquals(3, enums.size());
+
+        List<GeneratedFile> files = new ArrayList<>();
+
+        files.add(repository);
+        files.add(row);
+        files.addAll(enums);
+
+        assertCompiles(files.toArray(new GeneratedFile[0]));
+    }
+
+    /**
+     * A generated enum named {@code Nullable} or {@code NullMarked} keeps its
+     * simple name, and the JSpecify annotation of the same simple name is
+     * written fully qualified in every file that declares or names that enum.
+     * A file that neither declares nor names it imports the annotation by its
+     * simple name, which shadows the enum of that name in its own package.
+     */
+    @Test
+    void shouldQualifyAJSpecifyAnnotationAnEnumOfTheSameSimpleNameTakes() throws IOException {
+        QueryModel getFlag = new QueryModel(
+            "GetFlag",
+            QueryType.ONE,
+            "flags",
+            "SELECT state, mark FROM flags WHERE state = ?",
+            List.of(1),
+            List.of(
+                new QueryColumn("state", ColumnType.ENUM, true, "nullable"),
+                new QueryColumn("mark", ColumnType.ENUM, false, "null_marked")
+            ),
+            List.of(new QueryParameter(1, "state", ColumnType.ENUM, "nullable")),
+            "flags"
+        );
+
+        GeneratedFile repository = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(getFlag),
+                List.of(
+                    new EnumType("nullable", List.of("maybe")),
+                    new EnumType("null_marked", List.of("marked"))
+                )
+            )
+        );
+
+        GeneratedFile row = codeGenerator.generateRows().get(0);
+        List<GeneratedFile> enums = codeGenerator.generateEnums();
+
+        assertEquals(
+            List.of(
+                "@org.jspecify.annotations.Nullable Nullable state",
+                "NullMarked mark"
+            ),
+            recordComponents(row.content(), "FlagsRow")
+        );
+
+        assertTrue(
+            enums.get(0).content().contains("@NullMarked\npublic enum Nullable {"),
+            enums.get(0).content()
+        );
+
+        assertTrue(
+            enums.get(0).content().contains(
+                "    public static @org.jspecify.annotations.Nullable Nullable fromLabel(\n"
+                    + "        @org.jspecify.annotations.Nullable String label\n"
+                    + "    ) {"
+            ),
+            enums.get(0).content()
+        );
+
+        assertTrue(
+            enums.get(1).content().contains(
+                "@org.jspecify.annotations.NullMarked\npublic enum NullMarked {"
+            ),
+            enums.get(1).content()
+        );
+
+        assertTrue(
+            enums.get(1).content().contains(
+                "    public static @Nullable NullMarked fromLabel(@Nullable String label) {"
+            ),
+            enums.get(1).content()
+        );
+
+        List<GeneratedFile> files = new ArrayList<>();
+
+        files.add(repository);
+        files.add(row);
+        files.addAll(enums);
+
+        assertCompiles(files.toArray(new GeneratedFile[0]));
+    }
+
+    /**
+     * A generated enum named {@code String} is declared in the package every
+     * other generated enum belongs to, which shadows {@code java.lang.String}
+     * there because {@code java.lang} is never imported, so each of them writes
+     * its label type in full. A row record and a repository that name the enum
+     * write their own text components in full for the same reason.
+     */
+    @Test
+    void shouldQualifyJavaLangStringBesideAGeneratedEnumOfThatName() throws IOException {
+        QueryModel getStage = new QueryModel(
+            "GetStage",
+            QueryType.ONE,
+            "stages",
+            "SELECT handle, kind, setting FROM stages WHERE handle = ?",
+            List.of(1),
+            List.of(
+                new QueryColumn("handle", ColumnType.VARCHAR, true),
+                new QueryColumn("kind", ColumnType.ENUM, true, "string"),
+                new QueryColumn("setting", ColumnType.ENUM, false, "stage_setting")
+            ),
+            List.of(new QueryParameter(1, "handle", ColumnType.VARCHAR)),
+            "stages"
+        );
+
+        GeneratedFile repository = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(getStage),
+                List.of(
+                    new EnumType("string", List.of("text")),
+                    new EnumType("stage_setting", List.of("indoor"))
+                )
+            )
+        );
+
+        GeneratedFile row = codeGenerator.generateRows().get(0);
+        List<GeneratedFile> enums = codeGenerator.generateEnums();
+
+        assertTrue(
+            repository.content().contains("public StagesRow getStage(java.lang.String handle) {"),
+            repository.content()
+        );
+
+        assertEquals(
+            List.of(
+                "java.lang.@Nullable String handle",
+                "@Nullable String kind",
+                "StageSetting setting"
+            ),
+            recordComponents(row.content(), "StagesRow")
+        );
+
+        assertTrue(
+            enums.get(0).content().contains("public enum String {"),
+            enums.get(0).content()
+        );
+
+        assertTrue(
+            enums.get(0).content().contains("    private final java.lang.String label;"),
+            enums.get(0).content()
+        );
+
+        assertTrue(
+            enums.get(0).content().contains("    String(java.lang.String label) {"),
+            enums.get(0).content()
+        );
+
+        assertTrue(
+            enums.get(1).content().contains("    private final java.lang.String label;"),
+            enums.get(1).content()
+        );
+
+        List<GeneratedFile> files = new ArrayList<>();
+
+        files.add(repository);
+        files.add(row);
+        files.addAll(enums);
+
+        assertCompiles(files.toArray(new GeneratedFile[0]));
+    }
+
+    /**
+     * A table named {@code sql} generates the row record {@code SqlRow}, which
+     * takes the simple name of the runtime class a nullable embedded row is
+     * read through, so the repository calls that class in full.
+     */
+    @Test
+    void shouldQualifyTheRuntimeClassARowRecordOfThatNameTakes() throws IOException {
+        QueryModel listSql = new QueryModel(
+            "ListSql",
+            QueryType.MANY,
+            "runs",
+            "SELECT s.*, COUNT(*) AS runs FROM runs LEFT JOIN sql s ON s.id = runs.sql_id",
+            List.of(),
+            List.of(
+                QueryColumn.row(
+                    "s",
+                    true,
+                    "sql",
+                    List.of(
+                        new QueryColumn("id", ColumnType.BIGINT, false),
+                        new QueryColumn("text", ColumnType.TEXT, true)
+                    )
+                ),
+                new QueryColumn("runs", ColumnType.BIGINT, false)
+            ),
+            List.of(),
+            null
+        );
+
+        GeneratedFile repository = codeGenerator.generate(
+            new QueryGroupModel(GROUP, List.of(listSql))
+        );
+
+        String source = repository.content();
+
+        assertTrue(source.contains("import generated.rows.SqlRow;"), source);
+        assertFalse(source.contains("import org.sqlcj.runtime.SqlRow;"), source);
+
+        assertTrue(
+            source.contains("org.sqlcj.runtime.SqlRow.isNull(resultSet, 1, 2)"),
+            source
+        );
+
+        assertEquals(
+            List.of("@Nullable SqlRow s", "Long runs"),
+            recordComponents(source, "ListSqlResult")
+        );
+
+        assertCompiles(repository, codeGenerator.generateRows().get(0));
+    }
+
+    /**
+     * A query group named {@code Generated} declares the repository
+     * {@code GeneratedRepository}, which takes the simple name of the runtime
+     * marker, so the file writes the marker in full and imports it nowhere.
+     */
+    @Test
+    void shouldQualifyTheRepositoryMarkerARepositoryOfThatNameTakes() throws IOException {
+        GeneratedFile repository = codeGenerator.generate(
+            new QueryGroupModel("Generated", List.of(getUsersRow("GetUser")))
+        );
+
+        String source = repository.content();
+
+        assertEquals(
+            Path.of("generated", "repositories", "GeneratedRepository.java"),
+            repository.path()
+        );
+
+        assertTrue(
+            source.contains(
+                "@org.sqlcj.runtime.GeneratedRepository\n"
+                    + "@NullMarked\n"
+                    + "public final class GeneratedRepository {"
+            ),
+            source
+        );
+
+        assertFalse(source.contains("import org.sqlcj.runtime.GeneratedRepository;"), source);
+
+        assertCompiles(repository, codeGenerator.generateRows().get(0));
     }
 
     /**
