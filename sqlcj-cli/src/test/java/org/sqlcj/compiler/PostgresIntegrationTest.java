@@ -3603,6 +3603,95 @@ class PostgresIntegrationTest {
     }
 
     /**
+     * Proves that the JSONB key-existence operators run as written: the
+     * executed statement writes each of them doubled, which the PostgreSQL
+     * driver reads as the operator rather than as a placeholder, so a literal
+     * key, a literal key list, a key list beside another predicate, and a
+     * {@code text[]} list bound from a parameter all select the rows whose
+     * {@code JSONB} column has those keys.
+     */
+    @Test
+    void shouldRunJsonbKeyExistenceOperators() throws Exception {
+        execute(DOCUMENT_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(
+            DOCUMENT_SCHEMA,
+            """
+                -- name: InsertDocument :exec
+                INSERT INTO documents (id, payload, config)
+                VALUES ($1, $2, $3);
+
+                -- name: FindDocumentsWithKey :many
+                SELECT id
+                FROM documents
+                WHERE config ? 'vip'
+                ORDER BY id;
+
+                -- name: FindDocumentsWithAnyKey :many
+                SELECT id
+                FROM documents
+                WHERE config ?| array['a','b']
+                ORDER BY id;
+
+                -- name: FindDocumentsWithAllKeys :many
+                SELECT id
+                FROM documents
+                WHERE config ?& array['a'] AND id = :id
+                ORDER BY id;
+
+                -- name: FindDocumentsByKeys :many
+                SELECT id
+                FROM documents
+                WHERE config ?| :keys
+                ORDER BY id;
+                """
+        );
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Method insertMethod = repository.getClass().getMethod(
+                "insertDocument",
+                Long.class,
+                String.class,
+                String.class
+            );
+
+            insertMethod.invoke(repository, 1L, null, "{\"vip\": true, \"a\": 1}");
+            insertMethod.invoke(repository, 2L, null, "{\"a\": 1, \"b\": 2}");
+            insertMethod.invoke(repository, 3L, null, "{\"c\": 3}");
+
+            assertEquals(
+                List.of(1L),
+                repository.getClass()
+                    .getMethod("findDocumentsWithKey")
+                    .invoke(repository)
+            );
+
+            assertEquals(
+                List.of(1L, 2L),
+                repository.getClass()
+                    .getMethod("findDocumentsWithAnyKey")
+                    .invoke(repository)
+            );
+
+            assertEquals(
+                List.of(2L),
+                repository.getClass()
+                    .getMethod("findDocumentsWithAllKeys", Long.class)
+                    .invoke(repository, 2L)
+            );
+
+            assertEquals(
+                List.of(2L, 3L),
+                repository.getClass()
+                    .getMethod("findDocumentsByKeys", List.class)
+                    .invoke(repository, List.of("b", "c"))
+            );
+        }
+    }
+
+    /**
      * Proves that {@code citext} and the network address types round trip
      * through generated code as their PostgreSQL text: one row is written with
      * a value of every scalar and array column and one with nulls, both are

@@ -13,13 +13,15 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Exercises the token-span handling of {@link SqlParameterCompiler} with
  * fabricated tokens, which is the only way to reach the guards that protect the
- * compiler from a span the parser cannot describe.
+ * compiler from a span the parser cannot describe, and its reading of a real
+ * parse tree through {@link SqlParser}.
  */
 class SqlParameterCompilerTest {
 
@@ -324,11 +326,108 @@ class SqlParameterCompilerTest {
         );
     }
 
+    /**
+     * The JSONB key-existence operators are written doubled, which is the
+     * escape the JDBC driver reads as the operator itself, and the offset
+     * reported for a placeholder written after one accounts for the character
+     * the doubling adds.
+     */
+    @Test
+    void shouldWriteTheJsonKeyExistenceOperatorsDoubled() {
+        SqlParameters key = parameters("SELECT id FROM docs WHERE meta ? 'vip'");
+
+        assertEquals("SELECT id FROM docs WHERE meta ?? 'vip'", key.executableSql());
+        assertFalse(key.hasAnonymousParameter());
+
+        SqlParameters anyKey = parameters("SELECT id FROM docs WHERE meta ?| array['a','b']");
+
+        assertEquals(
+            "SELECT id FROM docs WHERE meta ??| array['a','b']",
+            anyKey.executableSql()
+        );
+
+        SqlParameters allKeys = parameters(
+            "SELECT id FROM docs WHERE meta ?& array['a'] AND n = :n"
+        );
+
+        assertEquals(
+            "SELECT id FROM docs WHERE meta ??& array['a'] AND n = ?",
+            allKeys.executableSql()
+        );
+
+        assertEquals(List.of(54), allKeys.offsets());
+        assertEquals('?', allKeys.executableSql().charAt(54));
+    }
+
+    /**
+     * A placeholder written as the right operand of the operator is replaced
+     * at the position the doubled operator leaves it at.
+     */
+    @Test
+    void shouldReportPlaceholderOffsetsAfterADoubledJsonKeyOperator() {
+        SqlParameters named = parameters("SELECT id FROM docs WHERE meta ? :key");
+
+        assertEquals("SELECT id FROM docs WHERE meta ?? ?", named.executableSql());
+        assertEquals(List.of(34), named.offsets());
+        assertEquals(List.of("key"), named.names());
+
+        SqlParameters indexed = parameters("SELECT id FROM docs WHERE meta ?| $1");
+
+        assertEquals("SELECT id FROM docs WHERE meta ??| ?", indexed.executableSql());
+        assertEquals(List.of(35), indexed.offsets());
+        assertEquals(List.of(1), indexed.indexes());
+    }
+
+    /**
+     * A {@code ?} the source protects is neither the operator nor a
+     * placeholder, so a string literal, a dollar-quoted string, a quoted
+     * identifier, and a comment keep it as written.
+     */
+    @Test
+    void shouldLeaveAProtectedQuestionMarkUnchanged() {
+        assertUnchanged("SELECT id FROM docs WHERE tag = '?'");
+        assertUnchanged("SELECT id FROM docs WHERE tag = $$?$$");
+        assertUnchanged("SELECT id, \"a?b\" FROM docs");
+        assertUnchanged("SELECT id FROM docs WHERE n = 1 -- ?\n");
+        assertUnchanged("SELECT id FROM docs WHERE n = 1 /* ? */");
+    }
+
+    /**
+     * A real anonymous placeholder is still reported where the operator stands
+     * beside it, on either side of the operator.
+     */
+    @Test
+    void shouldReportAnAnonymousParameterBesideAJsonKeyOperator() {
+        SqlParameters right = parameters("SELECT id FROM docs WHERE meta ? ?");
+
+        assertEquals("SELECT id FROM docs WHERE meta ?? ?", right.executableSql());
+        assertTrue(right.hasAnonymousParameter());
+
+        SqlParameters left = parameters("SELECT id FROM docs WHERE ? ? 'a'");
+
+        assertEquals("SELECT id FROM docs WHERE ? ?? 'a'", left.executableSql());
+        assertTrue(left.hasAnonymousParameter());
+    }
+
+    /** Requires that one source compiles to itself and binds nothing. */
+    private void assertUnchanged(String sql) {
+        SqlParameters parameters = parameters(sql);
+
+        assertEquals(sql, parameters.executableSql());
+        assertTrue(parameters.offsets().isEmpty());
+        assertFalse(parameters.hasAnonymousParameter());
+    }
+
     /** Whether the query tests each of its placeholder occurrences for null. */
     private List<Boolean> nullTests(String sql) {
         return new SqlParser().parse(sql).placeholders().stream()
             .map(PlaceholderOccurrence::nullTested)
             .toList();
+    }
+
+    /** The compiled parameters of one source, as the real parser reports it. */
+    private SqlParameters parameters(String sql) {
+        return new SqlParser().parse(sql).parameters();
     }
 
     private SqlParameters compile(String sql, Token... tokens) {

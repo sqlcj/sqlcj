@@ -9,6 +9,7 @@ import net.sf.jsqlparser.expression.JdbcParameter;
 import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
 import net.sf.jsqlparser.expression.operators.relational.IsDistinctExpression;
 import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
+import net.sf.jsqlparser.expression.operators.relational.JsonOperator;
 import net.sf.jsqlparser.expression.operators.relational.ParenthesedExpressionList;
 import net.sf.jsqlparser.parser.CCJSqlParserConstants;
 import net.sf.jsqlparser.parser.Node;
@@ -49,6 +50,13 @@ import java.util.regex.Pattern;
  * the source writes it, and with whether the source tests it for null, which
  * is the syntax-level order in which semantic analysis binds them.
  *
+ * <p>The JSONB key-existence operators {@code ?}, {@code ?|}, and {@code ?&}
+ * are written doubled, as {@code ??}, {@code ??|}, and {@code ??&}, which is
+ * the escape the JDBC driver reads as the operator itself rather than as a
+ * placeholder. A {@code ?} is that operator exactly when the parse tree
+ * reports it as one, so a {@code ?} written anywhere else stays an anonymous
+ * placeholder.
+ *
  * <p>It also reports each wildcard select item of the source with the span the
  * item takes in the compiled SQL, so that the replacements made for the
  * placeholders are already accounted for and a later stage can write the
@@ -80,12 +88,21 @@ final class SqlParameterCompiler {
     private static final String NAME_PREFIX = ":";
 
     /**
-     * The image of an anonymous placeholder token. The parser reports it as a
-     * token of its own, so a {@code ?} inside a string literal, a quoted
-     * identifier, or a comment is not reported here, and the JSON operators
-     * {@code ?|} and {@code ?&} are reported with their own images.
+     * The image of an anonymous placeholder token, which the JSONB
+     * key-existence operator {@code ?} shares. The parser reports the image as
+     * a token of its own, so a {@code ?} inside a string literal, a
+     * dollar-quoted string, a quoted identifier, or a comment is not reported
+     * here, and a token of this image is an anonymous placeholder exactly when
+     * it is not the operator token of a parsed {@code ?} operator.
      */
     private static final String ANONYMOUS_PARAMETER = "?";
+
+    /**
+     * The images of the JSONB key-existence operators the parser reports with
+     * an image of their own, which are the two the {@code ?} image does not
+     * name, so a token of either image is always one of these operators.
+     */
+    private static final List<String> JSON_KEY_OPERATORS = List.of("?|", "?&");
 
     /**
      * The clause keywords whose own image names the clause a placeholder stands
@@ -162,6 +179,8 @@ final class SqlParameterCompiler {
 
         collectWildcardItems(astRoot, wildcardFirstTokens, wildcardLastTokens);
 
+        Set<Token> jsonKeyOperators = jsonKeyOperatorTokens(astRoot);
+
         for (Token token = firstToken; token != null; token = token.next) {
             collectWildcardSpan(
                 token,
@@ -173,11 +192,13 @@ final class SqlParameterCompiler {
                 copied
             );
 
-            if (isAnonymousParameter(token)) {
+            if (isAnonymousParameter(token) && !jsonKeyOperators.contains(token)) {
                 anonymous = true;
             }
 
-            if (isPositionalParameter(token)) {
+            if (isJsonKeyOperator(token, jsonKeyOperators)) {
+                copied = doubleJsonKeyOperator(sql, token, executableSql, copied);
+            } else if (isPositionalParameter(token)) {
                 int begin = requireSpan(
                     sql,
                     token.image,
@@ -240,6 +261,92 @@ final class SqlParameterCompiler {
             positional,
             anonymous
         );
+    }
+
+    /**
+     * The tokens of one parse tree that are the operator token of a JSONB
+     * key-existence operator written {@code ?}, identified by the token object,
+     * so that a {@code ?} token the source writes as a placeholder is told
+     * apart from one it writes as the operator.
+     *
+     * <p>One operator value can hang under two parse-tree nodes, so the same
+     * token is collected whichever node reports it.
+     */
+    private Set<Token> jsonKeyOperatorTokens(Node astRoot) {
+        Set<Token> tokens = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        collectJsonKeyOperatorTokens(astRoot, tokens);
+
+        return tokens;
+    }
+
+    private void collectJsonKeyOperatorTokens(Node node, Set<Token> tokens) {
+        if (
+            node.jjtGetValue() instanceof JsonOperator json
+                && ANONYMOUS_PARAMETER.equals(json.getStringExpression())
+        ) {
+            Token operator = jsonOperatorToken(json, node);
+
+            if (operator != null && ANONYMOUS_PARAMETER.equals(operator.image)) {
+                tokens.add(operator);
+            }
+        }
+
+        for (int child = 0; child < node.jjtGetNumChildren(); child++) {
+            collectJsonKeyOperatorTokens(node.jjtGetChild(child), tokens);
+        }
+    }
+
+    /**
+     * The token one JSON operator is written at, which follows the last token
+     * of its left operand, or, when the parse tree gives that operand no node,
+     * is the first token of the operator's own node.
+     */
+    private Token jsonOperatorToken(JsonOperator json, Node node) {
+        Expression left = json.getLeftExpression();
+        Node operand = left == null
+            ? null
+            : left.getASTNode();
+
+        return operand == null || operand.jjtGetLastToken() == null
+            ? node.jjtGetFirstToken()
+            : operand.jjtGetLastToken().next;
+    }
+
+    /**
+     * Reports whether one token is a JSONB key-existence operator the
+     * executable SQL writes doubled, which is a {@code ?} the parse tree
+     * reported as that operator or a token of one of the other two images.
+     */
+    private boolean isJsonKeyOperator(Token token, Set<Token> jsonKeyOperators) {
+        return jsonKeyOperators.contains(token) || JSON_KEY_OPERATORS.contains(token.image);
+    }
+
+    /**
+     * Writes one extra {@code ?} before a JSONB key-existence operator, which
+     * is the escape the JDBC driver reads as the operator rather than as a
+     * placeholder, and returns the source offset the operator's own text is
+     * still to be copied from, so that every placeholder offset and wildcard
+     * span after it accounts for the character written here.
+     */
+    private int doubleJsonKeyOperator(
+        String sql,
+        Token token,
+        StringBuilder executableSql,
+        int copied
+    ) {
+        int begin = requireSpan(
+            sql,
+            token.image,
+            token.absoluteBegin,
+            token.absoluteEnd,
+            copied
+        );
+
+        executableSql.append(sql, copied, begin);
+        executableSql.append('?');
+
+        return begin;
     }
 
     /**

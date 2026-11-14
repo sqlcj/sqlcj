@@ -7,7 +7,9 @@ import java.util.List;
  *
  * @param executableSql the source SQL in which every parsed {@code $N} and
  *                      {@code :name} parameter token is replaced by a JDBC
- *                      {@code ?} and every other character is preserved, a
+ *                      {@code ?}, every parsed JSONB key-existence operator
+ *                      {@code ?}, {@code ?|}, and {@code ?&} is written
+ *                      doubled, and every other character is preserved, a
  *                      wildcard select item included, which semantic analysis
  *                      replaces by the columns it selects
  * @param indexes       the logical parameter number of each {@code ?} position
@@ -32,7 +34,9 @@ import java.util.List;
  *                      token, which a named placeholder must not be mixed with
  * @param hasAnonymousParameter
  *                      whether the source contains an anonymous {@code ?}
- *                      placeholder token, which has no parameter to bind
+ *                      placeholder token, which has no parameter to bind, and
+ *                      which a {@code ?} written as the JSONB key-existence
+ *                      operator is not
  */
 public record SqlParameters(
     String executableSql,

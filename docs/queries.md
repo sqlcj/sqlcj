@@ -688,7 +688,9 @@ written.
 - The SQL text block of a generated method is the executed statement, its `?`
   placeholders, its written `::<type>` hints, and its expanded columns
   included, so it may be copied into `EXPLAIN` to plan the statement that
-  actually runs.
+  actually runs. A doubled JSONB key-existence operator is the driver's own
+  escape, so such a copy writes it back as the single `?`, `?|`, or `?&`
+  PostgreSQL itself reads.
 
 ### Predicates
 
@@ -705,6 +707,9 @@ A `WHERE` clause may combine:
   `code BETWEEN $1 AND $2`,
 - `= ANY` between a direct column and one `$N` list placeholder, such as
   `id = ANY($1)`,
+- the JSONB key-existence operators `?`, `?|`, and `?&` between a direct column
+  and a key or a key list, such as `meta ? 'vip'`,
+  `meta ?| array['a','b']`, and `meta ?& array['a']`,
 - a subquery: `EXISTS (SELECT ...)` and `NOT EXISTS (SELECT ...)`,
   `IN (SELECT ...)` and `NOT IN (SELECT ...)`, whatever the tested value is,
   and a comparison one of whose operands is `(SELECT ...)`.
@@ -718,6 +723,18 @@ pattern, a `BETWEEN` bound, an `= ANY` list, a join `ON` condition, and a
 write's `WHERE` alike. A cast states the type of such a placeholder, as in
 `WHERE labels[1] = $1::text`, and the subscript itself reaches the database as
 written.
+
+The JSONB key-existence operators read their operands as a comparison does, so
+a direct column on either side names a column of the query's sources. The
+executed statement writes each of them doubled, as `??`, `??|`, and `??&`,
+which is the escape the PostgreSQL driver reads as the operator itself, so a
+`?` written as the operator is not an anonymous placeholder. An uncast
+placeholder written as the right operand takes the key type PostgreSQL fixes
+for the operator, so it needs no cast: a `String` key for `?`, as in
+`meta ? :key`, and a `List<String>` of keys for `?|` and `?&`, as in
+`meta ?| $1`. A named placeholder keeps its own name and an indexed one is
+named `param<N>`. Every other operand keeps the rules of the expression it is,
+so a placeholder written as the left operand still needs a cast.
 
 A placeholder written as a direct operand of `+`, `-`, `*`, or `/` beside a
 direct column of one of the numeric types `SMALLINT`, `INTEGER`, `BIGINT`,
@@ -909,7 +926,7 @@ placeholder takes.
 
 `ORDER BY` over direct columns is supported for a stable list order, as in
 `ORDER BY id`. The ordering clause is not analyzed: apart from a placeholder it
-writes, it reaches JDBC exactly as written, and the three ways the executed
+writes, it reaches JDBC exactly as written, and the four ways the executed
 statement differs from the written one at all are listed in
 [Parameters](#parameters).
 
@@ -1600,13 +1617,15 @@ A query writes its parameters either as PostgreSQL `$N` placeholders or as
 `:name` placeholders, and one query uses one of the two forms. The compiler
 replaces each real placeholder token with a JDBC `?`, so `$1` or `:id` inside a
 string literal, a quoted identifier, or a comment is not a parameter. The
-executed statement differs from the written one in three ways and nowhere
+executed statement differs from the written one in four ways and nowhere
 else: those placeholders, the `::<type>` sqlcj writes directly after the `?` of
 an occurrence it types from another occurrence of the same parameter, which the
-mixed-occurrence rule below states, and the columns of each expanded wildcard,
+mixed-occurrence rule below states, the columns of each expanded wildcard,
 which
 [Wildcards in the executed statement](#wildcards-in-the-executed-statement)
-states.
+states, and each JSONB key-existence operator `?`, `?|`, and `?&`, which is
+written doubled as `??`, `??|`, and `??&`, the escape the PostgreSQL driver
+reads as the operator itself rather than as a placeholder.
 
 - Placeholder indexes must be positive and contiguous from `$1`.
 - A named placeholder is a colon followed directly by an unquoted name of ASCII
@@ -1682,8 +1701,8 @@ states.
   column, as `(?::varchar IS NULL OR email = ?)`. A clause- or
   cast-typed occurrence stays a bare `?`, so a query whose every occurrence one
   of them types executes exactly the statement it writes, apart from its
-  expanded wildcards. The written type is
-  PostgreSQL's own name of the parameter's type: `int2`, `int4`, `int8`,
+  expanded wildcards and its doubled key-existence operators. The written type
+  is PostgreSQL's own name of the parameter's type: `int2`, `int4`, `int8`,
   `bool`, `varchar`, or `bpchar` for a blank-padded character type, `text`,
   `date`, `time`, `timestamp`, `timestamptz`, `numeric`, `float4`, `float8`,
   `uuid`, `bytea`, `json`, `jsonb`, `citext`, `inet`, `cidr`, `macaddr`,
@@ -1691,7 +1710,10 @@ states.
   followed by `[]` for an array.
 - Mixing `$N` and `:name` placeholders in one query is rejected, as are
   anonymous `?` placeholders, a qualified name such as `:a.b`, a quoted name
-  such as `:"x"`, and an `&name` placeholder.
+  such as `:"x"`, and an `&name` placeholder. A `?` written as the JSONB
+  key-existence operator is that operator rather than an anonymous
+  placeholder, as [Predicates](#predicates) states, so only a `?` written where
+  a value belongs is rejected: `meta ? $1` is accepted and `meta ? ?` is not.
 - A placeholder neither a clause nor a cast types, at any occurrence of its
   parameter — for example
   `ORDER BY $1`, `lower(name) = :name`, or `(:x)::int`, whose placeholder is not
