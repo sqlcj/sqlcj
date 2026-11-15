@@ -263,15 +263,15 @@ that fails it has already changed the database.
 
 A read of a column or value the model states non-null fails where it is read
 when the database returns SQL `NULL` there all the same. The generated mapper
-reads such a column through `org.sqlcj.runtime.NotNullColumn`, so the failure is
+reads such a column through `NotNullColumn`, so the failure is
 raised instead of a `null` reaching a component the generated API declares
 non-null. Nullness is the model's rather than the declaration's: a column a
 null-extended source contributes on its own is nullable however its table
 declares it, so it keeps its plain read and reads back as `null` for an
 unmatched row, while a whole row such a source contributes is instead the
-nullable component, guarded by `org.sqlcj.runtime.SqlRow.isNull`, whose own
-`NOT NULL` columns are read through `org.sqlcj.runtime.NotNullColumn` inside
-that guard. For a direct column the model states non-null, which is a column
+nullable component, guarded by `SqlRow.isNull`, whose own `NOT NULL` columns
+are read through `NotNullColumn` inside that guard. For a direct column the
+model states non-null, which is a column
 the generation snapshot declares `NOT NULL`, such a failure means that the
 database and that snapshot disagree:
 
@@ -634,15 +634,17 @@ recorded with its declared type instead of
 failing the schema, and fails only a query that uses it; see
 [Unsupported Types and DDL](#unsupported-types-and-ddl).
 
-The generated repository imports `java.time.LocalDate`, `java.time.LocalTime`,
+Each mapped type listed above and `SqlInterval` is imported by the file that
+names it — `java.time.LocalDate`, `java.time.LocalTime`,
 `java.time.LocalDateTime`, `java.time.OffsetDateTime`, `java.math.BigDecimal`,
-`java.util.UUID`, and `org.sqlcj.runtime.SqlInterval` as needed; the remaining
-types need no import, and `java.util.List` is already imported by every
-repository. A row record imports
-`java.util.List` when one of its components is an array. A generated
-enum belongs to `<java.package>.enums`, so it is imported from there and used by
-its simple name: by the repository whose queries read or bind that enum type,
-and by a row record one of whose components is of it. Each result column is
+`java.util.UUID`, `java.util.List` for an array component or parameter, and
+`org.sqlcj.runtime.SqlInterval` — and is written there by its simple name; the
+remaining types need no import. A generated enum belongs to
+`<java.package>.enums`, so it is imported from there and used by its simple
+name: by the repository whose queries read or bind that enum type, and by a row
+record one of whose components is of it. The import order, and the one file in
+which a shared simple name is written qualified instead, are documented in
+[Generated Java](queries.md#generated-java). Each result column is
 read at its one-based position in the selected-column list, with
 `resultSet.getObject(position, JavaType.class)`,
 or with `resultSet.getString(position)` for a `JSON`, `JSONB`, `CITEXT`,
@@ -651,19 +653,18 @@ type of its own rather than as a character type. An
 enum column reads its label the same way and resolves it with
 `<EnumType>.fromLabel(...)`, an `INTERVAL` column reads PostgreSQL's own text
 the same way and parses it with
-`org.sqlcj.runtime.SqlInterval.parse(resultSet.getString(position))`, and an
-array column is read with `org.sqlcj.runtime.SqlArray.getList(...)`. Those are
-the reads of a nullable column. A column the model states non-null is read
-through `org.sqlcj.runtime.NotNullColumn`, which reads the same value and fails
-on a SQL `NULL`:
-`org.sqlcj.runtime.NotNullColumn.getObject(resultSet, position, JavaType.class)`,
-`org.sqlcj.runtime.NotNullColumn.getString(resultSet, position)` for the types
+`SqlInterval.parse(resultSet.getString(position))`, and an array column is read
+with `SqlArray.getList(...)`. Those are the reads of a nullable column. A
+column the model states non-null is read through `NotNullColumn`, which reads
+the same value and fails on a SQL `NULL`:
+`NotNullColumn.getObject(resultSet, position, JavaType.class)`,
+`NotNullColumn.getString(resultSet, position)` for the types
 read as text,
-`org.sqlcj.runtime.NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`
+`NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`
 for an enum and
-`org.sqlcj.runtime.NotNullColumn.getString(resultSet, position, org.sqlcj.runtime.SqlInterval::parse)`
+`NotNullColumn.getString(resultSet, position, SqlInterval::parse)`
 for an `INTERVAL`, and
-`org.sqlcj.runtime.NotNullColumn.getList(...)` for an array column; see
+`NotNullColumn.getList(...)` for an array column; see
 [Nulls](#nulls).
 
 `SqlInterval.parse` reads the text PostgreSQL writes under its default
@@ -679,20 +680,19 @@ generated repository, that `IllegalArgumentException` arrives as the cause of a
 unchecked mapper failure does. sqlcj never changes the session setting.
 
 A `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`, or `MACADDR8` argument
-is passed to the executor as
-`new org.sqlcj.runtime.UntypedText(value)`, written out in full so that the
-generated imports are unchanged, and `JdbcQueryExecutor` binds that text with
-`java.sql.Types.OTHER`. PostgreSQL then types the text from the context of its
+is passed to the executor as `new UntypedText(value)`, and `JdbcQueryExecutor`
+binds that text with `java.sql.Types.OTHER`. PostgreSQL then types the text
+from the context of its
 placeholder, which is what a column or comparison of one of those types needs:
 text bound as `varchar` is rejected for an `inet` and resolves a `citext`
 comparison as a case-sensitive `text` one. An enum argument is passed the same way,
 around the label of its constant, because a label bound as `varchar` is
 rejected where an enum is expected. An array argument is wrapped in
-`org.sqlcj.runtime.SqlArray` the same way; see [Array Types](#array-types).
+`SqlArray` the same way; see [Array Types](#array-types).
 
 An `INTERVAL` argument is passed to the executor as
-`new org.sqlcj.runtime.UntypedText(value.format())`, or as
-`new org.sqlcj.runtime.UntypedText(value == null ? null : value.format())` for a
+`new UntypedText(value.format())`, or as
+`new UntypedText(value == null ? null : value.format())` for a
 nullable parameter or component, as an enum argument is written around
 `label()`.
 `format()` writes the three counts with an explicit sign on every field, as in
@@ -718,12 +718,16 @@ ALTER TYPE stage_setting ADD VALUE 'covered' BEFORE 'outdoor';
 
 package com.example.app.db.enums;
 
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
+import org.sqlcj.runtime.UnmappableValueException;
+
 /**
  * Generated by sqlcj.
  *
  * <p>Enum: stage_setting
  */
-@org.jspecify.annotations.NullMarked
+@NullMarked
 public enum StageSetting {
 
     INDOOR("indoor"),
@@ -740,9 +744,7 @@ public enum StageSetting {
         return label;
     }
 
-    public static @org.jspecify.annotations.Nullable StageSetting fromLabel(
-        @org.jspecify.annotations.Nullable String label
-    ) {
+    public static @Nullable StageSetting fromLabel(@Nullable String label) {
         if (label == null) {
             return null;
         }
@@ -753,7 +755,7 @@ public enum StageSetting {
             }
         }
 
-        throw new org.sqlcj.runtime.UnmappableValueException(
+        throw new UnmappableValueException(
                 "Unknown label for enum type stage_setting: " + label,
                 "stage_setting",
                 label,
@@ -778,7 +780,7 @@ public enum StageSetting {
   describes. A nullable enum column is read with
   `<EnumType>.fromLabel(resultSet.getString(position))`, while a non-null one is
   read with
-  `org.sqlcj.runtime.NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`,
+  `NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`,
   which resolves the label the same way and fails on a SQL `NULL` instead of
   reading it as `null`.
 - Only an enum type a query actually uses generates a file, including an enum
@@ -910,7 +912,7 @@ delimiters are removed, and resolve in the one namespace sqlcj models, so
 ## Array Types
 
 A column declared as a one-dimensional array, written `type[]` or `type[n]`, is
-modeled as an array of its element type and generates `java.util.List<T>` of
+modeled as an array of its element type and generates `List<T>` of
 that element's Java type, for method parameters and result components alike:
 
 ```sql
@@ -926,7 +928,7 @@ generates `List<String> tags` and `List<StageSetting> past`.
 - The element type is any spelling in
   [Supported Column Types](#supported-column-types) except `BYTEA`, `JSON`, and
   `JSONB`, or the name of an enum type the schema declares. `INTERVAL[]` is a
-  `List<org.sqlcj.runtime.SqlInterval>`, while `INTERVAL[][]` has no mapping and
+  `List<SqlInterval>`, while `INTERVAL[][]` has no mapping and
   is recorded as `INTERVAL[][]`.
 - The declared size of a dimension is ignored, as PostgreSQL ignores it, so
   `numeric(10, 2)[3]` is the same type as `numeric(10, 2)[]`.
@@ -950,8 +952,7 @@ generates `List<String> tags` and `List<StageSetting> past`.
   rejections. No other array operator or function, such as `&&`, is analyzed.
 
 An array argument is passed to the executor as
-`new org.sqlcj.runtime.SqlArray("<element type>", <parameter>)`, written out in
-full so that the generated imports are unchanged, where `<element type>` is
+`new SqlArray("<element type>", <parameter>)`, where `<element type>` is
 PostgreSQL's own name of the element type: `int4`, `int8`, `int2`, `bool`,
 `varchar`, `bpchar`, `text`, `date`, `time`, `timestamp`, `timestamptz`,
 `numeric`, `float4`, `float8`, `uuid`, `citext`, `inet`, `cidr`, `macaddr`,
@@ -962,24 +963,22 @@ with another one; `VARCHAR` and `CHARACTER VARYING` elements are named
 `varchar`. Both read their elements back as `String`, blank padded to the
 declared length for `CHAR`, as a scalar of that type is read. An array of an
 enum carries the labels of its constants instead, as
-`org.sqlcj.runtime.SqlArray.of("<enum type>", <parameter>, <EnumType>::label)`,
-and an array of `INTERVAL` carries the text of its elements, as
-`org.sqlcj.runtime.SqlArray.of("interval", <parameter>,
-org.sqlcj.runtime.SqlInterval::format)`.
+`SqlArray.of("<enum type>", <parameter>, <EnumType>::label)`, and an array of
+`INTERVAL` carries the text of its elements, as
+`SqlArray.of("interval", <parameter>, SqlInterval::format)`.
 
 `JdbcQueryExecutor` builds the value with `Connection.createArrayOf` on the
 connection the operation runs on and binds it with
 `PreparedStatement.setArray`. A nullable array column is read with
-`org.sqlcj.runtime.SqlArray.getList(resultSet, position, <Type>.class)`, which
-reads each element as a scalar of that type is read, a `String` element with
-`getString`, for the same reason a scalar of one of those types is; an array of
-an enum is read
-as `org.sqlcj.runtime.SqlArray.getList(resultSet, position, String.class,
-<EnumType>::fromLabel)`, and an array of `INTERVAL` as
-`org.sqlcj.runtime.SqlArray.getList(resultSet, position, String.class,
-org.sqlcj.runtime.SqlInterval::parse)`. A non-null array column is read with
-the same three forms of `org.sqlcj.runtime.NotNullColumn.getList`, which read
-the same elements and fail where the column itself is SQL `NULL`. All of them
+`SqlArray.getList(resultSet, position, <Type>.class)`, which reads each element
+as a scalar of that type is read, a `String` element with `getString`, for the
+same reason a scalar of one of those types is; an array of an enum is read as
+`SqlArray.getList(resultSet, position, String.class, <EnumType>::fromLabel)`,
+and an array of `INTERVAL` as
+`SqlArray.getList(resultSet, position, String.class, SqlInterval::parse)`. A
+non-null array column is read with the same three forms of
+`NotNullColumn.getList`, which read the same elements and fail where the column
+itself is SQL `NULL`. All of them
 go through the JDBC `java.sql.Array` API alone, so neither the runtime nor the
 generated code depends on a driver.
 
@@ -1355,7 +1354,7 @@ be `null` exactly when its column is modeled nullable by the schema snapshot or
 is read from a null-extended source — one a `LEFT`, `RIGHT`, or `FULL` join
 null-extends — whose columns are all nullable because an unmatched row supplies
 no value for them. A component the model states non-null never holds `null`: its
-read goes through `org.sqlcj.runtime.NotNullColumn` and fails where the database
+read goes through `NotNullColumn` and fails where the database
 returns SQL `NULL` all the same, as
 [Connection Ownership and Transactions](#connection-ownership-and-transactions)
 describes.
@@ -1382,19 +1381,19 @@ mixed:
 
 Null handling does not depend on the column type:
 
-- the generated argument list is built with `java.util.Collections.emptyList`,
-  `java.util.Collections.singletonList`, or `java.util.Arrays.asList`, by the
-  number of binding positions, and each of the three accepts null elements,
+- the generated argument list is built with `Collections.emptyList`,
+  `Collections.singletonList`, or `Arrays.asList`, by the number of binding
+  positions, and each of the three accepts null elements,
 - `JdbcQueryExecutor` binds each argument positionally with
   `PreparedStatement.setObject`, so a null argument of a parameter that accepts
   one is bound as SQL `NULL`. A
   `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`, `MACADDR`, or `MACADDR8` argument
   is bound the same way through its
-  `org.sqlcj.runtime.UntypedText` wrapper, so a null value becomes a SQL `NULL`
+  `UntypedText` wrapper, so a null value becomes a SQL `NULL`
   without a declared type. A null enum argument is wrapped the same way, so it
   is bound as SQL `NULL` instead of as the label of a constant. A null array
   argument is bound as a SQL `NULL` array through its
-  `org.sqlcj.runtime.SqlArray` wrapper, and a null element stays null inside the
+  `SqlArray` wrapper, and a null element stays null inside the
   bound array,
 - each nullable result column is read with
   `ResultSet.getObject(position, Class)`, or with
@@ -1402,14 +1401,13 @@ Null handling does not depend on the column type:
   `CIDR`, `MACADDR`, `MACADDR8`, and an enum, so a
   SQL `NULL` is read back as `null`, which `fromLabel` keeps `null` for an
   enum. A nullable array column is read with
-  `org.sqlcj.runtime.SqlArray.getList`, which reads a SQL `NULL` as a null list
+  `SqlArray.getList`, which reads a SQL `NULL` as a null list
   and a `NULL` element as a null element,
-- each non-null result column is read with the matching
-  `org.sqlcj.runtime.NotNullColumn` form, `getObject`, `getString`, `getString`
-  with a converter, or `getList`, each of which reads the same value and fails
-  on a SQL `NULL` rather than reading it as `null`. A `NULL` element of a
-  non-null array column stays a `null` element, because only the column itself
-  is `NOT NULL`.
+- each non-null result column is read with the matching `NotNullColumn` form,
+  `getObject`, `getString`, `getString` with a converter, or `getList`, each of
+  which reads the same value and fails on a SQL `NULL` rather than reading it
+  as `null`. A `NULL` element of a non-null array column stays a `null`
+  element, because only the column itself is `NOT NULL`.
 
 Nullability is parsed from what PostgreSQL itself sets `NOT NULL` on:
 
@@ -1437,8 +1435,8 @@ Nullability is parsed from what PostgreSQL itself sets `NOT NULL` on:
 - nullability never changes which Java type is generated. It is resolved from
   the column type alone, and nullability states itself on that type as a
   JSpecify annotation: a nullable result component carries
-  `@org.jspecify.annotations.Nullable`, and a non-null one carries nothing. The
-  rules and their placement are documented in
+  `@Nullable`, and a non-null one carries nothing. The rules and their
+  placement are documented in
   [Generated Java](queries.md#generated-java).
 
 Null binding and null reading are executed against PostgreSQL for the nullable

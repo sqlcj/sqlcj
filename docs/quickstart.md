@@ -503,7 +503,7 @@ That output is the whole MVP contract in one run:
   keeps the types and order of its named query.
 - `CreateAuthor` is a `:one` write whose `RETURNING` clause reads back the
   database-generated `BIGSERIAL` identifier as a typed `Long`. It generates
-  `createAuthor(String name, @org.jspecify.annotations.Nullable String bio)`,
+  `createAuthor(String name, @Nullable String bio)`,
   because `authors.name` is `NOT NULL` while `authors.bio` is not, so a `null`
   name fails at once with a `NullPointerException` naming the parameter, the
   query, and the repository, while a `null` bio stores SQL `NULL`. Every
