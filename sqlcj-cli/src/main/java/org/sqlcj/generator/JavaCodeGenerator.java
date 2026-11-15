@@ -973,26 +973,47 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * The documentation of one generated query method, which states the table
-     * of a query that reads or writes one, and no table line at all for a query
-     * that reads no source.
+     * The documentation of one generated query method: the query's own comment
+     * lines, if it has any, its SQL as the query source writes it, and where it
+     * is defined, which is left out when the group's query source is unknown.
+     * Every part is escaped, so that no written text can end the comment, start
+     * a Javadoc tag, or be read as a Unicode escape.
      */
-    private String generateJavaDoc(QueryModel query) {
-        String table = query.table() == null
-            ? ""
-            : " * Table: %s\n".formatted(escapeJavadoc(query.table()));
+    private String generateJavaDoc(QueryModel query, String queriesPath) {
+        List<String> lines = new ArrayList<>();
 
-        return """
-            /**
-             * Query: %s
-            %s * Type: %s
-             */
-            """
-            .formatted(
-                escapeJavadoc(query.name()),
-                table,
-                query.type()
+        for (String comment : query.comment()) {
+            lines.add(javaDocLine(escapeJavadoc(comment)));
+        }
+
+        if (!query.comment().isEmpty()) {
+            lines.add(" *");
+        }
+
+        lines.add(" * <pre>");
+
+        for (String sqlLine : query.writtenSql().lines().toList()) {
+            lines.add(javaDocLine(escapeJavadoc(sqlLine)));
+        }
+
+        lines.add(" * </pre>");
+
+        if (queriesPath != null) {
+            lines.add(" *");
+            lines.add(
+                javaDocLine(
+                    "<p>Defined at <code>%s:%d</code>."
+                        .formatted(escapeJavadoc(queriesPath), query.line())
+                )
             );
+        }
+
+        return "/**\n" + String.join("\n", lines) + "\n */\n";
+    }
+
+    /** One line of a method's documentation, carrying its escaped text. */
+    private String javaDocLine(String text) {
+        return (" * " + text).stripTrailing();
     }
 
     private String generateClass(QueryGroupModel group, JavaNames names, NameScope scope) {
@@ -1068,7 +1089,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             }
 
             members.add(
-                generateJavaDoc(query)
+                generateJavaDoc(query, group.queriesPath())
                     + generateMethod(query, names.repositoryClassName(), queryNames, scope)
             );
         }
@@ -2658,13 +2679,22 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * Escapes a SQL-derived value rendered inside the generated Javadoc block.
+     * Escapes a value rendered inside a generated Javadoc block, so that it is
+     * read as the text it is written as: {@code &} first, so that the entities
+     * this writes are not escaped again, then {@code <} and {@code >}, which
+     * would open an HTML element, {@code @}, which would start a Javadoc tag,
+     * {@code \}, which javac reads as a Unicode escape anywhere in a source
+     * file, and {@code *}{@code /}, which would end the comment. A brace is
+     * written as it stands, because an inline tag starts with a brace followed
+     * by an {@code @}, which this escapes.
      */
     private String escapeJavadoc(String value) {
         return value
             .replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
+            .replace("@", "&#64;")
+            .replace("\\", "&#92;")
             .replace("*/", "*&#47;");
     }
 }

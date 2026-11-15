@@ -14,6 +14,7 @@ import org.sqlcj.analysis.QueryModel;
 import org.sqlcj.config.Config;
 import org.sqlcj.config.JavaConfig;
 import org.sqlcj.config.SqlConfig;
+import org.sqlcj.config.YamlConfigLoader;
 import org.sqlcj.generator.CodeGenerator;
 import org.sqlcj.generator.GeneratedFile;
 import org.sqlcj.generator.JavaCodeGenerator;
@@ -27,7 +28,12 @@ import org.sqlcj.schema.parser.DefaultSchemaParser;
 import org.sqlcj.schema.parser.SchemaParser;
 import org.sqlcj.sql.SqlParser;
 
+import javax.tools.Diagnostic;
+import javax.tools.DiagnosticCollector;
+import javax.tools.DocumentationTool;
 import javax.tools.JavaCompiler;
+import javax.tools.JavaFileObject;
+import javax.tools.StandardJavaFileManager;
 import javax.tools.ToolProvider;
 import java.io.File;
 import java.io.IOException;
@@ -6974,6 +6980,273 @@ class SqlcjCompilerIntegrationTest {
         );
 
         assertCompilesAgainstTheRuntimeAlone(generatedDirectory, tempDir.resolve("classes"));
+    }
+
+    /**
+     * One project whose queries carry comments and characters a doc comment
+     * would otherwise read as markup documents each generated method with its
+     * comment, its SQL as the query source writes it, and the query file and
+     * header line it is defined at, relative to the configuration file.
+     *
+     * <p>The generated tree compiles, {@code javadoc} reads it with no error,
+     * the rendered page shows every SQL line as written, and a second copy of
+     * the same project in another directory generates the same bytes.
+     */
+    @Test
+    void shouldDocumentEachGeneratedMethodWithItsQuery() throws Exception {
+        Path project = writeDocumentedProject(tempDir.resolve("project"));
+        Path copy = writeDocumentedProject(tempDir.resolve("copy"));
+
+        generateDocumentedProject(project);
+        generateDocumentedProject(copy);
+
+        Path generatedDirectory = project.resolve("generated");
+
+        String repository = Files.readString(
+            generatedDirectory.resolve("com/example/notes/repositories/NoteRepository.java")
+        );
+
+        assertTrue(
+            repository.contains(
+                """
+                        /**
+                         * Lists every note of a &lt;team&gt; &amp; its &#64;owner.
+                         *
+                         * The {marker} text stands as written.
+                         *
+                         * <pre>
+                         * SELECT id, body, state
+                         * FROM notes
+                         * WHERE body LIKE :page.term -- a *&#47; marker and a &#92;u0041 escape
+                         *   AND id &gt; :page.after
+                         * ORDER BY id
+                         * LIMIT :page.size;
+                         * </pre>
+                         *
+                         * <p>Defined at <code>sql/queries.sql:1</code>.
+                         */
+                    """
+                    .stripTrailing()
+            ),
+            repository
+        );
+
+        assertTrue(
+            repository.contains(
+                """
+                        /**
+                         * <pre>
+                         * SELECT *
+                         * FROM notes
+                         * WHERE id = :id;
+                         * </pre>
+                         *
+                         * <p>Defined at <code>sql/queries.sql:12</code>.
+                         */
+                    """
+                    .stripTrailing()
+            ),
+            repository
+        );
+
+        assertFalse(repository.contains("Query: ListNotes"));
+        assertFalse(repository.contains("Type: MANY"));
+
+        assertCompiles(generatedDirectory, tempDir.resolve("classes"));
+
+        Path documentation = tempDir.resolve("documentation");
+
+        assertJavadocReportsNoError(generatedDirectory, documentation);
+
+        String page = decodeEntities(
+            Files.readString(
+                documentation.resolve("com/example/notes/repositories/NoteRepository.html")
+            )
+        );
+
+        for (String line : DOCUMENTED_SQL_LINES) {
+            assertTrue(page.contains(line), line);
+        }
+
+        assertTrue(page.contains("sql/queries.sql:1"));
+        assertTrue(page.contains("sql/queries.sql:12"));
+
+        assertEquals(
+            generatedSources(project.resolve("generated")),
+            generatedSources(copy.resolve("generated"))
+        );
+    }
+
+    /** The SQL lines the documentation of {@code ListNotes} renders. */
+    private static final List<String> DOCUMENTED_SQL_LINES = List.of(
+        "SELECT id, body, state",
+        "FROM notes",
+        "WHERE body LIKE :page.term -- a */ marker and a \\u0041 escape",
+        "  AND id > :page.after",
+        "ORDER BY id",
+        "LIMIT :page.size;"
+    );
+
+    /**
+     * Writes one sqlcj project into {@code root}: a configuration file naming
+     * its schema, its queries, and its output by paths relative to itself, a
+     * schema declaring an enum type, and two queries, the first of which
+     * carries a comment block and writes characters a doc comment would
+     * otherwise read as markup, a Javadoc tag, or a Unicode escape.
+     */
+    private Path writeDocumentedProject(Path root) throws IOException {
+        Files.createDirectories(root.resolve("sql"));
+
+        Files.writeString(
+            root.resolve("sqlcj.yaml"),
+            """
+                version: "1"
+
+                sql:
+                  - name: Note
+                    schema: sql/schema.sql
+                    queries: sql/queries.sql
+
+                java:
+                  package: com.example.notes
+                  out: generated
+                """
+        );
+
+        Files.writeString(
+            root.resolve("sql/schema.sql"),
+            """
+                CREATE TYPE note_state AS ENUM ('draft', 'published');
+
+                CREATE TABLE notes
+                (
+                    id    BIGINT     NOT NULL,
+                    body  TEXT       NOT NULL,
+                    state note_state NOT NULL
+                );
+                """
+        );
+
+        Files.writeString(
+            root.resolve("sql/queries.sql"),
+            """
+                -- name: ListNotes :many
+                -- Lists every note of a <team> & its @owner.
+                --
+                -- The {marker} text stands as written.
+                SELECT id, body, state
+                FROM notes
+                WHERE body LIKE :page.term -- a */ marker and a \\u0041 escape
+                  AND id > :page.after
+                ORDER BY id
+                LIMIT :page.size;
+
+                -- name: FindNote :optional
+                SELECT *
+                FROM notes
+                WHERE id = :id;
+                """
+        );
+
+        return root;
+    }
+
+    /** Generates one written project through its own configuration file. */
+    private void generateDocumentedProject(Path root) {
+        Path configFile = root.resolve("sqlcj.yaml");
+
+        new SqlcjCompiler().compile(new YamlConfigLoader().load(configFile), configFile);
+    }
+
+    /** Every generated file of one tree, by its relative path. */
+    private Map<String, String> generatedSources(Path generatedDirectory) throws IOException {
+        Map<String, String> sources = new TreeMap<>();
+
+        try (Stream<Path> paths = Files.walk(generatedDirectory)) {
+            for (Path path : paths.filter(Files::isRegularFile).toList()) {
+                sources.put(
+                    generatedDirectory.relativize(path).toString().replace('\\', '/'),
+                    Files.readString(path)
+                );
+            }
+        }
+
+        return sources;
+    }
+
+    /**
+     * Runs {@code javadoc} over one generated tree, into a directory of its
+     * own and against the test class path, and asserts that it reported no
+     * error and documented the tree.
+     */
+    private void assertJavadocReportsNoError(
+        Path generatedDirectory,
+        Path documentationDirectory
+    ) throws IOException {
+        Files.createDirectories(documentationDirectory);
+
+        DocumentationTool javadoc = ToolProvider.getSystemDocumentationTool();
+
+        assertNotNull(javadoc);
+
+        DiagnosticCollector<JavaFileObject> diagnostics = new DiagnosticCollector<>();
+
+        try (
+            StandardJavaFileManager fileManager = javadoc.getStandardFileManager(
+                diagnostics,
+                null,
+                null
+            )
+        ) {
+            List<File> sources;
+
+            try (Stream<Path> paths = Files.walk(generatedDirectory)) {
+                sources = paths
+                    .filter(path -> path.toString().endsWith(".java"))
+                    .sorted()
+                    .map(Path::toFile)
+                    .toList();
+            }
+
+            assertFalse(sources.isEmpty());
+
+            Boolean documented = javadoc.getTask(
+                null,
+                fileManager,
+                diagnostics,
+                null,
+                List.of(
+                    "-d",
+                    documentationDirectory.toString(),
+                    "-classpath",
+                    System.getProperty("java.class.path"),
+                    "-quiet"
+                ),
+                fileManager.getJavaFileObjectsFromFiles(sources)
+            ).call();
+
+            assertEquals(
+                List.of(),
+                diagnostics.getDiagnostics()
+                    .stream()
+                    .filter(diagnostic -> diagnostic.getKind() == Diagnostic.Kind.ERROR)
+                    .map(Object::toString)
+                    .toList()
+            );
+
+            assertEquals(Boolean.TRUE, documented);
+        }
+    }
+
+    /** Reads one rendered page as the text its entities stand for. */
+    private String decodeEntities(String html) {
+        return html
+            .replace("&#47;", "/")
+            .replace("&#64;", "@")
+            .replace("&#92;", "\\")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&");
     }
 
     /**

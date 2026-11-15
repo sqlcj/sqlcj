@@ -30,6 +30,12 @@ import java.util.List;
  *                                 complete row this query returns, or
  *                                 {@code null} when the result is specific to
  *                                 this query
+ * @param comment                  the comment lines written directly under the
+ *                                 query's header, in source order
+ * @param writtenSql               the query's SQL as its source writes it,
+ *                                 which the generated method documents
+ * @param line                     the one-based line of the query header in its
+ *                                 source, or {@code 0} when it is unknown
  */
 public record QueryModel(
     String name,
@@ -39,6 +45,35 @@ public record QueryModel(
     List<Integer> bindingParameterIndexes,
     List<QueryColumn> columns,
     List<QueryParameter> parameters,
-    String rowTable
+    String rowTable,
+    List<String> comment,
+    String writtenSql,
+    int line
 ) {
+
+    /** A query documented by its executable SQL alone, at no known line. */
+    public QueryModel(
+        String name,
+        QueryType type,
+        String table,
+        String executableSql,
+        List<Integer> bindingParameterIndexes,
+        List<QueryColumn> columns,
+        List<QueryParameter> parameters,
+        String rowTable
+    ) {
+        this(
+            name,
+            type,
+            table,
+            executableSql,
+            bindingParameterIndexes,
+            columns,
+            parameters,
+            rowTable,
+            List.of(),
+            executableSql,
+            0
+        );
+    }
 }

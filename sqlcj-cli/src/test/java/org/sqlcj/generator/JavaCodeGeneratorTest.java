@@ -167,31 +167,71 @@ class JavaCodeGeneratorTest {
         );
     }
 
+    /**
+     * A generated method documents the query's own comment lines, its SQL as
+     * the query source writes it, and where it is defined, and no longer its
+     * name, table, or type.
+     */
     @Test
-    void shouldGenerateJavaDoc() {
+    void shouldGenerateJavaDoc() throws IOException {
+        QueryModel query = new QueryModel(
+            "GetUser",
+            QueryType.ONE,
+            "users",
+            "SELECT id FROM users WHERE id = ?;",
+            List.of(1),
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null,
+            List.of("Reads one user by id.", "", "The id is the primary key."),
+            """
+                SELECT id
+                  FROM users
+                 WHERE id = :id;""",
+            7
+        );
+
         GeneratedFile file = generate(
-            query(
-                "GetUser",
-                QueryType.ONE,
-                List.of(
-                    new QueryParameter(1, "id", ColumnType.BIGINT)
-                )
-            )
+            new QueryGroupModel(GROUP, List.of(query), List.of(), "sql/queries.sql")
         );
 
         String source = file.content();
 
-        assertTrue(source.contains("Query: GetUser"));
-        assertTrue(source.contains("Table: users"));
-        assertTrue(source.contains("Type: ONE"));
+        assertTrue(
+            source.contains(
+                """
+                        /**
+                         * Reads one user by id.
+                         *
+                         * The id is the primary key.
+                         *
+                         * <pre>
+                         * SELECT id
+                         *   FROM users
+                         *  WHERE id = :id;
+                         * </pre>
+                         *
+                         * <p>Defined at <code>sql/queries.sql:7</code>.
+                         */
+                        public Long getUser(Long id) {
+                    """
+                    .stripTrailing()
+            )
+        );
+
+        assertFalse(source.contains("Query: GetUser"));
+        assertFalse(source.contains("Table: users"));
+        assertFalse(source.contains("Type: ONE"));
+
+        assertCompiles(file);
     }
 
     /**
-     * A query that reads no source carries no table, so its documentation
-     * leaves out the table line and states its name and type alone.
+     * A query without a comment documents its SQL alone, and a group whose
+     * query source is unknown documents no location.
      */
     @Test
-    void shouldGenerateJavaDocWithoutATableForASourcelessQuery() throws IOException {
+    void shouldGenerateJavaDocWithoutACommentOrAQuerySource() throws IOException {
         QueryModel query = new QueryModel(
             "NextOrderNumber",
             QueryType.ONE,
@@ -211,15 +251,74 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                         /**
-                         * Query: NextOrderNumber
-                         * Type: ONE
+                         * <pre>
+                         * SELECT nextval('order_number_seq')::bigint AS next
+                         * </pre>
                          */
+                        public NextOrderNumberResult nextOrderNumber() {
                     """
                     .stripTrailing()
             )
         );
 
         assertFalse(source.contains("Table:"));
+        assertFalse(source.contains("Defined at"));
+
+        assertCompiles(file);
+    }
+
+    /**
+     * Every character of a comment, of the SQL, and of the query source's path
+     * that would end the documentation comment, open an HTML element, start a
+     * Javadoc tag, or be read as a Unicode escape is written as an entity, and
+     * a brace stands as it is written.
+     */
+    @Test
+    void shouldEscapeJavaDoc() throws IOException {
+        QueryModel query = new QueryModel(
+            "FindNotes",
+            QueryType.MANY,
+            "notes",
+            "SELECT id FROM notes WHERE body = ?;",
+            List.of(1),
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            List.of(new QueryParameter(1, "body", ColumnType.VARCHAR)),
+            null,
+            List.of("Reads a note of a <team> & its @owner, {tagged} with a \\u sequence."),
+            """
+                SELECT id
+                FROM notes
+                WHERE body = :body::text -- a */ marker, {a} & <b> @ c\\u0041
+                  AND length(body) < 80 AND length(body) > 2;""",
+            3
+        );
+
+        GeneratedFile file = generate(
+            new QueryGroupModel(GROUP, List.of(query), List.of(), "sql/a&b/queries.sql")
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        /**
+                         * Reads a note of a &lt;team&gt; &amp; its &#64;owner, {tagged} with a &#92;u sequence.
+                         *
+                         * <pre>
+                         * SELECT id
+                         * FROM notes
+                         * WHERE body = :body::text -- a *&#47; marker, {a} &amp; &lt;b&gt; &#64; c&#92;u0041
+                         *   AND length(body) &lt; 80 AND length(body) &gt; 2;
+                         * </pre>
+                         *
+                         * <p>Defined at <code>sql/a&amp;b/queries.sql:3</code>.
+                         */
+                        public List<Long> findNotes(String body) {
+                    """
+                    .stripTrailing()
+            )
+        );
 
         assertCompiles(file);
     }
@@ -4493,7 +4592,6 @@ class JavaCodeGeneratorTest {
         );
         assertTrue(source.contains("return executor.queryOptional("));
         assertTrue(source.contains("Collections.singletonList(id)"));
-        assertTrue(source.contains("Type: OPTIONAL"));
 
         assertFalse(source.contains("return executor.queryOne("));
         assertFalse(source.contains("UnsupportedOperationException"));

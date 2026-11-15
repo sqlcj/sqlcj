@@ -3515,7 +3515,10 @@ public final class QueryAnalyzer {
             bindingParameterIndexes,
             columns,
             toParameters(occurrences, parsedSql.parameters().names()),
-            rowTable
+            rowTable,
+            query.comment(),
+            query.writtenSql(),
+            query.line()
         );
     }
 

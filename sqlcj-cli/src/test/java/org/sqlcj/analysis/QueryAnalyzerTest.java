@@ -676,6 +676,30 @@ class QueryAnalyzerTest {
         assertTrue(model.parameters().isEmpty());
     }
 
+    /**
+     * The model carries what documents the generated method: the query's
+     * comment lines, its SQL as the source writes it, and its header line.
+     */
+    @Test
+    void shouldCarryTheCommentWrittenSqlAndLineOfTheQuery() {
+        String writtenSql = "SELECT *\n  FROM users;";
+
+        Query query = new Query(
+            "ListUsers",
+            QueryType.MANY,
+            "SELECT *\nFROM users;",
+            12,
+            List.of("Lists every user.", ""),
+            writtenSql
+        );
+
+        QueryModel model = analyzer.analyze(query, parser.parse(query.sql()), schema);
+
+        assertEquals(List.of("Lists every user.", ""), model.comment());
+        assertEquals(writtenSql, model.writtenSql());
+        assertEquals(12, model.line());
+    }
+
     @Test
     void shouldAnalyzeSelectWithSingleParameter() {
         Query query = new Query(
@@ -8787,7 +8811,10 @@ class QueryAnalyzerTest {
                 exec.bindingParameterIndexes(),
                 exec.columns(),
                 exec.parameters(),
-                exec.rowTable()
+                exec.rowTable(),
+                exec.comment(),
+                exec.writtenSql(),
+                exec.line()
             ),
             batch
         );

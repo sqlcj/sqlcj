@@ -11,6 +11,9 @@ public final class DefaultQueryParser implements QueryParser {
 
     private static final String HEADER_PREFIX = "-- name:";
 
+    /** The start of one comment line of a query, at the line's first column. */
+    private static final String COMMENT_PREFIX = "--";
+
     /**
      * The query annotations sqlcj accepts, in the order the rejection of an
      * unknown one lists them, which are also the candidates it suggests from.
@@ -46,7 +49,7 @@ public final class DefaultQueryParser implements QueryParser {
         QueryType currentType = null;
         int currentLine = 0;
         int lineNumber = 0;
-        StringBuilder builder = new StringBuilder();
+        List<String> lines = new ArrayList<>();
 
         for (String line : source.lines().toList()) {
             lineNumber++;
@@ -57,14 +60,14 @@ public final class DefaultQueryParser implements QueryParser {
                         queries,
                         rejections,
                         names,
-                        builder,
+                        lines,
                         currentName,
                         currentType,
                         currentLine
                     );
                 }
 
-                builder.setLength(0);
+                lines.clear();
 
                 ParsedHeader parsed = parseHeader(line);
 
@@ -85,14 +88,12 @@ public final class DefaultQueryParser implements QueryParser {
             }
 
             if (currentName != null) {
-                builder
-                    .append(line)
-                    .append(System.lineSeparator());
+                lines.add(line);
             }
         }
 
         if (currentName != null) {
-            complete(queries, rejections, names, builder, currentName, currentType, currentLine);
+            complete(queries, rejections, names, lines, currentName, currentType, currentLine);
         }
 
         return new ParsedQueries(queries, rejections);
@@ -106,12 +107,12 @@ public final class DefaultQueryParser implements QueryParser {
         List<Query> queries,
         List<QueryRejection> rejections,
         Set<String> names,
-        StringBuilder builder,
+        List<String> lines,
         String currentName,
         QueryType currentType,
         int currentLine
     ) {
-        String sql = builder.toString().trim();
+        String sql = String.join(System.lineSeparator(), lines).trim();
 
         if (sql.isBlank()) {
             rejections.add(
@@ -127,14 +128,60 @@ public final class DefaultQueryParser implements QueryParser {
             return;
         }
 
+        List<String> comment = comment(lines);
+
         queries.add(
             new Query(
                 currentName,
                 currentType,
                 sql,
-                currentLine
+                currentLine,
+                comment,
+                writtenSql(lines.subList(comment.size(), lines.size()))
             )
         );
+    }
+
+    /**
+     * The comment of one query: the lines directly under its header that begin
+     * with {@code --}, up to the first line that does not, each without its
+     * {@code --} and one following space. A bare {@code --} is an empty line.
+     */
+    private List<String> comment(List<String> lines) {
+        List<String> comment = new ArrayList<>();
+
+        for (String line : lines) {
+            if (!line.startsWith(COMMENT_PREFIX)) {
+                break;
+            }
+
+            String text = line.substring(COMMENT_PREFIX.length());
+
+            comment.add(text.startsWith(" ") ? text.substring(1) : text);
+        }
+
+        return List.copyOf(comment);
+    }
+
+    /**
+     * The SQL of one query as its source writes it: the lines after its
+     * comment, without the blank lines before the first and after the last and
+     * each other line exactly as written, joined by {@code \n}, so that the
+     * documented text is the same on every platform.
+     */
+    private String writtenSql(List<String> lines) {
+        int first = 0;
+        int last = lines.size();
+
+        while (first < last && lines.get(first).isBlank()) {
+            first++;
+        }
+
+        while (last > first && lines.get(last - 1).isBlank()) {
+            last--;
+        }
+
+        return String.join("\n", lines.subList(first, last));
     }
 
     private ParsedHeader parseHeader(String line) {

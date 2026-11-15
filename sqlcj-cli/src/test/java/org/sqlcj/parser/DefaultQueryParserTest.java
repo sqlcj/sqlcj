@@ -370,6 +370,143 @@ class DefaultQueryParserTest {
         assertEquals("Third", queries.get(2).name());
     }
 
+    /**
+     * The comment of a query is the lines directly under its header that begin
+     * with {@code --}, each without its {@code --} and one following space, a
+     * bare {@code --} as an empty line, and the SQL shown is the text the
+     * source writes after them.
+     */
+    @Test
+    void parsesCommentBlockUnderHeader() {
+        String source = """
+            -- name: GetUser :one
+            -- Reads one user by id.
+            --
+            --Written without a space.
+            SELECT *
+            FROM users
+            WHERE id = $1;
+            """;
+
+        Query query = parser.parse(source).queries().get(0);
+
+        assertEquals(
+            List.of("Reads one user by id.", "", "Written without a space."),
+            query.comment()
+        );
+
+        assertEquals("""
+            SELECT *
+            FROM users
+            WHERE id = $1;""", query.writtenSql());
+    }
+
+    /** A blank line ends the comment, and the lines after it are the SQL. */
+    @Test
+    void endsCommentBlockAtABlankLine() {
+        String source = """
+            -- name: GetUser :one
+            -- Reads one user by id.
+
+            -- Not part of the comment.
+            SELECT *
+            FROM users
+            WHERE id = $1;
+            """;
+
+        Query query = parser.parse(source).queries().get(0);
+
+        assertEquals(List.of("Reads one user by id."), query.comment());
+
+        assertEquals("""
+            -- Not part of the comment.
+            SELECT *
+            FROM users
+            WHERE id = $1;""", query.writtenSql());
+    }
+
+    /** A comment between SQL lines stays in the SQL, where it was written. */
+    @Test
+    void keepsACommentBetweenSqlLinesInTheWrittenSql() {
+        String source = """
+            -- name: ListUsers :many
+            SELECT *
+            -- Only the active ones.
+            FROM users
+            WHERE active;
+            """;
+
+        Query query = parser.parse(source).queries().get(0);
+
+        assertEquals(List.of(), query.comment());
+
+        assertEquals("""
+            SELECT *
+            -- Only the active ones.
+            FROM users
+            WHERE active;""", query.writtenSql());
+    }
+
+    /**
+     * A comment above a later header belongs to the query before it, which a
+     * sqlcj query owns every line up to the next header.
+     */
+    @Test
+    void keepsACommentAboveALaterHeaderInTheEarlierQuery() {
+        String source = """
+            -- name: GetUser :one
+            SELECT *
+            FROM users
+            WHERE id = $1;
+
+            -- Lists every user.
+            -- name: ListUsers :many
+            SELECT *
+            FROM users;
+            """;
+
+        List<Query> queries = parser.parse(source).queries();
+
+        assertEquals("""
+            SELECT *
+            FROM users
+            WHERE id = $1;
+
+            -- Lists every user.""", queries.get(0).writtenSql());
+
+        assertEquals(List.of(), queries.get(1).comment());
+
+        assertEquals("""
+            SELECT *
+            FROM users;""", queries.get(1).writtenSql());
+    }
+
+    /**
+     * The SQL shown keeps the indentation of its first line, which the trimmed
+     * {@code sql} of the same query drops.
+     */
+    @Test
+    void keepsTheIndentationOfTheFirstSqlLine() {
+        String source = """
+            -- name: GetUser :one
+                SELECT *
+                FROM users
+                WHERE id = $1;
+            """;
+
+        Query query = parser.parse(source).queries().get(0);
+
+        assertEquals(
+            "    SELECT *\n    FROM users\n    WHERE id = $1;",
+            query.writtenSql()
+        );
+
+        assertEquals(
+            "SELECT *\n    FROM users\n    WHERE id = $1;",
+            query.sql()
+        );
+    }
+
     @Test
     void parsesHeaderLineOfEachQuery() {
         String source = """
