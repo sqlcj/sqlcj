@@ -141,6 +141,71 @@ class SqlParameterCompilerTest {
         assertEquals(List.of("id"), parameters.names());
     }
 
+    /**
+     * One colon, group, {@code .}, and field that follow each other directly
+     * are one parameter whose name is the group and the field, and whose
+     * replacement spans all four tokens.
+     */
+    @Test
+    void shouldReplaceReportedParameterGroupSpans() {
+        String sql = "SELECT * FROM users WHERE id = :page.size";
+
+        SqlParameters parameters = compile(
+            sql,
+            token(CCJSqlParserConstants.DOUBLE_COLON, ":", 31),
+            token(CCJSqlParserConstants.S_IDENTIFIER, "page", 32),
+            token(CCJSqlParserConstants.S_IDENTIFIER, ".", 36),
+            token(CCJSqlParserConstants.S_IDENTIFIER, "size", 37)
+        );
+
+        assertEquals("SELECT * FROM users WHERE id = ?", parameters.executableSql());
+        assertEquals(List.of(1), parameters.indexes());
+        assertEquals(List.of("page.size"), parameters.names());
+    }
+
+    /**
+     * A field separated from its {@code .}, and a {@code .} separated from its
+     * group, are other text, so the name after the colon is compiled alone and
+     * the rest stays in the SQL.
+     */
+    @Test
+    void shouldIgnoreParameterGroupFieldSeparatedFromItsSeparator() {
+        String sql = "SELECT * FROM users WHERE id = :page. size";
+
+        SqlParameters parameters = compile(
+            sql,
+            token(CCJSqlParserConstants.DOUBLE_COLON, ":", 31),
+            token(CCJSqlParserConstants.S_IDENTIFIER, "page", 32),
+            token(CCJSqlParserConstants.S_IDENTIFIER, ".", 36),
+            token(CCJSqlParserConstants.S_IDENTIFIER, "size", 38)
+        );
+
+        assertEquals("SELECT * FROM users WHERE id = ?. size", parameters.executableSql());
+        assertEquals(List.of("page"), parameters.names());
+    }
+
+    /**
+     * A field followed directly by another {@code .} opens a deeper chain,
+     * which names no group, so only the name after the colon is compiled.
+     */
+    @Test
+    void shouldIgnoreADeeperChainAsAParameterGroup() {
+        String sql = "SELECT * FROM users WHERE id = :a.b.c";
+
+        SqlParameters parameters = compile(
+            sql,
+            token(CCJSqlParserConstants.DOUBLE_COLON, ":", 31),
+            token(CCJSqlParserConstants.S_IDENTIFIER, "a", 32),
+            token(CCJSqlParserConstants.S_IDENTIFIER, ".", 33),
+            token(CCJSqlParserConstants.S_IDENTIFIER, "b", 34),
+            token(CCJSqlParserConstants.S_IDENTIFIER, ".", 35),
+            token(CCJSqlParserConstants.S_IDENTIFIER, "c", 36)
+        );
+
+        assertEquals("SELECT * FROM users WHERE id = ?.b.c", parameters.executableSql());
+        assertEquals(List.of("a"), parameters.names());
+    }
+
     /** A name that does not follow its colon directly is other text. */
     @Test
     void shouldIgnoreNameSeparatedFromItsColon() {

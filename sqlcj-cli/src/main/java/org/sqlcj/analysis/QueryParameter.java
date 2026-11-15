@@ -5,6 +5,13 @@ import org.sqlcj.schema.ColumnType;
 /**
  * One analyzed parameter occurrence.
  *
+ * @param name     the name this parameter carries, which is the field name of a
+ *                 parameter group placeholder, the name of a plain named
+ *                 placeholder, and the column or clause name of a {@code $N}
+ *                 placeholder
+ * @param group    the parameter group the placeholder names, as the query
+ *                 spells it, and {@code null} for a plain or {@code $N}
+ *                 placeholder
  * @param enumType the schema's declared name of the parameter's enum type when
  *                 {@code type} is {@link ColumnType#ENUM}, and {@code null}
  *                 otherwise
@@ -27,7 +34,8 @@ public record QueryParameter(
     String enumType,
     boolean array,
     boolean blankPadded,
-    boolean nullable
+    boolean nullable,
+    String group
 ) {
 
     /** A parameter of a type whose Java type is decided by {@code type} alone. */
@@ -63,10 +71,23 @@ public record QueryParameter(
         this(index, name, type, enumType, array, blankPadded, false);
     }
 
+    /** A parameter of no parameter group. */
+    public QueryParameter(
+        int index,
+        String name,
+        ColumnType type,
+        String enumType,
+        boolean array,
+        boolean blankPadded,
+        boolean nullable
+    ) {
+        this(index, name, type, enumType, array, blankPadded, nullable, null);
+    }
+
     /** The same parameter, nullable. */
     public QueryParameter asNullable() {
         return nullable
             ? this
-            : new QueryParameter(index, name, type, enumType, array, blankPadded, true);
+            : new QueryParameter(index, name, type, enumType, array, blankPadded, true, group);
     }
 }

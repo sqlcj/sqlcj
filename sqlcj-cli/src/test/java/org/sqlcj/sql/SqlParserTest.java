@@ -142,9 +142,10 @@ class SqlParserTest {
     }
 
     /**
-     * Only a name written directly after a single colon is a parameter, so a
-     * quoted name, an ampersand placeholder, a separated name, and a numeric
-     * bind stay in the SQL for semantic analysis to reject.
+     * Only a name or one parameter group and field written directly after a
+     * single colon is a parameter, so a quoted name, an ampersand placeholder,
+     * a separated name, a separated group, a quoted group, and a numeric bind
+     * stay in the SQL for semantic analysis to reject.
      */
     @Test
     void shouldNotCompileUnsupportedNamedPlaceholderForms() {
@@ -153,6 +154,8 @@ class SqlParserTest {
                 "SELECT * FROM users WHERE id = :\"x\"",
                 "SELECT * FROM users WHERE id = &x",
                 "SELECT * FROM users WHERE id = : x",
+                "SELECT * FROM users WHERE id = : a . b",
+                "SELECT * FROM users WHERE id = :\"a\".b",
                 "SELECT * FROM users WHERE id = :1"
             )
         ) {
@@ -172,13 +175,90 @@ class SqlParserTest {
     @Test
     void shouldReportNamedPlaceholdersThatWereNotCompiled() {
         ParsedSql parsedSql = parser.parse(
-            "SELECT id FROM users WHERE id = :id AND id = abs(:a.b) ORDER BY :\"x\", &y"
+            "SELECT id FROM users WHERE id = :id AND id = abs(:a.b.c) ORDER BY :\"x\", &y"
         );
 
         assertEquals(
-            List.of(":a.b", ":\"x\"", "&y"),
+            List.of(":a.b.c", ":\"x\"", "&y"),
             parsedSql.parameters().uncompiledPlaceholders()
         );
+    }
+
+    /**
+     * One parameter group and one field of it, written without a space, are one
+     * logical parameter named after both, numbered by first occurrence, and
+     * every occurrence of it becomes a {@code ?} of its own, a cast occurrence
+     * included.
+     */
+    @Test
+    void shouldCompileParameterGroupPlaceholders() {
+        ParsedSql parsedSql = parser.parse(
+            """
+                SELECT * FROM users
+                WHERE (:criteria.name::text IS NULL OR name = :criteria.name)
+                LIMIT :page.size OFFSET :page.offset"""
+        );
+
+        assertEquals(
+            """
+                SELECT * FROM users
+                WHERE (?::text IS NULL OR name = ?)
+                LIMIT ? OFFSET ?""",
+            parsedSql.parameters().executableSql()
+        );
+
+        assertEquals(List.of(1, 1, 2, 3), parsedSql.parameters().indexes());
+
+        assertEquals(
+            List.of("criteria.name", "page.size", "page.offset"),
+            parsedSql.parameters().names()
+        );
+
+        assertTrue(parsedSql.parameters().uncompiledPlaceholders().isEmpty());
+        assertFalse(parsedSql.parameters().hasPositionalParameter());
+    }
+
+    /**
+     * A deeper chain names no parameter group, so the compiler compiles the
+     * name written after the colon, leaves the rest of the chain in the SQL,
+     * and reports the whole placeholder as one it did not compile, which
+     * semantic analysis rejects.
+     */
+    @Test
+    void shouldNotCompileADeeperChainAsAParameterGroup() {
+        ParsedSql parsedSql = parser.parse("SELECT * FROM users WHERE id = :a.b.c");
+
+        assertEquals(
+            "SELECT * FROM users WHERE id = ?.b.c",
+            parsedSql.parameters().executableSql()
+        );
+
+        assertEquals(List.of("a"), parsedSql.parameters().names());
+
+        assertEquals(
+            List.of(":a.b.c"),
+            parsedSql.parameters().uncompiledPlaceholders()
+        );
+    }
+
+    /**
+     * A group placeholder and a plain one of the same field name are two
+     * logical parameters, because the name a group states is the group and the
+     * field together.
+     */
+    @Test
+    void shouldCompileAGroupFieldAndAPlainNameAsDistinctParameters() {
+        ParsedSql parsedSql = parser.parse(
+            "SELECT * FROM users WHERE name = :criteria.name AND bio = :name"
+        );
+
+        assertEquals(
+            "SELECT * FROM users WHERE name = ? AND bio = ?",
+            parsedSql.parameters().executableSql()
+        );
+
+        assertEquals(List.of(1, 2), parsedSql.parameters().indexes());
+        assertEquals(List.of("criteria.name", "name"), parsedSql.parameters().names());
     }
 
     @Test

@@ -1,7 +1,8 @@
 -- The queries of the null-checker fixture: every result shape a generated
 -- repository has, over a table that holds every mapped type, scalar and
 -- array, nullable and NOT NULL, and a parameter of each nullness for the
--- types whose argument reads a method of its value.
+-- types whose argument reads a method of its value, as a plain placeholder
+-- and as the field of a parameter group.
 
 -- name: GetReading :one
 SELECT *
@@ -92,6 +93,22 @@ SET nn_mood       = :mood,
     nn_interval   = :span,
     null_interval = :optionalSpan
 WHERE id = :id;
+
+-- One parameter group whose fields cover an enum, an INTERVAL, an array, and
+-- a BYTEA of each nullness, so that the generated record, its checks, and its
+-- builder are read by the null checker beside the bindings of its fields.
+
+-- name: ListReadingsByFilter :many
+SELECT id
+FROM readings
+WHERE nn_mood = :filter.mood
+  AND nn_interval = :filter.span
+  AND nn_bytea = :filter.payload
+  AND nn_text = ANY (:filter.tags)
+  AND (:filter.optionalMood::mood IS NULL OR null_mood = :filter.optionalMood)
+  AND (:filter.optionalSpan::interval IS NULL OR null_interval = :filter.optionalSpan)
+  AND (:filter.optionalPayload::bytea IS NULL OR null_bytea = :filter.optionalPayload)
+  AND (:filter.optionalTags IS NULL OR null_text = ANY (:filter.optionalTags));
 
 -- One value query per NOT NULL column, each returning the value itself.
 

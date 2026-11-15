@@ -289,6 +289,303 @@ class JavaNamesTest {
         assertEquals(List.of("id"), names.componentNames());
     }
 
+    /**
+     * One parameter group is one record of the repository, named in upper camel
+     * case after the group, whose components are the fields of the first query
+     * that uses it, in that query's order of first occurrence.
+     */
+    @Test
+    void shouldNameOneRecordPerParameterGroup() {
+        JavaNames names = JavaNames.of(
+            new QueryGroupModel(
+                "Users",
+                List.of(
+                    parameterQuery(
+                        "SearchUsers",
+                        List.of(
+                            groupParameter(1, "created at", "search_criteria"),
+                            groupParameter(2, "size", "page"),
+                            groupParameter(3, "offset", "page")
+                        )
+                    ),
+                    parameterQuery(
+                        "ListUsers",
+                        List.of(
+                            groupParameter(1, "offset", "page"),
+                            groupParameter(2, "size", "page")
+                        )
+                    )
+                )
+            )
+        );
+
+        assertEquals(
+            List.of("SearchCriteria", "Page"),
+            names.groups().stream()
+                .map(JavaNames.GroupNames::typeName)
+                .toList()
+        );
+
+        assertEquals(List.of("createdAt"), names.groups().get(0).componentNames());
+        assertEquals(List.of("size", "offset"), names.groups().get(1).componentNames());
+    }
+
+    /**
+     * A component of a group record avoids the names its own builder takes
+     * beside the inherited {@link Object} members, so a field named
+     * {@code build} or {@code builder} is suffixed.
+     */
+    @Test
+    void shouldResolveGroupComponentNamesReservedByItsBuilder() {
+        JavaNames names = JavaNames.of(
+            new QueryGroupModel(
+                "Users",
+                List.of(
+                    parameterQuery(
+                        "SearchUsers",
+                        List.of(
+                            groupParameter(1, "build", "page"),
+                            groupParameter(2, "builder", "page"),
+                            groupParameter(3, "hashCode", "page"),
+                            groupParameter(4, "size", "page")
+                        )
+                    )
+                )
+            )
+        );
+
+        assertEquals(
+            List.of("build1", "builder1", "hashCode1", "size"),
+            names.groups().get(0).componentNames()
+        );
+    }
+
+    /**
+     * A method takes one parameter per plain placeholder and one per parameter
+     * group, in order of first occurrence, where a group stands at its first
+     * field, and every parameter of the query is named by its method parameter
+     * or by the component of its group record.
+     */
+    @Test
+    void shouldOrderMethodParametersByFirstOccurrence() {
+        JavaNames.QueryNames names = JavaNames.of(
+            new QueryGroupModel(
+                "Users",
+                List.of(
+                    parameterQuery(
+                        "SearchUsers",
+                        List.of(
+                            groupParameter(1, "name", "criteria"),
+                            new QueryParameter(2, "id", ColumnType.BIGINT),
+                            groupParameter(3, "size", "page"),
+                            groupParameter(4, "status", "criteria")
+                        )
+                    )
+                )
+            )
+        )
+            .queries()
+            .get(0);
+
+        assertEquals(
+            List.of("criteria", "id", "page"),
+            names.methodParameters().stream()
+                .map(JavaNames.MethodParameter::name)
+                .toList()
+        );
+
+        assertEquals(
+            Arrays.asList("Criteria", null, "Page"),
+            names.methodParameters().stream()
+                .map(
+                    parameter -> parameter.group() == null
+                        ? null
+                        : parameter.group().typeName()
+                )
+                .toList()
+        );
+
+        assertEquals(List.of("name", "id", "size", "status"), names.parameterNames());
+    }
+
+    /**
+     * A group record is rejected when its name is equal ignoring case to
+     * another type of the repository, because the compiled class files of those
+     * types are one path on a case-insensitive filesystem.
+     */
+    @Test
+    void shouldRejectGroupRecordEqualIgnoringCaseToAnotherRepositoryType() {
+        assertEquals(
+            "Parameter group 'users_repository' generates the record UsersRepository, which is "
+                + "equal ignoring case to the repository class UsersRepository; rename the group",
+            groupCollision("users_repository")
+        );
+
+        assertEquals(
+            "Parameter group 'search_users_result' generates the record SearchUsersResult, which "
+                + "is equal ignoring case to the result record SearchUsersResult of query "
+                + "'SearchUsers'; rename the group",
+            groupCollision("search_users_result")
+        );
+
+        assertEquals(
+            "Parameter group 'builder' generates the record Builder, which every group record's "
+                + "builder is named; rename the group",
+            groupCollision("builder")
+        );
+    }
+
+    /** Two groups whose records are equal ignoring case are rejected too. */
+    @Test
+    void shouldRejectTwoGroupRecordsEqualIgnoringCase() {
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> JavaNames.of(
+                new QueryGroupModel(
+                    "Users",
+                    List.of(
+                        parameterQuery(
+                            "SearchUsers",
+                            List.of(
+                                groupParameter(1, "size", "page"),
+                                groupParameter(2, "size", "PAGE")
+                            )
+                        )
+                    )
+                )
+            )
+        );
+
+        assertEquals(
+            "Parameter group 'PAGE' generates the record Page, which is equal ignoring case to "
+                + "the record Page of parameter group 'page'; rename the group",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A group record is rejected against the parameter record of a batch query
+     * as well, which that query's own method takes a list of.
+     */
+    @Test
+    void shouldRejectGroupRecordEqualIgnoringCaseToABatchParameterRecord() {
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> JavaNames.of(
+                new QueryGroupModel(
+                    "Users",
+                    List.of(
+                        new QueryModel(
+                            "InsertUsers",
+                            QueryType.BATCH_EXEC,
+                            "users",
+                            SQL,
+                            List.of(1),
+                            List.of(),
+                            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+                            null
+                        ),
+                        parameterQuery(
+                            "SearchUsers",
+                            List.of(groupParameter(1, "size", "insert_users_params"))
+                        )
+                    )
+                )
+            )
+        );
+
+        assertEquals(
+            "Parameter group 'insert_users_params' generates the record InsertUsersParams, which "
+                + "is equal ignoring case to the parameter record InsertUsersParams of query "
+                + "'InsertUsers'; rename the group",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A group record is rejected against the shared row records the repository
+     * imports as well, which a nested record of that name would shadow inside
+     * every member that reads the row.
+     */
+    @Test
+    void shouldRejectGroupRecordEqualIgnoringCaseToARowRecord() {
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> JavaNames.of(
+                new QueryGroupModel(
+                    "Users",
+                    List.of(
+                        new QueryModel(
+                            "GetUser",
+                            QueryType.ONE,
+                            "users",
+                            SQL,
+                            List.of(1),
+                            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+                            List.of(groupParameter(1, "id", "USERS_ROW")),
+                            "users"
+                        )
+                    )
+                )
+            )
+        );
+
+        assertEquals(
+            "Parameter group 'USERS_ROW' generates the record UsersRow, which is equal ignoring "
+                + "case to the row record UsersRow of table 'users'; rename the group",
+            exception.getMessage()
+        );
+    }
+
+    /** The message of one rejected group record of a one-query repository. */
+    private String groupCollision(String groupName) {
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> JavaNames.of(
+                new QueryGroupModel(
+                    "Users",
+                    List.of(
+                        parameterQuery(
+                            "SearchUsers",
+                            List.of(groupParameter(1, "size", groupName))
+                        )
+                    )
+                )
+            )
+        );
+
+        return exception.getMessage();
+    }
+
+    private QueryParameter groupParameter(int index, String name, String group) {
+        return new QueryParameter(
+            index,
+            name,
+            ColumnType.BIGINT,
+            null,
+            false,
+            false,
+            false,
+            group
+        );
+    }
+
+    /** One {@code :many} query of the given parameters. */
+    private QueryModel parameterQuery(String queryName, List<QueryParameter> parameters) {
+        return new QueryModel(
+            queryName,
+            QueryType.MANY,
+            "users",
+            SQL,
+            parameters.stream()
+                .map(QueryParameter::index)
+                .toList(),
+            List.of(),
+            parameters,
+            null
+        );
+    }
+
     private JavaNames names(String groupName, String... queryNames) {
         return JavaNames.of(
             new QueryGroupModel(

@@ -40,10 +40,14 @@ import java.util.regex.Pattern;
  * first textual occurrence, and every occurrence of that name becomes a
  * {@code ?} of its own, reported with the offset that {@code ?} takes in the
  * compiled SQL, so that a later stage can write at one marker without reading
- * the source again. A placeholder form this compiler does not recognize,
- * such as a qualified, quoted, or {@code &name} placeholder, stays in the SQL
- * and is reported as written for semantic analysis to reject, as is an
- * anonymous {@code ?} placeholder, which has no parameter to bind.
+ * the source again. A name is either one unquoted name written directly after
+ * the colon, as in {@code :size}, or one parameter group and one field of it,
+ * separated by a {@code .} and written without a space, as in
+ * {@code :page.size}, whose logical name is {@code page.size}. A placeholder
+ * form this compiler does not recognize, such as a deeper chain, a quoted, or
+ * an {@code &name} placeholder, stays in the SQL and is reported as written
+ * for semantic analysis to reject, as is an anonymous {@code ?} placeholder,
+ * which has no parameter to bind.
  *
  * <p>The same walk reports the placeholder occurrences of the source in
  * textual order, each with the cast that casts it, with where it stands as
@@ -86,6 +90,12 @@ final class SqlParameterCompiler {
      * colon opens a name.
      */
     private static final String NAME_PREFIX = ":";
+
+    /**
+     * The image of the token that separates a parameter group from its field,
+     * which the logical name of a group placeholder keeps.
+     */
+    private static final String NAME_SEPARATOR = ".";
 
     /**
      * The image of an anonymous placeholder token, which the JSONB
@@ -219,13 +229,19 @@ final class SqlParameterCompiler {
                 positional = true;
             } else if (token != lastToken && isNamedParameter(token, token.next)) {
                 Token name = token.next;
-                String image = token.image + name.image;
+                Token field = groupField(name, lastToken);
+                Token last = field == null ? name : field;
+
+                String parameterName = field == null
+                    ? name.image
+                    : name.image + NAME_SEPARATOR + field.image;
+                String image = token.image + parameterName;
 
                 int begin = requireSpan(
                     sql,
                     image,
                     token.absoluteBegin,
-                    name.absoluteEnd,
+                    last.absoluteEnd,
                     copied
                 );
 
@@ -236,9 +252,9 @@ final class SqlParameterCompiler {
 
                 copied = begin + image.length();
 
-                indexes.add(numberOf(name.image, names));
+                indexes.add(numberOf(parameterName, names));
 
-                token = name;
+                token = last;
             }
 
             if (token == lastToken) {
@@ -852,6 +868,52 @@ final class SqlParameterCompiler {
             && name.image != null
             && name.absoluteBegin == colon.absoluteEnd
             && PARAMETER_NAME.matcher(name.image).matches();
+    }
+
+    /**
+     * The field token of the parameter group a named parameter's own name
+     * opens, which requires a {@code .} and an unquoted field name to follow
+     * that name directly, and {@code null} when the tokens after it are not
+     * one group field.
+     *
+     * <p>A field followed directly by another {@code .} opens a deeper chain,
+     * such as {@code :a.b.c}, which names no group, so no group is compiled
+     * from it and the rest of the chain stays in the SQL; the parser reports
+     * such a placeholder as one this compiler did not compile, which semantic
+     * analysis rejects. A separated {@code .} or field, a quoted field, and a
+     * field that is not an unquoted identifier are other text in the same way.
+     */
+    private Token groupField(Token name, Token lastToken) {
+        if (name == lastToken) {
+            return null;
+        }
+
+        Token separator = name.next;
+
+        if (!isNameSeparator(separator, name.absoluteEnd) || separator == lastToken) {
+            return null;
+        }
+
+        Token field = separator.next;
+
+        if (
+            field == null
+                || field.image == null
+                || field.absoluteBegin != separator.absoluteEnd
+                || !PARAMETER_NAME.matcher(field.image).matches()
+        ) {
+            return null;
+        }
+
+        return field != lastToken && isNameSeparator(field.next, field.absoluteEnd)
+            ? null
+            : field;
+    }
+
+    private boolean isNameSeparator(Token token, int begin) {
+        return token != null
+            && NAME_SEPARATOR.equals(token.image)
+            && token.absoluteBegin == begin;
     }
 
     /**

@@ -82,8 +82,6 @@ import org.sqlcj.schema.parser.SchemaNamespace;
 import org.sqlcj.sql.ParsedSql;
 import org.sqlcj.sql.PlaceholderOccurrence;
 import org.sqlcj.sql.WildcardOccurrence;
-import org.sqlcj.type.DefaultTypeResolver;
-import org.sqlcj.type.TypeResolver;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -114,6 +112,15 @@ public final class QueryAnalyzer {
 
     private static final String MIXED_PLACEHOLDER_REJECTION = """
         Indexed '$N' and named ':name' placeholders must not be mixed in one query""";
+
+    /**
+     * The rejection of a parameter group placeholder in a {@code :batchexec}
+     * query, which is written with the placeholder as the query spells it and
+     * with the plain named placeholder of its field.
+     */
+    private static final String BATCH_PARAMETER_GROUP_REJECTION = """
+        A :batchexec query cannot use the parameter group placeholder %s, because a batch already \
+        takes one record per row; write a plain named placeholder, such as %s""";
 
     /** The rejection of a statement kind outside the supported subset. */
     private static final String UNSUPPORTED_STATEMENT_REJECTION = """
@@ -468,6 +475,13 @@ public final class QueryAnalyzer {
     /** The character that opens a supported named placeholder. */
     private static final String NAME_PREFIX = ":";
 
+    /**
+     * The character that separates the group of a parameter group placeholder
+     * from its field, both in the placeholder and in the logical parameter name
+     * the SQL parser compiled it under.
+     */
+    private static final String GROUP_SEPARATOR = ".";
+
     /** The parameter name of a {@code LIMIT} row count placeholder. */
     private static final String LIMIT_PARAMETER_NAME = "limit";
 
@@ -605,10 +619,10 @@ public final class QueryAnalyzer {
     );
 
     /**
-     * Resolves the Java type of parameter occurrence, which decides whether a
-     * repeated placeholder index can share one generated parameter.
+     * Compares parameter occurrences by their Java type, which decides whether
+     * a repeated placeholder index can share one generated parameter.
      */
-    private final TypeResolver typeResolver = new DefaultTypeResolver();
+    private final ParameterGroups parameterGroups = new ParameterGroups();
 
     /** Resolves the type a cast states, as a schema column declares its own. */
     private final ColumnTypeMapping columnTypeMapping = new ColumnTypeMapping();
@@ -936,11 +950,17 @@ public final class QueryAnalyzer {
 
     /**
      * One placeholder occurrence, resolved to the logical parameter it binds
-     * and, for a named placeholder, to the name that parameter carries. The
-     * placeholder expression identifies the occurrence, which is how a clause's
-     * analysis meets the placeholder occurrences the parser reported.
+     * and, for a named placeholder, to the name that parameter carries and to
+     * the parameter group it belongs to. The placeholder expression identifies
+     * the occurrence, which is how a clause's analysis meets the placeholder
+     * occurrences the parser reported.
+     *
+     * @param name  the field name of a group placeholder, the name of a plain
+     *              named placeholder, and {@code null} for a {@code $N} one
+     * @param group the group of a group placeholder, and {@code null} for every
+     *              other placeholder
      */
-    private record Placeholder(Expression expression, int index, String name) {
+    private record Placeholder(Expression expression, int index, String name, String group) {
 
         /**
          * The name of the parameter this occurrence binds, which a named
@@ -955,9 +975,13 @@ public final class QueryAnalyzer {
 
         /** The placeholder as the query spells it. */
         private String spelled() {
-            return name == null
-                ? "$" + index
-                : NAME_PREFIX + name;
+            if (name == null) {
+                return "$" + index;
+            }
+
+            return group == null
+                ? NAME_PREFIX + name
+                : NAME_PREFIX + group + GROUP_SEPARATOR + name;
         }
     }
 
@@ -1003,6 +1027,10 @@ public final class QueryAnalyzer {
          * did not replace is rejected as the query spells it, which keeps every
          * accepted occurrence bound even though such a placeholder is normally
          * already rejected from the compiler's report.
+         *
+         * <p>The compiled name of a parameter group placeholder is its group
+         * and its field separated by a {@code .}, so the parameter it binds is
+         * named after the field and carries the group.
          */
         private Placeholder of(Expression expression) {
             if (expression instanceof JdbcParameter parameter) {
@@ -1010,15 +1038,22 @@ public final class QueryAnalyzer {
                     throw new UnsupportedOperationException(ANONYMOUS_PARAMETER_REJECTION);
                 }
 
-                return new Placeholder(expression, parameter.getIndex(), null);
+                return new Placeholder(expression, parameter.getIndex(), null, null);
             }
 
             if (expression instanceof JdbcNamedParameter named) {
-                return new Placeholder(
-                    expression,
-                    requireCompiledName(named),
-                    named.getName()
-                );
+                int index = requireCompiledName(named);
+                String name = named.getName();
+                int separator = name.indexOf(GROUP_SEPARATOR);
+
+                return separator < 0
+                    ? new Placeholder(expression, index, name, null)
+                    : new Placeholder(
+                        expression,
+                        index,
+                        name.substring(separator + GROUP_SEPARATOR.length()),
+                        name.substring(0, separator)
+                    );
             }
 
             return null;
@@ -1156,6 +1191,7 @@ public final class QueryAnalyzer {
 
     public QueryModel analyze(Query query, ParsedSql parsedSql, Schema schema) {
         requireSupportedPlaceholders(parsedSql);
+        requireNoParameterGroupInBatch(query, parsedSql);
 
         Statement statement = parsedSql.statement();
 
@@ -3848,7 +3884,7 @@ public final class QueryAnalyzer {
         QueryParameter occurrence,
         List<String> names
     ) {
-        if (isSameParameterType(parameter, occurrence)) {
+        if (parameterGroups.isSameType(parameter, occurrence)) {
             return;
         }
 
@@ -3857,8 +3893,8 @@ public final class QueryAnalyzer {
                 "Placeholder %s has conflicting types: %s and %s"
                     .formatted(
                         describePlaceholder(parameter.index(), names),
-                        describeParameterType(parameter),
-                        describeParameterType(occurrence)
+                        parameterGroups.describeType(parameter),
+                        parameterGroups.describeType(occurrence)
                     )
             );
         }
@@ -3867,45 +3903,12 @@ public final class QueryAnalyzer {
             "Placeholder $%d has conflicting types: %s from '%s' and %s from '%s'"
                 .formatted(
                     parameter.index(),
-                    describeParameterType(parameter),
+                    parameterGroups.describeType(parameter),
                     parameter.name(),
-                    describeParameterType(occurrence),
+                    parameterGroups.describeType(occurrence),
                     occurrence.name()
                 )
         );
-    }
-
-    private boolean isSameParameterType(QueryParameter parameter, QueryParameter occurrence) {
-        if (parameter.array() != occurrence.array()) {
-            return false;
-        }
-
-        if (parameter.type() == ColumnType.ENUM || occurrence.type() == ColumnType.ENUM) {
-            return parameter.type() == occurrence.type()
-                && parameter.enumType().equalsIgnoreCase(occurrence.enumType());
-        }
-
-        return typeResolver.resolve(parameter.type())
-            .equals(typeResolver.resolve(occurrence.type()));
-    }
-
-    /**
-     * Describes a parameter's type for a diagnostic. An enum is described by
-     * its PostgreSQL name, because analysis renders no Java name, and an array
-     * by the list of its element's description.
-     */
-    private String describeParameterType(QueryParameter parameter) {
-        if (parameter.type() == ColumnType.ENUM) {
-            return parameter.array()
-                ? parameter.enumType() + "[]"
-                : parameter.enumType();
-        }
-
-        String javaType = typeResolver.resolve(parameter.type());
-
-        return parameter.array()
-            ? "List<" + javaType + ">"
-            : javaType;
     }
 
     private void requireContiguousIndexes(List<QueryParameter> parameters) {
@@ -6212,7 +6215,8 @@ public final class QueryAnalyzer {
 
     /**
      * One parameter occurrence, named after its placeholder when the placeholder
-     * is named, and otherwise after the column or clause it belongs to.
+     * is named, and otherwise after the column or clause it belongs to, and
+     * carrying the parameter group a group placeholder names.
      */
     private QueryParameter toParameter(
         Placeholder placeholder,
@@ -6230,7 +6234,8 @@ public final class QueryAnalyzer {
             enumType,
             array,
             blankPadded,
-            nullable
+            nullable,
+            placeholder.group()
         );
     }
 
@@ -6257,6 +6262,31 @@ public final class QueryAnalyzer {
 
         if (parsedSql.parameters().hasPositionalParameter() && !parsedSql.parameters().names().isEmpty()) {
             throw new UnsupportedOperationException(MIXED_PLACEHOLDER_REJECTION);
+        }
+    }
+
+    /**
+     * Rejects a parameter group placeholder in a {@code :batchexec} query,
+     * whose method already takes one generated record per row, so a group would
+     * be a record inside that record. The first group placeholder of the source
+     * is named, with the plain placeholder to write instead.
+     */
+    private void requireNoParameterGroupInBatch(Query query, ParsedSql parsedSql) {
+        if (query.type() != QueryType.BATCH_EXEC) {
+            return;
+        }
+
+        for (String name : parsedSql.parameters().names()) {
+            int separator = name.indexOf(GROUP_SEPARATOR);
+
+            if (separator >= 0) {
+                throw new UnsupportedOperationException(
+                    BATCH_PARAMETER_GROUP_REJECTION.formatted(
+                        NAME_PREFIX + name,
+                        NAME_PREFIX + name.substring(separator + GROUP_SEPARATOR.length())
+                    )
+                );
+            }
         }
     }
 

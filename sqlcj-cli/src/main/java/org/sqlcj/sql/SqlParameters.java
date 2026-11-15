@@ -23,11 +23,13 @@ import java.util.List;
  * @param names         the compiled {@code :name} placeholder names in logical
  *                      order, so the name of logical parameter {@code n} is the
  *                      element at {@code n - 1}, and an empty list when the
- *                      source compiled no named placeholder
+ *                      source compiled no named placeholder. The name of a
+ *                      parameter group placeholder is its group and its field
+ *                      separated by a {@code .}, as in {@code page.size}
  * @param uncompiledPlaceholders
  *                      the named placeholders of the parse tree that were not
  *                      replaced, written as the source spells them, such as
- *                      {@code :a.b}, {@code :"x"}, and {@code &x}, each
+ *                      {@code :a.b.c}, {@code :"x"}, and {@code &x}, each
  *                      reported once in the order they were found
  * @param hasPositionalParameter
  *                      whether the source contains a {@code $N} placeholder

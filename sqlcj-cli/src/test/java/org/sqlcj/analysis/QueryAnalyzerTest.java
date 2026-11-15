@@ -7161,6 +7161,127 @@ class QueryAnalyzerTest {
         );
     }
 
+    /**
+     * A {@code :<group>.<field>} placeholder is one parameter named after its
+     * field and carrying its group, typed and null-marked exactly as the plain
+     * placeholder of the same use is, and a repeated one is one parameter, a
+     * cast occurrence included.
+     */
+    @Test
+    void shouldResolveParameterGroupPlaceholders() {
+        String sql = """
+            SELECT id
+            FROM users
+            WHERE (:criteria.name::text IS NULL OR name = :criteria.name)
+              AND id = :criteria.id
+            LIMIT :page.size""";
+
+        QueryModel model = analyzer.analyze(
+            new Query("SearchUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "name", ColumnType.TEXT, null, false, false, true, "criteria"),
+                new QueryParameter(2, "id", ColumnType.BIGINT, null, false, false, false, "criteria"),
+                new QueryParameter(3, "size", ColumnType.INTEGER, null, false, false, false, "page")
+            ),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1, 1, 2, 3), model.bindingParameterIndexes());
+
+        assertEquals(
+            """
+                SELECT id
+                FROM users
+                WHERE (?::text IS NULL OR name = ?)
+                  AND id = ?
+                LIMIT ?""",
+            model.executableSql()
+        );
+    }
+
+    /**
+     * A group field and a plain placeholder of the same name are two
+     * parameters, because a group placeholder names the group and the field
+     * together.
+     */
+    @Test
+    void shouldResolveAGroupFieldAndAPlainNameAsDistinctParameters() {
+        String sql = "SELECT id FROM users WHERE name = :criteria.name AND name = :name";
+
+        QueryModel model = analyzer.analyze(
+            new Query("FindUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(
+                    1,
+                    "name",
+                    ColumnType.VARCHAR,
+                    null,
+                    false,
+                    false,
+                    false,
+                    "criteria"
+                ),
+                new QueryParameter(2, "name", ColumnType.VARCHAR)
+            ),
+            model.parameters()
+        );
+    }
+
+    /**
+     * A {@code :batchexec} query already takes one generated record per row, so
+     * a group placeholder in it is rejected naming the plain placeholder to
+     * write instead.
+     */
+    @Test
+    void shouldRejectAParameterGroupInABatchQuery() {
+        String sql = "UPDATE users SET name = :name WHERE id = :page.size";
+
+        Query query = new Query("UpdateUsers", QueryType.BATCH_EXEC, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, schema)
+        );
+
+        assertEquals(
+            "A :batchexec query cannot use the parameter group placeholder :page.size, because a "
+                + "batch already takes one record per row; write a plain named placeholder, "
+                + "such as :size",
+            exception.getMessage()
+        );
+    }
+
+    /** A plain named placeholder of a {@code :batchexec} query is accepted. */
+    @Test
+    void shouldAcceptPlainNamedPlaceholdersInABatchQuery() {
+        String sql = "UPDATE users SET name = :name WHERE id = :id";
+
+        QueryModel model = analyzer.analyze(
+            new Query("UpdateUsers", QueryType.BATCH_EXEC, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "name", ColumnType.VARCHAR, null, false, false, true),
+                new QueryParameter(2, "id", ColumnType.BIGINT)
+            ),
+            model.parameters()
+        );
+    }
+
     @Test
     void shouldRejectMixedPlaceholderForms() {
         String sql = "SELECT * FROM users WHERE id IN ($1, :other)";
@@ -7189,17 +7310,19 @@ class QueryAnalyzerTest {
         delimiter = '|',
         quoteCharacter = '`',
         value = {
-            "SELECT * FROM users WHERE id = :a.b|:a.b",
+            "SELECT * FROM users WHERE id = :a.b.c|:a.b.c",
+            "SELECT * FROM users WHERE id = : a . b|:a.b",
+            "SELECT * FROM users WHERE id = :\"a\".b|:\"a\".b",
             "SELECT * FROM users WHERE id = :\"x\"|:\"x\"",
             "SELECT * FROM users WHERE id = &x|&x",
             "SELECT id FROM users WHERE id = :id ORDER BY :\"x\"|:\"x\"",
             "SELECT id FROM users WHERE id = :id ORDER BY &x|&x",
             "SELECT id FROM users WHERE id = abs(:\"x\")|:\"x\"",
             "SELECT id FROM users WHERE id = abs(&x)|&x",
-            "SELECT id FROM users WHERE id = abs(:a.b)|:a.b",
+            "SELECT id FROM users WHERE id = abs(:a.b.c)|:a.b.c",
             "SELECT id FROM users WHERE id = :\"x\"::bigint|:\"x\"",
             "SELECT id FROM users WHERE id = &x::bigint|&x",
-            "SELECT id FROM users WHERE id = :a.b::bigint|:a.b",
+            "SELECT id FROM users WHERE id = :a.b.c::bigint|:a.b.c",
             "SELECT id FROM users WHERE id = :\"x\"::int::bigint|:\"x\"",
             "SELECT id FROM users WHERE id = :id ORDER BY &x::int|&x"
         }

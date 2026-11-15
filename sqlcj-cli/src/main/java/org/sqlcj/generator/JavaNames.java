@@ -20,6 +20,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 /**
  * Resolves the Java identifiers of one generated repository.
@@ -47,6 +48,13 @@ import java.util.stream.Collectors;
  * are rejected for the same reason: their class files share one path on a
  * case-insensitive filesystem. Two tables whose row types are equal ignoring
  * case are rejected on the same grounds.
+ *
+ * <p>One parameter group is one record of the repository, named after the
+ * group and defined by the first query that uses it. A group record takes part
+ * in the same collision rules: it is rejected when its name is equal ignoring
+ * case to the repository class, to a row record the repository imports, to
+ * another query's result or parameter record, or to another group's record, and
+ * when it would be named after the builder every group record nests.
  */
 final class JavaNames {
 
@@ -64,6 +72,15 @@ final class JavaNames {
 
     private static final String ROW_MAPPER_SUFFIX = ROW_SUFFIX + MAPPER_SUFFIX;
 
+    /** The nested builder every parameter group's record declares. */
+    static final String BUILDER_TYPE_NAME = "Builder";
+
+    /** The static method of a group record that opens its builder. */
+    static final String BUILDER_METHOD_NAME = "builder";
+
+    /** The method of a group record's builder that builds the record. */
+    static final String BUILD_METHOD_NAME = "build";
+
     /**
      * Inherited {@link Object} method names that a generated method or record
      * component cannot use.
@@ -79,22 +96,43 @@ final class JavaNames {
         "wait"
     );
 
+    /**
+     * The member names a component of a parameter group's record cannot use,
+     * which are the inherited ones beside the two its own builder takes: a
+     * component {@code builder} would clash with the static {@code builder()},
+     * and a setter {@code build(value)} would read as {@code build()} itself.
+     */
+    private static final Set<String> RESERVED_GROUP_MEMBER_NAMES = reservedGroupMemberNames();
+
     /** Generator-owned name referenced by every generated method body. */
     private static final String EXECUTOR_NAME = "executor";
 
     private final String repositoryClassName;
     private final List<RowNames> rows;
+    private final List<GroupNames> groups;
     private final List<QueryNames> queries;
 
-    private JavaNames(String repositoryClassName, List<RowNames> rows, List<QueryNames> queries) {
+    private JavaNames(
+        String repositoryClassName,
+        List<RowNames> rows,
+        List<GroupNames> groups,
+        List<QueryNames> queries
+    ) {
         this.repositoryClassName = repositoryClassName;
         this.rows = rows;
+        this.groups = groups;
         this.queries = queries;
     }
 
     static JavaNames of(QueryGroupModel group) {
+        String repositoryClassName = upperCamelCase(group.name(), null) + REPOSITORY_SUFFIX;
+
         List<String> resultTypeNames = group.queries().stream()
             .map(query -> upperCamelCase(query.name(), null) + RESULT_SUFFIX)
+            .toList();
+
+        List<String> paramsTypeNames = group.queries().stream()
+            .map(query -> upperCamelCase(query.name(), null) + PARAMS_SUFFIX)
             .toList();
 
         List<String> methodNames = group.queries().stream()
@@ -105,6 +143,14 @@ final class JavaNames {
         rejectResultTypeNamesDifferingOnlyByCase(group, resultTypeNames);
 
         Map<String, RowNames> rowsByTable = resolveRows(group, methodNames);
+
+        Map<String, GroupNames> groupsByName = resolveGroups(
+            group,
+            repositoryClassName,
+            resultTypeNames,
+            paramsTypeNames,
+            rowsByTable.values()
+        );
 
         Set<String> reservedParameterNames = reservedParameterNames(
             methodNames,
@@ -118,33 +164,35 @@ final class JavaNames {
             String methodName = methodNames.get(index);
             RowNames row = rowsByTable.get(query.rowTable());
 
+            List<MethodParameter> methodParameters = resolveMethodParameters(
+                query,
+                groupsByName,
+                reservedParameterNames(query, reservedParameterNames)
+            );
+
             queries.add(
                 new QueryNames(
                     row == null ? resultTypeNames.get(index) : row.typeName(),
-                    upperCamelCase(query.name(), null) + PARAMS_SUFFIX,
+                    paramsTypeNames.get(index),
                     methodName,
                     row == null ? methodName + ROW_MAPPER_SUFFIX : row.mapperName(),
-                    resolveNames(
-                        query.parameters().stream()
-                            .map(QueryParameter::name)
-                            .toList(),
-                        reservedParameterNames(query, reservedParameterNames),
-                        query.name()
-                    ),
+                    resolveParameterNames(query, groupsByName, methodParameters),
                     resolveNames(
                         query.columns().stream()
                             .map(QueryColumn::name)
                             .toList(),
                         RESERVED_MEMBER_NAMES,
                         query.name()
-                    )
+                    ),
+                    methodParameters
                 )
             );
         }
 
         return new JavaNames(
-            upperCamelCase(group.name(), null) + REPOSITORY_SUFFIX,
+            repositoryClassName,
             List.copyOf(rowsByTable.values()),
+            List.copyOf(groupsByName.values()),
             List.copyOf(queries)
         );
     }
@@ -228,6 +276,14 @@ final class JavaNames {
         return rows;
     }
 
+    /**
+     * The parameter group records of this repository, in the order the queries
+     * first use them.
+     */
+    List<GroupNames> groups() {
+        return groups;
+    }
+
     List<QueryNames> queries() {
         return queries;
     }
@@ -237,8 +293,15 @@ final class JavaNames {
      * that returns one complete table row names the repository's shared row
      * record and row mapper instead of a record of its own.
      *
-     * @param paramsTypeName the nested record a batch query takes one list of,
-     *                       whose components are this query's parameters
+     * @param paramsTypeName  the nested record a batch query takes one list of,
+     *                        whose components are this query's parameters
+     * @param parameterNames  the Java name of each parameter of the query, in
+     *                        logical parameter order, which is the method
+     *                        parameter of a plain placeholder and the record
+     *                        component of a group field
+     * @param methodParameters
+     *                        the parameters the generated method takes, in
+     *                        order of first occurrence
      */
     record QueryNames(
         String resultTypeName,
@@ -246,8 +309,54 @@ final class JavaNames {
         String methodName,
         String rowMapperName,
         List<String> parameterNames,
+        List<String> componentNames,
+        List<MethodParameter> methodParameters
+    ) {
+    }
+
+    /**
+     * One parameter of a generated method: the value of one plain placeholder
+     * or the record of one parameter group.
+     *
+     * @param name      the resolved Java name of the parameter
+     * @param parameter the logical parameter it binds, as an index into the
+     *                  query's parameters, and {@code -1} for a group, whose
+     *                  fields are logical parameters of their own
+     * @param group     the group record it holds, and {@code null} for a plain
+     *                  parameter
+     */
+    record MethodParameter(String name, int parameter, GroupNames group) {
+    }
+
+    /**
+     * The resolved Java identifiers of one parameter group's record, which the
+     * first query of the repository that uses the group defines.
+     *
+     * @param groupName      the group as the query source spells it
+     * @param typeName       the record the repository declares for the group
+     * @param fields         the analyzed parameter of each field, in the
+     *                       defining query's order of first occurrence
+     * @param componentNames the record component of each field, in that order
+     */
+    record GroupNames(
+        String groupName,
+        String typeName,
+        List<QueryParameter> fields,
         List<String> componentNames
     ) {
+
+        /** The component one field of this group is read from. */
+        String componentName(String field) {
+            for (int index = 0; index < fields.size(); index++) {
+                if (fields.get(index).name().equals(field)) {
+                    return componentNames.get(index);
+                }
+            }
+
+            throw new IllegalStateException(
+                "Parameter group '%s' has no field '%s'.".formatted(groupName, field)
+            );
+        }
     }
 
     /**
@@ -270,6 +379,249 @@ final class JavaNames {
         List<String> componentNames,
         boolean returnedWhole
     ) {
+    }
+
+    /**
+     * Resolves one record per parameter group the queries of one repository
+     * use, keyed by the group as the SQL spells it and ordered by first use,
+     * which is query order and then parameter order. Each record's components
+     * are the fields of the first query that uses the group, in that query's
+     * order of first occurrence.
+     */
+    private static Map<String, GroupNames> resolveGroups(
+        QueryGroupModel group,
+        String repositoryClassName,
+        List<String> resultTypeNames,
+        List<String> paramsTypeNames,
+        Collection<RowNames> rows
+    ) {
+        Map<String, GroupNames> groups = new LinkedHashMap<>();
+        Map<String, String> typesByPortabilityKey = repositoryTypes(
+            group,
+            repositoryClassName,
+            resultTypeNames,
+            paramsTypeNames,
+            rows
+        );
+
+        for (QueryModel query : group.queries()) {
+            for (Map.Entry<String, List<QueryParameter>> use : groupFields(query).entrySet()) {
+                if (groups.containsKey(use.getKey())) {
+                    continue;
+                }
+
+                String groupName = use.getKey();
+                String typeName = upperCamelCase(groupName, query.name());
+
+                rejectGroupTypeName(typesByPortabilityKey, groupName, typeName);
+
+                groups.put(
+                    groupName,
+                    new GroupNames(
+                        groupName,
+                        typeName,
+                        use.getValue(),
+                        resolveNames(
+                            use.getValue().stream()
+                                .map(QueryParameter::name)
+                                .toList(),
+                            RESERVED_GROUP_MEMBER_NAMES,
+                            query.name()
+                        )
+                    )
+                );
+            }
+        }
+
+        return groups;
+    }
+
+    /**
+     * The fields of each parameter group one query uses, keyed by the group,
+     * with both the groups and the fields of each group in the query's order of
+     * first occurrence. A field the query writes twice is one logical
+     * parameter, so it stands once.
+     */
+    private static Map<String, List<QueryParameter>> groupFields(QueryModel query) {
+        Map<String, List<QueryParameter>> fields = new LinkedHashMap<>();
+
+        for (QueryParameter parameter : query.parameters()) {
+            if (parameter.group() != null) {
+                fields
+                    .computeIfAbsent(parameter.group(), group -> new ArrayList<>())
+                    .add(parameter);
+            }
+        }
+
+        return fields;
+    }
+
+    /**
+     * The types one repository names beside its group records, each described
+     * for a collision diagnostic and keyed by the name a case-insensitive
+     * filesystem compares its class file by. The shared row records are named
+     * too, because the repository imports them, and a nested record of that
+     * name would shadow the import inside every member that reads the row.
+     */
+    private static Map<String, String> repositoryTypes(
+        QueryGroupModel group,
+        String repositoryClassName,
+        List<String> resultTypeNames,
+        List<String> paramsTypeNames,
+        Collection<RowNames> rows
+    ) {
+        Map<String, String> types = new LinkedHashMap<>();
+
+        types.put(
+            repositoryClassName.toLowerCase(Locale.ROOT),
+            "the repository class " + repositoryClassName
+        );
+
+        for (RowNames row : rows) {
+            types.putIfAbsent(
+                row.typeName().toLowerCase(Locale.ROOT),
+                "the row record %s of table '%s'".formatted(row.typeName(), row.tableName())
+            );
+        }
+
+        for (int index = 0; index < group.queries().size(); index++) {
+            QueryModel query = group.queries().get(index);
+
+            types.putIfAbsent(
+                resultTypeNames.get(index).toLowerCase(Locale.ROOT),
+                "the result record %s of query '%s'"
+                    .formatted(resultTypeNames.get(index), query.name())
+            );
+
+            if (query.type() == QueryType.BATCH_EXEC) {
+                types.putIfAbsent(
+                    paramsTypeNames.get(index).toLowerCase(Locale.ROOT),
+                    "the parameter record %s of query '%s'"
+                        .formatted(paramsTypeNames.get(index), query.name())
+                );
+            }
+        }
+
+        return types;
+    }
+
+    /**
+     * Rejects a group record the repository cannot declare: one whose name is
+     * equal ignoring case to another type the repository names, because the
+     * compiled class files of two declared types are one path on a
+     * case-insensitive filesystem and a record of an imported type's name
+     * shadows that import, and one named after the builder every group record
+     * nests, which a nested type cannot share its enclosing record's name with.
+     */
+    private static void rejectGroupTypeName(
+        Map<String, String> typesByPortabilityKey,
+        String groupName,
+        String typeName
+    ) {
+        if (BUILDER_TYPE_NAME.equals(typeName)) {
+            throw new IllegalArgumentException(
+                ("Parameter group '%s' generates the record %s, "
+                    + "which every group record's builder is named; rename the group")
+                    .formatted(groupName, BUILDER_TYPE_NAME)
+            );
+        }
+
+        String previous = typesByPortabilityKey.putIfAbsent(
+            typeName.toLowerCase(Locale.ROOT),
+            "the record %s of parameter group '%s'".formatted(typeName, groupName)
+        );
+
+        if (previous != null) {
+            throw new IllegalArgumentException(
+                ("Parameter group '%s' generates the record %s, "
+                    + "which is equal ignoring case to %s; rename the group")
+                    .formatted(groupName, typeName, previous)
+            );
+        }
+    }
+
+    /**
+     * Resolves the parameters one generated method takes, in order of first
+     * occurrence: one per plain placeholder, named after it, and one per
+     * parameter group, named after the group and standing at its first field.
+     */
+    private static List<MethodParameter> resolveMethodParameters(
+        QueryModel query,
+        Map<String, GroupNames> groups,
+        Set<String> reserved
+    ) {
+        List<String> sqlNames = new ArrayList<>();
+        List<Integer> parameters = new ArrayList<>();
+        List<GroupNames> parameterGroups = new ArrayList<>();
+        Set<String> used = new LinkedHashSet<>();
+
+        for (int index = 0; index < query.parameters().size(); index++) {
+            QueryParameter parameter = query.parameters().get(index);
+
+            if (parameter.group() == null) {
+                sqlNames.add(parameter.name());
+                parameters.add(index);
+                parameterGroups.add(null);
+
+                continue;
+            }
+
+            if (used.add(parameter.group())) {
+                sqlNames.add(parameter.group());
+                parameters.add(-1);
+                parameterGroups.add(groups.get(parameter.group()));
+            }
+        }
+
+        List<String> names = resolveNames(sqlNames, reserved, query.name());
+
+        return IntStream.range(0, names.size())
+            .mapToObj(
+                index -> new MethodParameter(
+                    names.get(index),
+                    parameters.get(index),
+                    parameterGroups.get(index)
+                )
+            )
+            .toList();
+    }
+
+    /**
+     * The Java name of each parameter of one query, in logical parameter order:
+     * the method parameter of a plain placeholder, and the component its group
+     * record reads a group field from.
+     */
+    private static List<String> resolveParameterNames(
+        QueryModel query,
+        Map<String, GroupNames> groups,
+        List<MethodParameter> methodParameters
+    ) {
+        Map<Integer, String> namesByParameter = new LinkedHashMap<>();
+
+        for (MethodParameter methodParameter : methodParameters) {
+            if (methodParameter.group() == null) {
+                namesByParameter.put(methodParameter.parameter(), methodParameter.name());
+            }
+        }
+
+        return IntStream.range(0, query.parameters().size())
+            .mapToObj(index -> {
+                QueryParameter parameter = query.parameters().get(index);
+
+                return parameter.group() == null
+                    ? namesByParameter.get(index)
+                    : groups.get(parameter.group()).componentName(parameter.name());
+            })
+            .toList();
+    }
+
+    private static Set<String> reservedGroupMemberNames() {
+        Set<String> reserved = new LinkedHashSet<>(RESERVED_MEMBER_NAMES);
+
+        reserved.add(BUILD_METHOD_NAME);
+        reserved.add(BUILDER_METHOD_NAME);
+
+        return Set.copyOf(reserved);
     }
 
     /**
