@@ -19,6 +19,7 @@ by a sqlcj header:
 
 ```sql
 -- name: GetAuthor :one
+-- Reads one author by id.
 SELECT id, name, bio
 FROM authors
 WHERE id = $1;
@@ -28,6 +29,12 @@ WHERE id = $1;
   the query annotation, separated by whitespace.
 - A query owns every following line until the next header or the end of the
   file. The statement's trailing `;` is part of the query.
+- The lines directly under the header that begin with `--` at the first column
+  are the query's **comment**, up to the first line that does not, so a blank
+  line ends them. Each is read without its `--` and one following space, and a
+  bare `--` is an empty line. A comment written above a header belongs to the
+  query before it, because a query owns every line up to the next header, and a
+  comment written between SQL lines stays where it is written.
 - Query order inside a file is preserved, and it is the order of the methods of
   the generated repository.
 - A query name must be unique inside its own query source. Two configuration
@@ -41,6 +48,21 @@ WHERE id = $1;
   `/home/dev/project/sql/queries.sql:12: Invalid query source: Unknown query
   annotation ':mnay'; did you mean ':many'? Use one of :one, :optional, :many,
   :exec, :batchexec`.
+
+The generated method documents its query, so that hovering over it in an IDE
+shows what it does: the comment lines, then the query's SQL as the source
+writes it, without those comment lines and inside a `<pre>` block, then
+`Defined at <path>:<line>`, where the path is the query file relative to the
+directory of the configuration file, with `/` between its name elements, and
+the line is the header's. A query without a comment documents its SQL and its
+location alone. The statement the database executes is unchanged and still
+carries the query's comment lines.
+
+The comment, the SQL, and the path are plain text, never Javadoc markup: `&`,
+`<`, `>`, `@`, `\`, and `*/` are written as `&amp;`, `&lt;`, `&gt;`, `&#64;`,
+`&#92;`, and `*&#47;`, so that the text renders as it is written and `javadoc`
+reports no error, while `{` and `}` stand as they are written, because an
+inline tag starts with a brace followed by an `@`.
 
 A diagnostic that reports a name sqlcj does not know — an annotation, a table,
 or a column — suggests the closest name it knows, by one rule: the smallest edit
@@ -134,10 +156,9 @@ configuration entry.
   every read's do, and a column reference resolves only through an enclosing
   level, so a `LATERAL` body and a predicate subquery read the outer query's
   columns there and every other such `SELECT` names no column at all. The query
-  reads no table, so it returns no shared row record and the generated query
-  documentation states no table; the cast result column of each read above is
-  nullable, so each returns its own result record. A bare `*` has no source to expand and is
-  rejected, as
+  reads no table, so it returns no shared row record; the cast result column of
+  each read above is nullable, so each returns its own result record. A bare
+  `*` has no source to expand and is rejected, as
   [Unsupported Queries](#unsupported-queries) states, while a `qualifier.*`
   written in such a read's projection keeps the
   `Unknown source qualifier in query: <q>` its qualifier states.
@@ -2522,9 +2543,13 @@ public final class AuthorRepository {
             );
 
     /**
-     * Query: CreateAuthor
-     * Table: authors
-     * Type: ONE
+     * <pre>
+     * INSERT INTO authors (name, bio)
+     * VALUES ($1, $2)
+     * RETURNING *;
+     * </pre>
+     *
+     * <p>Defined at <code>sql/queries.sql:1</code>.
      */
     public AuthorsRow createAuthor(String name, @Nullable String bio) {
         Objects.requireNonNull(name, "Parameter 'name' of query 'CreateAuthor' in AuthorRepository must not be null");
@@ -2544,9 +2569,13 @@ public final class AuthorRepository {
     // getAuthor follows here, in query-source order.
 
     /**
-     * Query: FindAuthor
-     * Table: authors
-     * Type: OPTIONAL
+     * <pre>
+     * SELECT *
+     * FROM authors
+     * WHERE id = $1;
+     * </pre>
+     *
+     * <p>Defined at <code>sql/queries.sql:11</code>.
      */
     public Optional<AuthorsRow> findAuthor(Long id) {
         Objects.requireNonNull(id, "Parameter 'id' of query 'FindAuthor' in AuthorRepository must not be null");
@@ -2571,7 +2600,8 @@ Each text block above is the statement the database executes, so the `*` of
 `CreateAuthor` and of `FindAuthor` stands there as the `authors` columns the
 analysis resolved, which
 [Wildcards in the executed statement](#wildcards-in-the-executed-statement)
-states.
+states, while each method's documentation shows the query as
+`sql/queries.sql` writes it.
 
 `CreateAuthor`, `GetAuthor`, `FindAuthor`, and `ListAuthors` each return one
 complete `authors` row, so all four use the one `AuthorsRow` record and the one
@@ -2882,6 +2912,24 @@ Query sources and annotations:
   unknown-annotation diagnostic, its header line, and its suggestion; and
   `SuggestionsTest` covers the suggestion rule itself, including the accepted
   distances, the length bound, a tie, and no candidate.
+- `DefaultQueryParserTest.parsesCommentBlockUnderHeader`,
+  `DefaultQueryParserTest.endsCommentBlockAtABlankLine`,
+  `DefaultQueryParserTest.keepsACommentBetweenSqlLinesInTheWrittenSql`,
+  `DefaultQueryParserTest.keepsACommentAboveALaterHeaderInTheEarlierQuery`, and
+  `DefaultQueryParserTest.keepsTheIndentationOfTheFirstSqlLine` cover the
+  comment rule and the SQL as the source writes it;
+  `QueryAnalyzerTest.shouldCarryTheCommentWrittenSqlAndLineOfTheQuery` covers
+  the analyzed model that carries them;
+  `JavaCodeGeneratorTest.shouldGenerateJavaDoc`,
+  `JavaCodeGeneratorTest.shouldGenerateJavaDocWithoutACommentOrAQuerySource`,
+  and `JavaCodeGeneratorTest.shouldEscapeJavaDoc` cover the documented method,
+  with a comment and without, and the escaping of every character that would
+  end the comment, open an HTML element, start a Javadoc tag, or be read as a
+  Unicode escape; and
+  `SqlcjCompilerIntegrationTest.shouldDocumentEachGeneratedMethodWithItsQuery`
+  covers one project whose generated tree compiles, passes `javadoc` with no
+  error, renders each SQL line as written beside its `<path>:<line>`, and
+  generates the same bytes from a second copy in another directory.
 - `QueryAnalyzerTest.shouldSuggestTheClosestModeledTable`,
   `QueryAnalyzerTest.shouldSuggestTheClosestColumnOfTheListedSources`,
   `QueryAnalyzerTest.shouldSuggestTheClosestColumnOfTheQualifiedSource`, and
@@ -2970,9 +3018,9 @@ Reads:
   `SELECT` as a `WITH` body, as a subquery source, as a top-level
   set-operation branch, and inside `EXISTS`, and the bare `*` rejection at the
   top level and inside `EXISTS`;
-  `JavaCodeGeneratorTest.shouldGenerateJavaDocWithoutATableForASourcelessQuery`
-  covers the generated documentation of a query that reads no source, which
-  states its name and type alone and compiles.
+  `JavaCodeGeneratorTest.shouldGenerateJavaDocWithoutACommentOrAQuerySource`
+  covers the generated documentation of a query that carries no comment, which
+  shows its SQL alone and compiles.
 - `QueryAnalyzerTest.shouldAnalyzeAnExistsProjectionWithoutFrom`,
   `QueryAnalyzerTest.shouldAnalyzeACorrelatedExistsProjectionBesideAColumn`,
   `QueryAnalyzerTest.shouldRejectAnExistsProjectionWithoutAnAlias`, and
