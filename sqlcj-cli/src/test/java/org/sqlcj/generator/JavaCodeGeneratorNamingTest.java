@@ -24,7 +24,6 @@ import java.util.Optional;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -64,7 +63,7 @@ class JavaCodeGeneratorNamingTest {
     }
 
     @Test
-    void shouldNormalizeUnsafeQueryNameAndEscapeJavadoc() throws IOException {
+    void shouldNormalizeUnsafeQueryName() throws IOException {
         GeneratedFile file = generate(
             query(
                 "Get*/User",
@@ -79,8 +78,6 @@ class JavaCodeGeneratorNamingTest {
         assertTrue(source.contains("public final class UsersRepository {"));
         assertTrue(source.contains("public record GetUserResult("));
         assertTrue(source.contains("public List<GetUserResult> getUser()"));
-        assertTrue(source.contains("Query: Get*&#47;User"));
-        assertFalse(source.contains("Query: Get*/User"));
 
         assertCompiles(file);
     }

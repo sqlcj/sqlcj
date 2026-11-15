@@ -2491,7 +2491,12 @@ class ReferenceServiceIntegrationTest {
         generate(schema, queries(), generatedDirectory);
     }
 
-    /** Generates the one repository of the {@code Tracker} group. */
+    /**
+     * Generates the one repository of the {@code Tracker} group, attributed to
+     * a configuration file beside the query source, as a project lays it out,
+     * so that each generated method documents its query as
+     * {@code queries.sql:<line>}.
+     */
     private void generate(List<String> schema, Path queriesFile, Path generatedDirectory) {
         Config config = new Config(
             List.of(
@@ -2507,7 +2512,7 @@ class ReferenceServiceIntegrationTest {
             )
         );
 
-        new SqlcjCompiler().compile(config, tempDir.resolve("sqlcj.yaml"));
+        new SqlcjCompiler().compile(config, queriesFile.resolveSibling("sqlcj.yaml"));
     }
 
     /** Every generated file of one output directory, by its relative path. */

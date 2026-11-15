@@ -106,7 +106,7 @@ public final class SqlcjCompiler {
 
         CodeGenerator codeGenerator = codeGenerators.apply(packageName);
 
-        List<GeneratedFile> files = generate(sources, codeGenerator, packageName);
+        List<GeneratedFile> files = generate(sources, codeGenerator, packageName, configFile);
 
         Path outputDirectory = Path.of(config.java().out());
 
@@ -202,7 +202,8 @@ public final class SqlcjCompiler {
     private List<GeneratedFile> generate(
         List<Source> sources,
         CodeGenerator codeGenerator,
-        String packageName
+        String packageName,
+        Path configFile
     ) {
         List<String> diagnostics = new ArrayList<>();
         List<QueryGroupModel> groups = new ArrayList<>(sources.size());
@@ -222,7 +223,7 @@ public final class SqlcjCompiler {
                 throw new CompilationException(diagnostics);
             }
 
-            groups.add(analyze(source, schema, diagnostics));
+            groups.add(analyze(source, schema, diagnostics, configFile));
         }
 
         if (!diagnostics.isEmpty()) {
@@ -330,7 +331,12 @@ public final class SqlcjCompiler {
      * <p>The returned group holds the queries that compiled, and is generated
      * only when no query of any entry was rejected.
      */
-    private QueryGroupModel analyze(Source source, Schema schema, List<String> diagnostics) {
+    private QueryGroupModel analyze(
+        Source source,
+        Schema schema,
+        List<String> diagnostics,
+        Path configFile
+    ) {
         List<QueryModel> queries = new ArrayList<>(source.queries().size());
         List<Query> analyzed = new ArrayList<>(source.queries().size());
         List<Rejection> rejections = new ArrayList<>();
@@ -365,7 +371,48 @@ public final class SqlcjCompiler {
             diagnostics.add(rejection.diagnostic());
         }
 
-        return new QueryGroupModel(source.name(), List.copyOf(queries), schema.enums());
+        return new QueryGroupModel(
+            source.name(),
+            List.copyOf(queries),
+            schema.enums(),
+            queriesPath(source, configFile)
+        );
+    }
+
+    /**
+     * Where one group's query source is defined, as its path relative to the
+     * directory of the configuration file with {@code /} between its name
+     * elements, so that the generated documentation names no absolute path and
+     * is the same on every machine. A configuration file that is a filesystem
+     * root has no directory to relativize against, so the source is unknown.
+     */
+    private String queriesPath(Source source, Path configFile) {
+        Path baseDirectory = configFile.toAbsolutePath()
+            .normalize()
+            .getParent();
+
+        if (baseDirectory == null) {
+            return null;
+        }
+
+        return entry(
+            baseDirectory.relativize(source.queriesPath().toAbsolutePath().normalize())
+        );
+    }
+
+    /** One path, joining its name elements with {@code /}. */
+    private String entry(Path path) {
+        StringBuilder entry = new StringBuilder();
+
+        for (Path name : path) {
+            if (!entry.isEmpty()) {
+                entry.append('/');
+            }
+
+            entry.append(name);
+        }
+
+        return entry.toString();
     }
 
     /**
