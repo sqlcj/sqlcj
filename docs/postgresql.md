@@ -418,6 +418,62 @@ Framework for the runtime and the command line tool. Spring reaches an
 application only through the Spring Boot starter, whose dependency on
 `spring-boot-starter-jdbc` is compile-scoped.
 
+## Finding a Statement's Query
+
+Every statement a generated method executes begins with one comment line
+naming the generated repository class and the method that sends it. The
+comment is the statement's first line:
+
+```sql
+/* sqlcj AuthorRepository.getAuthor */
+SELECT "authors"."id", "authors"."name", "authors"."bio", "authors"."created_at"
+FROM authors
+WHERE id = $1;
+```
+
+It is fixed at generation: it holds no value of the call, costs nothing at run
+time, and has no configuration option. Both names it writes are Java
+identifiers, so neither can end the comment.
+
+The comment belongs to the statement itself, so a `QueryExecutor` receives it
+with the SQL and a decorator that logs or measures statements logs it too, and
+PostgreSQL records it wherever it records the statement:
+
+- **The server log.** A statement logged by `log_min_duration_statement`, or
+  by `log_statement`, is written with its comment, so the log line of a slow
+  statement names the method that sent it.
+- **`pg_stat_activity`.** The statement a session is running, or last ran,
+  stands in `pg_stat_activity.query`, so the sessions of one repository are
+  found by their comment:
+
+  ```sql
+  SELECT pid, state, query
+  FROM pg_stat_activity
+  WHERE query LIKE '/* sqlcj AuthorRepository.%';
+  ```
+
+  That column keeps `track_activity_query_size` bytes, 1,024 by default, and
+  the comment stands at the front of what it keeps.
+- **`pg_stat_statements`.** The extension's `query` column holds a recorded
+  statement text, so a method's call count and timings are found the same way:
+
+  ```sql
+  SELECT calls, total_exec_time, query
+  FROM pg_stat_statements
+  WHERE query LIKE '/* sqlcj AuthorRepository.%'
+  ORDER BY total_exec_time DESC;
+  ```
+
+  The extension groups statements by query id, which ignores comments, so
+  methods whose SQL is otherwise identical share one row, and that row shows
+  the comment of the statement recorded first. A row is read as the whole
+  group's statistics, not one method's.
+
+PostgreSQL 18 records a statement from its first keyword, so a leading comment
+is absent from its `pg_stat_statements` text, while its server log and its
+`pg_stat_activity` keep it; PostgreSQL 16, which sqlcj verifies against, keeps
+it in all three.
+
 ## Schema Snapshot Input
 
 `sql[].schema` is an explicit snapshot of the tables a query may use. It is one
@@ -2222,6 +2278,25 @@ Connection ownership and transactions:
   `JpaTransactionManager` transaction; and
   `shouldSeeAPendingJpaWriteOnlyAfterAFlush` covers the deferred `persist` a
   generated read finds only after `EntityManager.flush()`.
+
+Finding a statement's query:
+
+- `JavaCodeGeneratorTest.shouldWriteSqlAtTheColumnOfItsOpeningDelimiter` pins
+  the comment line of a read, an `:exec`, and a `:batchexec` text block;
+  `JavaCodeGeneratorTest.shouldNameTheGeneratedMethodInTheStatementComment`
+  covers the method of a query named like a Java keyword and the method of a
+  query name holding a comment delimiter, which the comment never writes; and
+  `JavaCodeGeneratorTest.shouldPassTheCommentedStatementOfEveryOperationToTheExecutor`
+  asserts the comment line and the executable SQL a compiled repository passes
+  to `queryOne`, `queryOptional`, `queryMany`, `execute`, and `executeBatch`.
+- `PostgresIntegrationTest.shouldRecordTheMethodCommentOfEveryGeneratedStatementAgainstPostgres`
+  runs a generated read, an `:exec` update, a `RETURNING` insert, and a
+  two-row `:batchexec` insert on one caller-owned connection of a
+  `reWriteBatchedInserts=true` data source against PostgreSQL 16, and reads
+  `pg_stat_activity.query` for that backend over a connection of its own after
+  each call: every recorded statement starts with its method's comment, the
+  rewritten batch holds both `VALUES` rows and returns `-2`, `-2`, and each
+  operation returns what it returns without the comment.
 
 The exception a failure raises:
 

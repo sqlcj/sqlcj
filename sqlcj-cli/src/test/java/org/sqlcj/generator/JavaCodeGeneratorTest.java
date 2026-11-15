@@ -3925,6 +3925,7 @@ class JavaCodeGeneratorTest {
                     + "                \"UsersRepository\",\n"
                     + "                \"InsertTask\",\n"
                     + "                \"\"\"\n"
+                    + "                /* sqlcj UsersRepository.insertTask */\n"
                     + "                INSERT INTO tasks (project_id, title, metadata, tags)\n"
                     + "                VALUES (?, ?, ?, ?)\n"
                     + "                \"\"\",\n"
@@ -3984,6 +3985,7 @@ class JavaCodeGeneratorTest {
                     + "                \"UsersRepository\",\n"
                     + "                \"FindTask\",\n"
                     + "                \"\"\"\n"
+                    + "                /* sqlcj UsersRepository.findTask */\n"
                     + "                SELECT id, title\n"
                     + "                FROM tasks\n"
                     + "                WHERE project_id = ?\n"
@@ -4054,6 +4056,7 @@ class JavaCodeGeneratorTest {
                     + "                \"UsersRepository\",\n"
                     + "                \"InsertScheduledMaintenanceWindowAssignments\",\n"
                     + "                \"\"\"\n"
+                    + "                /* sqlcj UsersRepository.insertScheduledMaintenanceWindowAssignments */\n"
                     + "                INSERT INTO assignments (window_id, assignee_id, starts_at)\n"
                     + "                VALUES (?, ?, ?)\n"
                     + "                \"\"\",\n"
@@ -4113,6 +4116,7 @@ class JavaCodeGeneratorTest {
                     + "                \"UsersRepository\",\n"
                     + "                \"DeleteTasksScheduledAt\",\n"
                     + "                \"\"\"\n"
+                    + "                /* sqlcj UsersRepository.deleteTasksScheduledAt */\n"
                     + "                DELETE FROM tasks\n"
                     + "                WHERE duration = ANY(?)\n"
                     + "                \"\"\",\n"
@@ -4790,9 +4794,11 @@ class JavaCodeGeneratorTest {
     }
 
     /**
-     * Every line of a generated method's SQL is written at the column of its
-     * opening delimiter, where the other executor arguments start, in a read,
-     * an exec, and a batch call alike, and a blank SQL line is written empty.
+     * A generated method's SQL opens with one comment line naming the
+     * repository class and the method, and every line of the text block, that
+     * one included, is written at the column of its opening delimiter, where
+     * the other executor arguments start, in a read, an exec, and a batch call
+     * alike, and a blank SQL line is written empty.
      */
     @Test
     void shouldWriteSqlAtTheColumnOfItsOpeningDelimiter() throws IOException {
@@ -4849,6 +4855,7 @@ class JavaCodeGeneratorTest {
                                     "UsersRepository",
                                     "ListUsers",
                                     \"""
+                                    /* sqlcj UsersRepository.listUsers */
                                     SELECT id
                                     FROM users
 
@@ -4873,6 +4880,7 @@ class JavaCodeGeneratorTest {
                                     "UsersRepository",
                                     "DeleteUser",
                                     \"""
+                                    /* sqlcj UsersRepository.deleteUser */
                                     DELETE FROM users
                                     WHERE id = ?\""",
                                     Collections.singletonList(id)
@@ -4891,6 +4899,7 @@ class JavaCodeGeneratorTest {
                                 "UsersRepository",
                                 "CreateUsers",
                                 \"""
+                                /* sqlcj UsersRepository.createUsers */
                                 INSERT INTO users (name)
                                 VALUES (?)\""",
                                 batch.stream().map(params -> \
@@ -4909,6 +4918,157 @@ class JavaCodeGeneratorTest {
         );
 
         assertCompiles(file);
+    }
+
+    /**
+     * The comment of a statement names the generated method, not the query:
+     * a query named like a Java keyword is named by its suffixed method, and a
+     * query name holding a comment delimiter is named by the method its
+     * letters build, so no query name can end or nest the comment.
+     */
+    @Test
+    void shouldNameTheGeneratedMethodInTheStatementComment() throws IOException {
+        QueryModel keywordNamed = new QueryModel(
+            "Class",
+            QueryType.EXEC,
+            "users",
+            "DELETE FROM users\nWHERE id = ?",
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null
+        );
+
+        QueryModel listUsers = new QueryModel(
+            "list*/users",
+            QueryType.MANY,
+            "users",
+            "SELECT id\nFROM users",
+            List.of(),
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            List.of(),
+            null
+        );
+
+        GeneratedFile file = codeGenerator.generate(
+            new QueryGroupModel(GROUP, List.of(keywordNamed, listUsers))
+        );
+
+        String source = file.content();
+
+        assertTrue(source.contains("public int class_(Long id) {"), source);
+        assertTrue(source.contains("/* sqlcj UsersRepository.class_ */"), source);
+        assertTrue(source.contains("public List<Long> listUsers() {"), source);
+        assertTrue(source.contains("/* sqlcj UsersRepository.listUsers */"), source);
+        assertFalse(source.contains("sqlcj UsersRepository.list*/users"), source);
+
+        assertCompiles(file);
+    }
+
+    /**
+     * The statement every compiled operation passes to its executor is the
+     * comment line naming the repository class and the method, a line break,
+     * and the executable SQL: a read of each cardinality, a single execution,
+     * and a batch alike.
+     */
+    @Test
+    void shouldPassTheCommentedStatementOfEveryOperationToTheExecutor() throws Exception {
+        QueryModel findUser = new QueryModel(
+            "FindUser",
+            QueryType.ONE,
+            "users",
+            "SELECT id\nFROM users\nWHERE id = ?",
+            List.of(1),
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null
+        );
+
+        QueryModel findUserName = new QueryModel(
+            "FindUserName",
+            QueryType.OPTIONAL,
+            "users",
+            "SELECT name\nFROM users\nWHERE id = ?",
+            List.of(1),
+            List.of(new QueryColumn("name", ColumnType.VARCHAR, true)),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null
+        );
+
+        QueryModel listUsers = new QueryModel(
+            "ListUsers",
+            QueryType.MANY,
+            "users",
+            "SELECT id\nFROM users",
+            List.of(),
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            List.of(),
+            null
+        );
+
+        QueryModel deleteUser = new QueryModel(
+            "DeleteUser",
+            QueryType.EXEC,
+            "users",
+            "DELETE FROM users\nWHERE id = ?",
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null
+        );
+
+        QueryModel insertUsers = new QueryModel(
+            "InsertUsers",
+            QueryType.BATCH_EXEC,
+            "users",
+            "INSERT INTO users (name)\nVALUES (?)",
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            null
+        );
+
+        GeneratedFile file = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(findUser, findUserName, listUsers, deleteUser, insertUsers)
+            )
+        );
+
+        assertCompiles(file);
+
+        try (URLClassLoader classLoader = classLoader()) {
+            Class<?> repositoryType = Class.forName(
+                "generated.repositories.UsersRepository",
+                true,
+                classLoader
+            );
+
+            RecordingQueryExecutor executor = new RecordingQueryExecutor();
+
+            Object repository = repositoryType
+                .getConstructor(QueryExecutor.class)
+                .newInstance(executor);
+
+            repositoryType.getMethod("findUser", Long.class).invoke(repository, 1L);
+            repositoryType.getMethod("findUserName", Long.class).invoke(repository, 1L);
+            repositoryType.getMethod("listUsers").invoke(repository);
+            repositoryType.getMethod("deleteUser", Long.class).invoke(repository, 1L);
+            repositoryType.getMethod("insertUsers", List.class).invoke(repository, List.of());
+
+            assertEquals(
+                List.of(
+                    "/* sqlcj UsersRepository.findUser */\nSELECT id\nFROM users\nWHERE id = ?",
+                    "/* sqlcj UsersRepository.findUserName */\n"
+                        + "SELECT name\nFROM users\nWHERE id = ?",
+                    "/* sqlcj UsersRepository.listUsers */\nSELECT id\nFROM users",
+                    "/* sqlcj UsersRepository.deleteUser */\nDELETE FROM users\nWHERE id = ?",
+                    "/* sqlcj UsersRepository.insertUsers */\n"
+                        + "INSERT INTO users (name)\nVALUES (?)"
+                ),
+                executor.statements
+            );
+        }
     }
 
     /**
@@ -7286,9 +7446,12 @@ class JavaCodeGeneratorTest {
 
     /**
      * An executor that counts the batches a generated method ran and records
-     * the argument list of every execution and of every row of every batch.
+     * the statement of every call, the argument list of every execution, and
+     * the argument list of every row of every batch.
      */
     private static final class RecordingQueryExecutor implements QueryExecutor {
+
+        private final List<String> statements = new ArrayList<>();
 
         private final List<List<?>> parameters = new ArrayList<>();
 
@@ -7304,6 +7467,8 @@ class JavaCodeGeneratorTest {
             List<?> parameters,
             RowMapper<T> mapper
         ) {
+            statements.add(sql);
+
             return null;
         }
 
@@ -7315,6 +7480,8 @@ class JavaCodeGeneratorTest {
             List<?> parameters,
             RowMapper<T> mapper
         ) {
+            statements.add(sql);
+
             return Optional.empty();
         }
 
@@ -7326,11 +7493,14 @@ class JavaCodeGeneratorTest {
             List<?> parameters,
             RowMapper<T> mapper
         ) {
+            statements.add(sql);
+
             return List.of();
         }
 
         @Override
         public int execute(String repository, String query, String sql, List<?> parameters) {
+            statements.add(sql);
             this.parameters.add(parameters);
 
             return 0;
@@ -7343,6 +7513,7 @@ class JavaCodeGeneratorTest {
             String sql,
             List<? extends List<?>> batch
         ) {
+            statements.add(sql);
             batches++;
             batchParameters.addAll(batch);
 

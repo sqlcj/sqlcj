@@ -1937,7 +1937,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 generateExecutorMethod(query),
                 generateStringLiteral(repositoryClassName),
                 generateStringLiteral(query.name()),
-                generateSql(query),
+                generateSql(query, repositoryClassName, names.methodName()),
                 generateParameterList(query, generateValueNames(query, names), "", ",", scope),
                 names.rowMapperName()
             );
@@ -1963,7 +1963,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 generateCheckedDeclaration(query, repositoryClassName, names, scope),
                 generateStringLiteral(repositoryClassName),
                 generateStringLiteral(query.name()),
-                generateSql(query),
+                generateSql(query, repositoryClassName, names.methodName()),
                 generateParameterList(query, generateValueNames(query, names), "", "", scope)
             );
     }
@@ -2000,7 +2000,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 ),
                 generateStringLiteral(repositoryClassName),
                 generateStringLiteral(query.name()),
-                generateSql(query),
+                generateSql(query, repositoryClassName, names.methodName()),
                 generateBatchArgumentLists(query, names, scope)
             );
     }
@@ -2082,22 +2082,39 @@ public final class JavaCodeGenerator implements CodeGenerator {
             + "\"";
     }
 
-    private String generateSql(QueryModel query) {
+    /**
+     * Renders the statement a generated method executes as a text block: a
+     * block comment holding {@code sqlcj} and the repository class and method
+     * names, as in {@code sqlcj AuthorRepository.getAuthor}, on a line of its
+     * own, then the analyzed SQL, so the compiled string is that comment line,
+     * a line break, and the analyzed SQL character for character. PostgreSQL
+     * carries the comment into its log and {@code pg_stat_activity}, and a
+     * {@code QueryExecutor} decorator reads it, so a running or logged
+     * statement leads back to the generated method. Both names are Java
+     * identifiers, so neither can end or nest the comment and neither needs
+     * escaping.
+     */
+    private String generateSql(QueryModel query, String repositoryClassName, String methodName) {
         return "\"\"\"\n"
-            + indentSql(escapeTextBlock(query.executableSql()))
+            + indentSql(
+                "/* sqlcj %s.%s */\n".formatted(repositoryClassName, methodName)
+                    + escapeTextBlock(query.executableSql())
+            )
             + "\"\"\"";
     }
 
     /**
-     * Indents the escaped SQL of a generated method to the column its opening
-     * delimiter and the other executor arguments start at, writing a blank line
-     * empty. The line the closing delimiter ends is indented with the others,
-     * including the empty line SQL ending in a line terminator leaves, because
-     * the compiler reads that line's indentation as well.
+     * Indents the comment line and the escaped SQL of a generated method to the
+     * column its opening delimiter and the other executor arguments start at,
+     * writing a blank line empty. The line the closing delimiter ends is
+     * indented with the others, including the empty line SQL ending in a line
+     * terminator leaves, because the compiler reads that line's indentation as
+     * well.
      *
-     * <p>The analyzed SQL never starts with whitespace, so the indentation the
-     * compiler strips as incidental is exactly this one and the compiled string
-     * is the analyzed SQL character for character.
+     * <p>The comment line and the analyzed SQL never start with whitespace, so
+     * the indentation the compiler strips as incidental is exactly this one and
+     * the compiled string holds the comment line and the analyzed SQL character
+     * for character.
      */
     private String indentSql(String sql) {
         String[] lines = sql.split("\n", -1);
