@@ -1559,6 +1559,7 @@ class SqlcjCompilerIntegrationTest {
         assertTrue(
             source.contains(
                 "                \"\"\"\n"
+                    + "                /* sqlcj UsersRepository.listOrderCustomerEmails */\n"
                     + "                SELECT \"o\".\"id\", \"o\".\"customer_id\", \"o\".\"total\", c.email\n"
                     + "                FROM orders o\n"
                     + "                JOIN customers c ON c.id = o.customer_id;\"\"\""

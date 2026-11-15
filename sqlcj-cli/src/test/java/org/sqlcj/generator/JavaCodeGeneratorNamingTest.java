@@ -230,7 +230,7 @@ class JavaCodeGeneratorNamingTest {
 
         assertCompiles(file);
 
-        assertEquals(sql, executedSql(file, "listUsers", "value"));
+        assertEquals("/* sqlcj UsersRepository.listUsers */\n" + sql, executedSql(file, "listUsers", "value"));
     }
 
     @Test
@@ -252,15 +252,16 @@ class JavaCodeGeneratorNamingTest {
 
         assertCompiles(file);
 
-        assertEquals(sql, executedSql(file, "listUsers"));
+        assertEquals("/* sqlcj UsersRepository.listUsers */\n" + sql, executedSql(file, "listUsers"));
     }
 
     /**
-     * The SQL a generated method passes to the executor is the analyzed SQL
-     * character for character, although every line of its text block is
-     * written at the column of its opening delimiter: a line keeps its own
-     * relative indentation, a blank line stays blank, a tab-indented line
-     * keeps its tab, and a line's trailing whitespace survives.
+     * The SQL a generated method passes to the executor is its comment line
+     * and the analyzed SQL character for character, although every line of its
+     * text block is written at the column of its opening delimiter: a line
+     * keeps its own relative indentation, a blank line stays blank, a
+     * tab-indented line keeps its tab, and a line's trailing whitespace
+     * survives.
      */
     @Test
     void shouldExecuteExactSqlForIndentedBlankAndTabbedLines() throws Exception {
@@ -288,7 +289,7 @@ class JavaCodeGeneratorNamingTest {
 
         assertCompiles(file);
 
-        assertEquals(sql, executedSql(file, "listUsers"));
+        assertEquals("/* sqlcj UsersRepository.listUsers */\n" + sql, executedSql(file, "listUsers"));
     }
 
     /**
@@ -318,7 +319,7 @@ class JavaCodeGeneratorNamingTest {
 
         assertCompiles(file);
 
-        assertEquals(sql, executedSql(file, "createUsers", List.of()));
+        assertEquals("/* sqlcj UsersRepository.createUsers */\n" + sql, executedSql(file, "createUsers", List.of()));
     }
 
     /**

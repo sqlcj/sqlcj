@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
 import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.api.io.TempDir;
+import org.postgresql.PGConnection;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.postgresql.util.PSQLException;
 import org.sqlcj.config.Config;
@@ -790,6 +791,32 @@ class PostgresIntegrationTest {
         DELETE
         FROM users
         WHERE id = $1;
+        """;
+
+    /**
+     * One operation of every kind that sends SQL, used by the test that reads
+     * the statement PostgreSQL records for the session: a read, an
+     * affected-row write, a returning write, and a batch insert.
+     */
+    private static final String COMMENTED_QUERIES = """
+        -- name: FindUserName :one
+        SELECT name
+        FROM users
+        WHERE id = $1;
+
+        -- name: RenameUser :exec
+        UPDATE users
+        SET name = $2
+        WHERE id = $1;
+
+        -- name: InsertUserReturningName :one
+        INSERT INTO users (id, code, name)
+        VALUES ($1, $2, $3)
+        RETURNING name;
+
+        -- name: InsertUsers :batchexec
+        INSERT INTO users (id, code, name)
+        VALUES ($1, $2, $3);
         """;
 
     /**
@@ -7460,6 +7487,103 @@ class PostgresIntegrationTest {
     }
 
     /**
+     * Every statement a generated method sends begins with the comment line
+     * naming its repository class and method, which PostgreSQL records for the
+     * session: a read, an affected-row write, a returning write, and a batch
+     * insert the driver rewrites into one multi-row statement. Each operation
+     * returns what it returns without the comment, so the comment changes no
+     * binding, no result, and no driver count.
+     */
+    @Test
+    void shouldRecordTheMethodCommentOfEveryGeneratedStatementAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile(COMMENTED_QUERIES);
+
+        PGSimpleDataSource rewritingDataSource = new PGSimpleDataSource();
+
+        rewritingDataSource.setUrl(postgres.getJdbcUrl());
+        rewritingDataSource.setUser(postgres.getUsername());
+        rewritingDataSource.setPassword(postgres.getPassword());
+        rewritingDataSource.setReWriteBatchedInserts(true);
+
+        try (
+            URLClassLoader classLoader = classLoader(classesDirectory);
+            Connection connection = rewritingDataSource.getConnection()
+        ) {
+            int backendPid = connection.unwrap(PGConnection.class).getBackendPID();
+
+            Object repository = newRepository(classLoader, new JdbcQueryExecutor(connection));
+
+            Object inserted = repository
+                .getClass()
+                .getMethod("insertUserReturningName", Long.class, Integer.class, String.class)
+                .invoke(repository, 1L, 1, "Alice");
+
+            assertNotNull(inserted);
+            assertEquals("Alice", component(inserted, "name"));
+
+            String returning = recordedStatement(backendPid);
+
+            assertTrue(
+                returning.startsWith("/* sqlcj UsersRepository.insertUserReturningName */"),
+                returning
+            );
+
+            Object renamed = repository
+                .getClass()
+                .getMethod("renameUser", Long.class, String.class)
+                .invoke(repository, 1L, "Alice Smith");
+
+            assertEquals(1, renamed);
+
+            String updated = recordedStatement(backendPid);
+
+            assertTrue(
+                updated.startsWith("/* sqlcj UsersRepository.renameUser */"),
+                updated
+            );
+
+            Object found = repository
+                .getClass()
+                .getMethod("findUserName", Long.class)
+                .invoke(repository, 1L);
+
+            assertNotNull(found);
+            assertEquals("Alice Smith", component(found, "name"));
+
+            String read = recordedStatement(backendPid);
+
+            assertTrue(
+                read.startsWith("/* sqlcj UsersRepository.findUserName */"),
+                read
+            );
+
+            Class<?> insertParams = paramsType(repository, "InsertUsersParams");
+
+            int[] counts = batch(
+                repository,
+                "insertUsers",
+                List.of(
+                    params(insertParams, 2L, 2, "Bob"),
+                    params(insertParams, 3L, 3, "Carol")
+                )
+            );
+
+            assertArrayEquals(new int[] { -2, -2 }, counts);
+
+            String batched = recordedStatement(backendPid);
+
+            assertTrue(
+                batched.startsWith("/* sqlcj UsersRepository.insertUsers */"),
+                batched
+            );
+
+            assertTrue(batched.contains("),("), batched);
+
+            assertEquals(3L, userCount());
+        }
+    }
+
+    /**
      * A row of a batch that violates the primary key fails the whole batch:
      * the generated method reports the usual runtime failure, caused by the
      * driver's {@code BatchUpdateException} carrying PostgreSQL's unique
@@ -7954,6 +8078,28 @@ class PostgresIntegrationTest {
             .getClass()
             .getMethod(methodName, List.class)
             .invoke(repository, rows);
+    }
+
+    /**
+     * The statement PostgreSQL records in {@code pg_stat_activity} for one
+     * backend, read over a connection of its own so that the recorded
+     * statement is the one the session under test last sent.
+     */
+    private String recordedStatement(int backendPid) throws Exception {
+        try (
+            Connection connection = dataSource.getConnection();
+            PreparedStatement statement = connection.prepareStatement(
+                "SELECT query FROM pg_stat_activity WHERE pid = ?"
+            )
+        ) {
+            statement.setInt(1, backendPid);
+
+            try (ResultSet resultSet = statement.executeQuery()) {
+                assertTrue(resultSet.next());
+
+                return resultSet.getString(1);
+            }
+        }
     }
 
     /** The number of rows the {@code users} table holds. */
