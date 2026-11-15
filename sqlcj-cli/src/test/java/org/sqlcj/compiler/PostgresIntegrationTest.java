@@ -1794,6 +1794,152 @@ class PostgresIntegrationTest {
     }
 
     /**
+     * Covers parameter groups end to end: two queries share one {@code page}
+     * group, one of them also taking a {@code criteria} group of optional
+     * filters, with a cast filter the query repeats and an uncast list
+     * criterion. Each generated record is built by name through its builder,
+     * both queries return the expected rows, and a record built without one of
+     * its non-null fields fails naming the record and the field.
+     */
+    @Test
+    void shouldExecuteGeneratedParameterGroupsAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile("""
+            -- name: SearchUsers :many
+            SELECT id, name
+            FROM users
+            WHERE (:criteria.name::text IS NULL OR name ILIKE :criteria.name)
+              AND (:criteria.codes IS NULL OR code = ANY (:criteria.codes))
+            ORDER BY id
+            LIMIT :page.size OFFSET :page.offset;
+
+            -- name: ListUsers :many
+            SELECT id, name
+            FROM users
+            ORDER BY id
+            LIMIT :page.size OFFSET :page.offset;
+            """);
+
+        execute("""
+            INSERT INTO users (id, code, name)
+            VALUES
+                (1, 1, 'Alice'),
+                (2, 2, 'Bob'),
+                (3, 3, 'Alice')
+            """);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Class<?> criteriaType = Class.forName(
+                "generated.repositories.UsersRepository$Criteria",
+                true,
+                classLoader
+            );
+
+            Class<?> pageType = Class.forName(
+                "generated.repositories.UsersRepository$Page",
+                true,
+                classLoader
+            );
+
+            Method searchUsers = repository.getClass().getMethod(
+                "searchUsers",
+                criteriaType,
+                pageType
+            );
+
+            Method listUsers = repository.getClass().getMethod("listUsers", pageType);
+
+            assertEquals(
+                List.of("Alice", "Alice"),
+                names(
+                    searchUsers.invoke(
+                        repository,
+                        criteria(criteriaType, "Alice", null),
+                        page(pageType, 10, 0)
+                    )
+                )
+            );
+
+            assertEquals(
+                List.of("Bob"),
+                names(
+                    searchUsers.invoke(
+                        repository,
+                        criteria(criteriaType, null, List.of(2, 4)),
+                        page(pageType, 10, 0)
+                    )
+                )
+            );
+
+            assertEquals(
+                List.of("Bob", "Alice"),
+                names(
+                    searchUsers.invoke(
+                        repository,
+                        criteria(criteriaType, null, null),
+                        page(pageType, 2, 1)
+                    )
+                )
+            );
+
+            assertEquals(
+                List.of("Alice"),
+                names(listUsers.invoke(repository, page(pageType, 1, 2)))
+            );
+
+            Object builder = pageType.getMethod("builder").invoke(null);
+
+            InvocationTargetException failure = assertThrows(
+                InvocationTargetException.class,
+                () -> builder.getClass().getMethod("build").invoke(builder)
+            );
+
+            assertInstanceOf(NullPointerException.class, failure.getCause());
+
+            assertEquals(
+                "Field 'size' of UsersRepository.Page must not be null",
+                failure.getCause().getMessage()
+            );
+        }
+    }
+
+    /** One {@code criteria} record of the group query, built by name. */
+    private Object criteria(Class<?> criteriaType, String name, List<Integer> codes)
+        throws Exception {
+        Object builder = criteriaType.getMethod("builder").invoke(null);
+
+        builder = builder.getClass()
+            .getMethod("name", String.class)
+            .invoke(builder, name);
+
+        builder = builder.getClass()
+            .getMethod("codes", List.class)
+            .invoke(builder, codes);
+
+        return builder.getClass()
+            .getMethod("build")
+            .invoke(builder);
+    }
+
+    /** One {@code page} record of the group queries, built by name. */
+    private Object page(Class<?> pageType, Integer size, Integer offset) throws Exception {
+        Object builder = pageType.getMethod("builder").invoke(null);
+
+        builder = builder.getClass()
+            .getMethod("size", Integer.class)
+            .invoke(builder, size);
+
+        builder = builder.getClass()
+            .getMethod("offset", Integer.class)
+            .invoke(builder, offset);
+
+        return builder.getClass()
+            .getMethod("build")
+            .invoke(builder);
+    }
+
+    /**
      * Covers the criteria filters whose uncast occurrences another occurrence
      * of the same parameter types end to end: a computed search pattern, an
      * uncast null test, and an uncast list criterion. The driver sends a null

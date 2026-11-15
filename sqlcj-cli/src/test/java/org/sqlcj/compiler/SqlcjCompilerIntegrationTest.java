@@ -5362,6 +5362,134 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
+     * One group name is one record of the generated repository, so two queries
+     * that give one parameter group different fields are rejected at the later
+     * query's header, naming the earlier query and its line, which reports the
+     * location of each.
+     */
+    @Test
+    void shouldRejectQueriesThatGiveOneParameterGroupDifferentFields() {
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> compileUsersQueries(
+                """
+                    -- name: ListUsers :many
+                    SELECT id
+                    FROM users
+                    LIMIT :page.size OFFSET :page.offset;
+
+                    -- name: ListNames :many
+                    SELECT name
+                    FROM users
+                    LIMIT :page.size;
+                    """,
+                generatedDirectory
+            )
+        );
+
+        assertEquals(
+            List.of(
+                "%s:6: Invalid query 'ListNames': ".formatted(queriesFile)
+                    + "parameter group 'page' differs from its use in query 'ListUsers' at line 1:"
+                    + " fields (size, offset) there, (size) here; rename one of the two groups"
+            ),
+            exception.diagnostics()
+        );
+
+        assertFalse(Files.exists(generatedDirectory));
+    }
+
+    /**
+     * A field of one group must keep its Java type and its nullness across the
+     * queries of one repository, because the record holds one component for it,
+     * and each conflict is reported with the location of both queries.
+     */
+    @Test
+    void shouldRejectQueriesThatGiveOneParameterGroupFieldAnotherTypeOrNullness() {
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> compileUsersQueries(
+                """
+                    -- name: FindById :many
+                    SELECT id
+                    FROM users
+                    WHERE id = :criteria.key;
+
+                    -- name: FindByName :many
+                    SELECT id
+                    FROM users
+                    WHERE name = :criteria.key;
+
+                    -- name: SearchUsers :many
+                    SELECT id
+                    FROM users
+                    WHERE (:filter.term::text IS NULL OR name = :filter.term);
+
+                    -- name: ListUsersByName :many
+                    SELECT id
+                    FROM users
+                    WHERE name = :filter.term::text;
+                    """,
+                generatedDirectory
+            )
+        );
+
+        assertEquals(
+            List.of(
+                "%s:6: Invalid query 'FindByName': ".formatted(queriesFile)
+                    + "parameter group 'criteria' differs from its use in query 'FindById' at"
+                    + " line 1: field key is Long there, String here;"
+                    + " rename one of the two groups",
+                "%s:16: Invalid query 'ListUsersByName': ".formatted(queriesFile)
+                    + "parameter group 'filter' differs from its use in query 'SearchUsers' at"
+                    + " line 11: field term is nullable there, non-null here;"
+                    + " rename one of the two groups"
+            ),
+            exception.diagnostics()
+        );
+
+        assertFalse(Files.exists(generatedDirectory));
+    }
+
+    /**
+     * Two queries that use one parameter group with the same fields, in any
+     * order, share one record, so the run generates the repository.
+     */
+    @Test
+    void shouldCompileQueriesThatShareOneParameterGroup() throws IOException {
+        Path generatedDirectory = tempDir.resolve("generated");
+
+        compileUsersQueries(
+            """
+                -- name: ListUsers :many
+                SELECT id
+                FROM users
+                LIMIT :page.size OFFSET :page.offset;
+
+                -- name: ListNames :many
+                SELECT name
+                FROM users
+                OFFSET :page.offset LIMIT :page.size;
+                """,
+            generatedDirectory
+        );
+
+        String source = Files.readString(
+            generatedDirectory.resolve("generated/repositories/UsersRepository.java")
+        );
+
+        assertTrue(source.contains("public record Page("), source);
+        assertTrue(source.contains("public List<Long> listUsers(Page page) {"), source);
+        assertTrue(source.contains("public List<ListNamesResult> listNames(Page page) {"), source);
+    }
+
+    /**
      * Every rejected query of one source is reported in one run, in the order
      * the source writes its headers, so a rejected header stands between the
      * analysis rejections around it, and nothing is written.

@@ -1,5 +1,6 @@
 package org.sqlcj.compiler;
 
+import org.sqlcj.analysis.ParameterGroups;
 import org.sqlcj.analysis.QueryAnalyzer;
 import org.sqlcj.analysis.QueryGroupModel;
 import org.sqlcj.analysis.QueryModel;
@@ -41,6 +42,7 @@ public final class SqlcjCompiler {
     private static final String INTERNAL_ERROR_SUFFIX = "; please report this sqlcj defect";
 
     private final SourceLoader sourceLoader = new DefaultSourceLoader();
+    private final ParameterGroups parameterGroups = new ParameterGroups();
     private final GeneratedFileWriter generatedFileWriter = new GeneratedFileWriter();
     private final GeneratedOutputManifest generatedOutputManifest = new GeneratedOutputManifest();
 
@@ -320,11 +322,17 @@ public final class SqlcjCompiler {
      * header-line order, so the rejections of a header and of an analyzed query
      * interleave as the source states them.
      *
+     * <p>The queries that compiled are then compared with each other over the
+     * parameter groups they use, because one group name is one record of the
+     * generated repository, and each conflict is the later query's rejection,
+     * naming the earlier query and its line.
+     *
      * <p>The returned group holds the queries that compiled, and is generated
      * only when no query of any entry was rejected.
      */
     private QueryGroupModel analyze(Source source, Schema schema, List<String> diagnostics) {
         List<QueryModel> queries = new ArrayList<>(source.queries().size());
+        List<Query> analyzed = new ArrayList<>(source.queries().size());
         List<Rejection> rejections = new ArrayList<>();
 
         for (QueryRejection rejection : source.rejections()) {
@@ -343,10 +351,13 @@ public final class SqlcjCompiler {
         for (Query query : source.queries()) {
             try {
                 queries.add(queryAnalysis.apply(query, schema));
+                analyzed.add(query);
             } catch (RuntimeException e) {
                 rejections.add(new Rejection(query.line(), analysisRejection(source, query, e)));
             }
         }
+
+        rejections.addAll(parameterGroupRejections(source, queries, analyzed));
 
         rejections.sort(Comparator.comparingInt(Rejection::line));
 
@@ -355,6 +366,41 @@ public final class SqlcjCompiler {
         }
 
         return new QueryGroupModel(source.name(), List.copyOf(queries), schema.enums());
+    }
+
+    /**
+     * The rejections the analyzed queries of one entry state about their
+     * parameter groups, each located at the header line of the query whose use
+     * conflicts, which is the later of the two.
+     */
+    private List<Rejection> parameterGroupRejections(
+        Source source,
+        List<QueryModel> queries,
+        List<Query> analyzed
+    ) {
+        List<Rejection> rejections = new ArrayList<>();
+
+        for (ParameterGroups.Conflict conflict : parameterGroups.conflicts(queries)) {
+            Query query = analyzed.get(conflict.query());
+            Query earlier = analyzed.get(conflict.earlierQuery());
+
+            rejections.add(
+                new Rejection(
+                    query.line(),
+                    located(
+                        source.queriesPath(),
+                        query.line(),
+                        "Invalid query '%s': %s"
+                            .formatted(
+                                query.name(),
+                                conflict.reason(earlier.name(), earlier.line())
+                            )
+                    )
+                )
+            );
+        }
+
+        return rejections;
     }
 
     /**

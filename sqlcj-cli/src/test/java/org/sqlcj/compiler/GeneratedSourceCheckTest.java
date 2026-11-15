@@ -32,10 +32,12 @@ import static org.junit.jupiter.api.Assertions.fail;
  * <p>Three trees are checked: the reference service's, generated from its
  * hand-written snapshot; a sqlcj-owned fixture that reads every mapped
  * type, scalar and array, nullable and {@code NOT NULL}, through every result
- * shape a generated repository has, and binds an enum and an {@code INTERVAL}
- * parameter of each nullness, as one read and as one {@code :batchexec}; and a
- * sqlcj-owned fixture whose eight enum types are named exactly like the JDK,
- * runtime, and JSpecify types generated code writes.
+ * shape a generated repository has, binds an enum and an {@code INTERVAL}
+ * parameter of each nullness, as one read and as one {@code :batchexec}, and
+ * takes one parameter group whose fields cover an enum, an {@code INTERVAL},
+ * an array, and a {@code BYTEA} of each nullness; and a sqlcj-owned fixture
+ * whose eight enum types are named exactly like the JDK, runtime, and JSpecify
+ * types generated code writes.
  *
  * <p>The two trees without a name collision are also asserted to write no
  * qualified type name at all outside their {@code package} and {@code import}
@@ -124,8 +126,9 @@ class GeneratedSourceCheckTest {
      * The fixture tree carries none either, so every read of every mapped
      * type, scalar and array, nullable and {@code NOT NULL}, passes the
      * checker in every result shape, and so do the enum and {@code INTERVAL}
-     * arguments of a non-null and of a nullable parameter, which a method and
-     * a parameter record both bind.
+     * arguments of a non-null and of a nullable parameter, which a method, a
+     * parameter record, and a parameter group record with its builder all
+     * bind.
      */
     @Test
     void shouldReportNoFindingOnTheEveryTypeFixtureTree() throws Exception {

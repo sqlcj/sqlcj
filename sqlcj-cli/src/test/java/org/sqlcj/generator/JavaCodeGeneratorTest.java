@@ -2497,6 +2497,437 @@ class JavaCodeGeneratorTest {
     }
 
     /**
+     * The placeholders of one parameter group become one method parameter
+     * typed by a record of the repository, which the repository declares once,
+     * before the members of the first query that uses it, and every query that
+     * uses the group takes. The record holds the group's fields in that first
+     * query's order, typed and null-marked as a plain placeholder of the same
+     * use is, checks its non-null components, and nests the builder its
+     * {@code builder()} opens.
+     */
+    @Test
+    void shouldGenerateOneRecordPerParameterGroupSharedByItsQueries() throws IOException {
+        GeneratedFile file = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(searchUsersByCriteria(), listUsersPage())
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public record Criteria(
+                            @Nullable String search,
+                            @Nullable List<@Nullable String> statuses
+                        ) {
+
+                            public static Builder builder() {
+                                return new Builder();
+                            }
+
+                            public static final class Builder {
+
+                                private @Nullable String search;
+                                private @Nullable List<@Nullable String> statuses;
+
+                                private Builder() {
+                                }
+
+                                public Builder search(@Nullable String search) {
+                                    this.search = search;
+
+                                    return this;
+                                }
+
+                                public Builder statuses(@Nullable List<@Nullable String> statuses) {
+                                    this.statuses = statuses;
+
+                                    return this;
+                                }
+
+                                public Criteria build() {
+                                    return new Criteria(search, statuses);
+                                }
+                            }
+                        }
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                """
+                        public record Page(
+                            Integer size,
+                            @Nullable Integer offset
+                        ) {
+
+                            public Page {
+                                Objects.requireNonNull(size, \
+                    "Field 'size' of UsersRepository.Page must not be null");
+                            }
+
+                            public static Builder builder() {
+                                return new Builder();
+                            }
+
+                            public static final class Builder {
+
+                                private @Nullable Integer size;
+                                private @Nullable Integer offset;
+
+                                private Builder() {
+                                }
+
+                                public Builder size(Integer size) {
+                                    this.size = size;
+
+                                    return this;
+                                }
+
+                                public Builder offset(@Nullable Integer offset) {
+                                    this.offset = offset;
+
+                                    return this;
+                                }
+
+                                public Page build() {
+                                    return new Page(
+                                            Objects.requireNonNull(size, \
+                    "Field 'size' of UsersRepository.Page must not be null"),
+                                            offset
+                                    );
+                                }
+                            }
+                        }
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                "public List<SearchUsersResult> searchUsers(Criteria criteria, Page page) {"
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                "\"Parameter 'criteria' of query 'SearchUsers' in UsersRepository must not be null\""
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                """
+                                    Arrays.<@Nullable Object>asList(
+                                            criteria.search(),
+                                            criteria.search(),
+                                            new SqlArray("varchar", criteria.statuses()),
+                                            new SqlArray("varchar", criteria.statuses()),
+                                            page.size(),
+                                            page.offset()
+                                    )
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains("public List<ListUsersResult> listUsers(Page page) {"),
+            source
+        );
+
+        assertTrue(
+            source.contains("Arrays.<@Nullable Object>asList(page.size(), page.offset())"),
+            source
+        );
+
+        assertEquals(
+            1,
+            source.split("public record Page\\(", -1).length - 1,
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A group record built without one of its non-null fields fails naming the
+     * field and the record, and a record built through its builder binds every
+     * field the caller set.
+     */
+    @Test
+    void shouldFailWhenANonNullFieldOfAGroupRecordIsNotSet() throws Exception {
+        GeneratedFile file = codeGenerator.generate(
+            new QueryGroupModel(GROUP, List.of(listUsersPage()))
+        );
+
+        assertCompiles(file);
+
+        try (URLClassLoader classLoader = classLoader()) {
+            Class<?> pageType = Class.forName(
+                "generated.repositories.UsersRepository$Page",
+                true,
+                classLoader
+            );
+
+            Object builder = pageType.getMethod("builder").invoke(null);
+            Method build = builder.getClass().getMethod("build");
+
+            InvocationTargetException failure = assertThrows(
+                InvocationTargetException.class,
+                () -> build.invoke(builder)
+            );
+
+            assertInstanceOf(NullPointerException.class, failure.getCause());
+
+            assertEquals(
+                "Field 'size' of UsersRepository.Page must not be null",
+                failure.getCause().getMessage()
+            );
+
+            Object page = builder.getClass()
+                .getMethod("size", Integer.class)
+                .invoke(builder, 10);
+
+            Object built = build.invoke(page);
+
+            assertEquals(10, pageType.getMethod("size").invoke(built));
+            assertNull(pageType.getMethod("offset").invoke(built));
+        }
+    }
+
+    /**
+     * A field of a group record is bound through the same wrapper the method
+     * parameter of a plain placeholder of that type is, reading the field from
+     * the record the method takes.
+     */
+    @Test
+    void shouldBindGroupFieldsThroughTheirOwnWrappers() throws IOException {
+        QueryModel query = new QueryModel(
+            "FindStages",
+            QueryType.MANY,
+            "stages",
+            "SELECT id FROM stages WHERE setting = ? AND span = ? AND handle = ?",
+            List.of(1, 2, 3),
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            List.of(
+                new QueryParameter(
+                    1,
+                    "setting",
+                    ColumnType.ENUM,
+                    "stage_setting",
+                    false,
+                    false,
+                    false,
+                    "filter"
+                ),
+                new QueryParameter(
+                    2,
+                    "span",
+                    ColumnType.INTERVAL,
+                    null,
+                    false,
+                    false,
+                    true,
+                    "filter"
+                ),
+                new QueryParameter(
+                    3,
+                    "handle",
+                    ColumnType.CITEXT,
+                    null,
+                    false,
+                    false,
+                    false,
+                    "filter"
+                )
+            ),
+            null
+        );
+
+        GeneratedFile file = generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(query),
+                List.of(new EnumType("stage_setting", List.of("indoor", "outdoor")))
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                                    Arrays.<Object>asList(
+                                            new UntypedText(filter.setting().label()),
+                                            new UntypedText(\
+                    filter.span() == null ? null : filter.span().format()),
+                                            new UntypedText(filter.handle())
+                                    )
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains("public List<Long> findStages(Filter filter) {"),
+            source
+        );
+
+        assertCompiles(file, codeGenerator.generateEnums().get(0));
+    }
+
+    /**
+     * A Java enum must not take the name of the builder every group record
+     * nests, because inside those records that name resolves to the nested
+     * builder instead of the imported enum.
+     */
+    @Test
+    void shouldRejectAnEnumTypeThatCollidesWithTheBuilderOfAGroupRecord() {
+        QueryGroupModel group = new QueryGroupModel(
+            GROUP,
+            List.of(
+                new QueryModel(
+                    "FindTools",
+                    QueryType.MANY,
+                    "tools",
+                    "SELECT id FROM tools WHERE kind = ?",
+                    List.of(1),
+                    List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+                    List.of(
+                        new QueryParameter(
+                            1,
+                            "kind",
+                            ColumnType.ENUM,
+                            "builder",
+                            false,
+                            false,
+                            false,
+                            "filter"
+                        )
+                    ),
+                    null
+                )
+            ),
+            List.of(new EnumType("builder", List.of("a", "b")))
+        );
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> codeGenerator.generate(group)
+        );
+
+        assertEquals(
+            "Enum type 'builder' generates Builder, "
+                + "which is equal ignoring case to the generated type Builder",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A {@code :many} search whose criteria and page are parameter groups, with
+     * a cast filter the query repeats and an optional list criterion.
+     */
+    private QueryModel searchUsersByCriteria() {
+        return new QueryModel(
+            "SearchUsers",
+            QueryType.MANY,
+            "users",
+            """
+                SELECT id, name
+                FROM users
+                WHERE (?::text IS NULL OR name ILIKE ?)
+                  AND (?::varchar[] IS NULL OR name = ANY (?))
+                LIMIT ? OFFSET ?""",
+            List.of(1, 1, 2, 2, 3, 4),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, false)
+            ),
+            List.of(
+                new QueryParameter(
+                    1,
+                    "search",
+                    ColumnType.TEXT,
+                    null,
+                    false,
+                    false,
+                    true,
+                    "criteria"
+                ),
+                new QueryParameter(
+                    2,
+                    "statuses",
+                    ColumnType.VARCHAR,
+                    null,
+                    true,
+                    false,
+                    true,
+                    "criteria"
+                ),
+                pageSize(3),
+                pageOffset(4)
+            ),
+            null
+        );
+    }
+
+    /** A {@code :many} read paged by the same {@code page} group. */
+    private QueryModel listUsersPage() {
+        return new QueryModel(
+            "ListUsers",
+            QueryType.MANY,
+            "users",
+            "SELECT id, name FROM users LIMIT ? OFFSET ?",
+            List.of(1, 2),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, false)
+            ),
+            List.of(pageSize(1), pageOffset(2)),
+            null
+        );
+    }
+
+    private QueryParameter pageSize(int index) {
+        return new QueryParameter(
+            index,
+            "size",
+            ColumnType.INTEGER,
+            null,
+            false,
+            false,
+            false,
+            "page"
+        );
+    }
+
+    private QueryParameter pageOffset(int index) {
+        return new QueryParameter(
+            index,
+            "offset",
+            ColumnType.INTEGER,
+            null,
+            false,
+            false,
+            true,
+            "page"
+        );
+    }
+
+    /**
      * A generated batch passes the executor one argument list per row of the
      * list it takes, in its order, each holding that row's arguments.
      */

@@ -170,6 +170,19 @@ public final class JavaCodeGenerator implements CodeGenerator {
      */
     private static final int MAPPER_INDENT = 8;
 
+    /**
+     * The indentation a member of a parameter group's record carries inside the
+     * repository, beside the indentation of its own lines, which is the one
+     * level the record itself is written at.
+     */
+    private static final int GROUP_MEMBER_INDENT = MEMBER_INDENT;
+
+    /**
+     * The indentation a member of a group record's builder carries inside the
+     * repository, which is the record's level and the builder's own.
+     */
+    private static final int BUILDER_MEMBER_INDENT = MEMBER_INDENT * 2;
+
     private final String packageName;
 
     /**
@@ -327,14 +340,24 @@ public final class JavaCodeGenerator implements CodeGenerator {
 
     /**
      * Records the types one group generates beside its enums: its repository,
-     * the row records it returns, the nested result records of its other
-     * queries, and the nested parameter record of each of its batch queries.
+     * the row records it returns, the record of each parameter group its
+     * queries use, the builder those records nest, the nested result records of
+     * its other queries, and the nested parameter record of each of its batch
+     * queries.
      */
     private void recordGeneratedTypes(QueryGroupModel group, JavaNames names) {
         recordGeneratedType(names.repositoryClassName());
 
         for (JavaNames.RowNames row : names.rows()) {
             recordGeneratedType(row.typeName());
+        }
+
+        for (JavaNames.GroupNames parameterGroup : names.groups()) {
+            recordGeneratedType(parameterGroup.typeName());
+        }
+
+        if (!names.groups().isEmpty()) {
+            recordGeneratedType(JavaNames.BUILDER_TYPE_NAME);
         }
 
         for (int index = 0; index < group.queries().size(); index++) {
@@ -574,14 +597,24 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * The simple names one repository's file declares: the repository and the
-     * result and parameter records nested in it. A query returning one complete
-     * table row names the package's row record, which another file declares.
+     * The simple names one repository's file declares: the repository, the
+     * result, parameter, and parameter group records nested in it, and the
+     * builder every group record nests, which is one name however many groups
+     * the repository has. A query returning one complete table row names the
+     * package's row record, which another file declares.
      */
     private Set<String> repositoryDeclaredNames(QueryGroupModel group, JavaNames names) {
         Set<String> declaredNames = new LinkedHashSet<>();
 
         declaredNames.add(names.repositoryClassName());
+
+        if (!names.groups().isEmpty()) {
+            declaredNames.add(JavaNames.BUILDER_TYPE_NAME);
+        }
+
+        for (JavaNames.GroupNames parameterGroup : names.groups()) {
+            declaredNames.add(parameterGroup.typeName());
+        }
 
         for (int index = 0; index < group.queries().size(); index++) {
             QueryModel query = group.queries().get(index);
@@ -981,9 +1014,26 @@ public final class JavaCodeGenerator implements CodeGenerator {
             }
         }
 
+        Set<String> writtenGroups = new LinkedHashSet<>();
+
         for (int index = 0; index < group.queries().size(); index++) {
             QueryModel query = group.queries().get(index);
             JavaNames.QueryNames queryNames = names.queries().get(index);
+
+            for (JavaNames.MethodParameter parameter : queryNames.methodParameters()) {
+                if (
+                    parameter.group() != null
+                        && writtenGroups.add(parameter.group().groupName())
+                ) {
+                    members.add(
+                        generateGroupRecord(
+                            parameter.group(),
+                            names.repositoryClassName(),
+                            scope
+                        )
+                    );
+                }
+            }
 
             if (hasResultType(query) && !returnsSharedRow(query) && !returnsValue(query)) {
                 members.add(
@@ -1151,9 +1201,26 @@ public final class JavaCodeGenerator implements CodeGenerator {
         JavaNames.QueryNames names,
         NameScope scope
     ) {
-        return IntStream.range(0, query.parameters().size())
+        return generateParameterComponents(
+            query.parameters(),
+            names.parameterNames(),
+            scope
+        );
+    }
+
+    /**
+     * Generates the components of one record built from parameters, in the
+     * order they are given, each typed as the method parameter of a single
+     * execution of the same value is.
+     */
+    private String generateParameterComponents(
+        List<QueryParameter> parameters,
+        List<String> componentNames,
+        NameScope scope
+    ) {
+        return IntStream.range(0, parameters.size())
             .mapToObj(index -> {
-                QueryParameter parameter = query.parameters().get(index);
+                QueryParameter parameter = parameters.get(index);
 
                 return "%s %s"
                     .formatted(
@@ -1164,12 +1231,307 @@ public final class JavaCodeGenerator implements CodeGenerator {
                             parameter.nullable(),
                             scope
                         ),
-                        names.parameterNames().get(index)
+                        componentNames.get(index)
                     )
                     .indent(4)
                     .stripTrailing();
             })
             .collect(Collectors.joining(",\n"));
+    }
+
+    /**
+     * Generates the record of one parameter group, whose components are the
+     * group's fields in the order the first query that uses the group states
+     * them, each typed and null-marked as the method parameter of a plain
+     * placeholder of that use is.
+     *
+     * <p>The record checks each of its non-null components wherever it is
+     * constructed, so a missing field fails where the caller builds the record
+     * rather than where a query binds it, and it nests the builder its static
+     * {@code builder()} opens, whose setters carry the component names. A
+     * record whose every component is nullable declares no constructor of its
+     * own.
+     */
+    private String generateGroupRecord(
+        JavaNames.GroupNames group,
+        String repositoryClassName,
+        NameScope scope
+    ) {
+        List<String> members = List.of(
+            generateGroupConstructor(group, repositoryClassName, scope),
+            generateGroupBuilderMethod(),
+            generateGroupBuilder(group, repositoryClassName, scope)
+        );
+
+        return """
+            public record %s(
+            %s
+            ) {
+
+            %s
+            }
+            """
+            .formatted(
+                group.typeName(),
+                generateParameterComponents(group.fields(), group.componentNames(), scope),
+                members.stream()
+                    .filter(member -> !member.isBlank())
+                    .map(this::indent)
+                    .collect(Collectors.joining("\n\n"))
+            );
+    }
+
+    /**
+     * Generates the compact constructor of one group record, which runs one
+     * null check per non-null component in component order, and nothing at all
+     * when the record has no non-null component.
+     */
+    private String generateGroupConstructor(
+        JavaNames.GroupNames group,
+        String repositoryClassName,
+        NameScope scope
+    ) {
+        List<String> checks = generateFieldNullChecks(
+            group,
+            repositoryClassName,
+            GROUP_MEMBER_INDENT,
+            scope
+        );
+
+        if (checks.isEmpty()) {
+            return "";
+        }
+
+        return """
+            public %s {
+            %s
+            }
+            """
+            .formatted(group.typeName(), String.join("\n", checks));
+    }
+
+    private String generateGroupBuilderMethod() {
+        return """
+            public static %s %s() {
+                return new %s();
+            }
+            """
+            .formatted(
+                JavaNames.BUILDER_TYPE_NAME,
+                JavaNames.BUILDER_METHOD_NAME,
+                JavaNames.BUILDER_TYPE_NAME
+            );
+    }
+
+    /**
+     * Generates the builder of one group record: one nullable field per
+     * component, a private constructor the record's {@code builder()} calls,
+     * one setter per component, named after it and taking the component's own
+     * type, and a {@code build()} that constructs the record, checking each
+     * non-null component so that a field left unset fails by name.
+     */
+    private String generateGroupBuilder(
+        JavaNames.GroupNames group,
+        String repositoryClassName,
+        NameScope scope
+    ) {
+        List<String> members = new ArrayList<>();
+
+        members.add(generateBuilderFields(group, scope));
+        members.add(generateBuilderConstructor());
+
+        for (int index = 0; index < group.fields().size(); index++) {
+            members.add(generateBuilderSetter(group, index, scope));
+        }
+
+        members.add(generateBuildMethod(group, repositoryClassName, scope));
+
+        return """
+            public static final class %s {
+
+            %s
+            }
+            """
+            .formatted(
+                JavaNames.BUILDER_TYPE_NAME,
+                members.stream()
+                    .map(this::indent)
+                    .collect(Collectors.joining("\n\n"))
+            );
+    }
+
+    /**
+     * Generates the fields of one group record's builder, which are nullable
+     * whatever their component states, because a field is unset until a setter
+     * writes it.
+     */
+    private String generateBuilderFields(JavaNames.GroupNames group, NameScope scope) {
+        return IntStream.range(0, group.fields().size())
+            .mapToObj(
+                index -> "private %s %s;"
+                    .formatted(
+                        nullableFieldType(group.fields().get(index), scope),
+                        group.componentNames().get(index)
+                    )
+            )
+            .collect(Collectors.joining("\n"));
+    }
+
+    private String generateBuilderConstructor() {
+        return """
+            private %s() {
+            }
+            """
+            .formatted(JavaNames.BUILDER_TYPE_NAME);
+    }
+
+    private String generateBuilderSetter(
+        JavaNames.GroupNames group,
+        int index,
+        NameScope scope
+    ) {
+        QueryParameter field = group.fields().get(index);
+        String name = group.componentNames().get(index);
+
+        return """
+            public %s %s(%s %s) {
+                this.%s = %s;
+
+                return this;
+            }
+            """
+            .formatted(
+                JavaNames.BUILDER_TYPE_NAME,
+                name,
+                javaType(
+                    field.type(),
+                    field.enumType(),
+                    field.array(),
+                    field.nullable(),
+                    scope
+                ),
+                name,
+                name,
+                name
+            );
+    }
+
+    /**
+     * Generates the {@code build()} of one group record's builder, which
+     * constructs the record from its fields, checking each non-null component
+     * where it is read so that the construction states the nullness the record
+     * declares. A construction whose line would pass the limit writes its
+     * arguments one per line, one call continuation past the line that opens
+     * the call, the layout a wrapped bound-argument list already uses.
+     */
+    private String generateBuildMethod(
+        JavaNames.GroupNames group,
+        String repositoryClassName,
+        NameScope scope
+    ) {
+        List<String> arguments = IntStream.range(0, group.fields().size())
+            .mapToObj(index -> {
+                String name = group.componentNames().get(index);
+
+                return group.fields().get(index).nullable()
+                    ? name
+                    : "%s.requireNonNull(%s, %s)"
+                        .formatted(
+                            scope.type(OBJECTS),
+                            name,
+                            generateStringLiteral(
+                                fieldNullMessage(group, repositoryClassName, name)
+                            )
+                        );
+            })
+            .toList();
+
+        return """
+            public %s %s() {
+            %s
+            }
+            """
+            .formatted(
+                group.typeName(),
+                JavaNames.BUILD_METHOD_NAME,
+                generateConstruction(group.typeName(), arguments)
+            );
+    }
+
+    /**
+     * Writes the construction one {@code build()} returns, on one line when
+     * that line fits the limit and otherwise with each argument on a line of
+     * its own, one call continuation past the line that opens the call, with
+     * the closing parenthesis at that line's column. A single argument that
+     * alone passes the limit stays on its line, as it does in a wrapped
+     * bound-argument list.
+     */
+    private String generateConstruction(String typeName, List<String> arguments) {
+        String margin = " ".repeat(BODY_INDENT);
+        String call = "return new %s(".formatted(typeName);
+        String oneLine = call + String.join(", ", arguments) + ");";
+
+        if (fits(BUILDER_MEMBER_INDENT + BODY_INDENT, oneLine)) {
+            return margin + oneLine;
+        }
+
+        String argumentMargin = " ".repeat(BODY_INDENT + CONTINUATION_INDENT);
+
+        return margin + call + "\n"
+            + arguments.stream()
+                .map(argument -> argumentMargin + argument)
+                .collect(Collectors.joining(",\n"))
+            + "\n"
+            + margin
+            + ");";
+    }
+
+    /**
+     * The type one builder field carries, which is its component's type written
+     * nullable, because a field the caller has not set is {@code null}.
+     */
+    private String nullableFieldType(QueryParameter field, NameScope scope) {
+        return javaType(field.type(), field.enumType(), field.array(), true, scope);
+    }
+
+    /**
+     * Writes one null check per non-null component of one group record, in
+     * component order and each indented inside the member it stands in, so that
+     * a field left unset fails naming the record and the field.
+     */
+    private List<String> generateFieldNullChecks(
+        JavaNames.GroupNames group,
+        String repositoryClassName,
+        int enclosing,
+        NameScope scope
+    ) {
+        return IntStream.range(0, group.fields().size())
+            .filter(index -> !group.fields().get(index).nullable())
+            .mapToObj(index -> group.componentNames().get(index))
+            .map(
+                name -> generateCheck(
+                    name,
+                    fieldNullMessage(group, repositoryClassName, name),
+                    BODY_INDENT,
+                    enclosing,
+                    scope
+                )
+            )
+            .toList();
+    }
+
+    /**
+     * The failure of one non-null field of a group record, which names the
+     * field and the record, so that the failure says which field of which
+     * record of which repository was {@code null}.
+     */
+    private String fieldNullMessage(
+        JavaNames.GroupNames group,
+        String repositoryClassName,
+        String componentName
+    ) {
+        return "Field '%s' of %s.%s must not be null"
+            .formatted(componentName, repositoryClassName, group.typeName());
     }
 
     private String generateResultComponents(
@@ -1257,24 +1619,70 @@ public final class JavaCodeGenerator implements CodeGenerator {
         return scope.annotated(qualifiedName, scope.annotation(NULLABLE));
     }
 
+    /**
+     * Writes the parameters one generated method takes, in order of first
+     * occurrence: the value of each plain placeholder, typed and null-marked as
+     * its own use states, and the record of each parameter group the query
+     * uses, which the method always requires.
+     */
     private List<String> generateMethodParameters(
         QueryModel query,
         JavaNames.QueryNames names,
         NameScope scope
     ) {
+        return names.methodParameters().stream()
+            .map(methodParameter -> generateMethodParameter(query, methodParameter, scope))
+            .toList();
+    }
+
+    private String generateMethodParameter(
+        QueryModel query,
+        JavaNames.MethodParameter methodParameter,
+        NameScope scope
+    ) {
+        if (methodParameter.group() != null) {
+            return methodParameter.group().typeName() + " " + methodParameter.name();
+        }
+
+        QueryParameter parameter = query.parameters().get(methodParameter.parameter());
+
+        return javaType(
+            parameter.type(),
+            parameter.enumType(),
+            parameter.array(),
+            parameter.nullable(),
+            scope
+        )
+            + " "
+            + methodParameter.name();
+    }
+
+    /**
+     * The Java expression each logical parameter of one query is bound from, in
+     * logical parameter order: the method parameter of a plain placeholder, and
+     * the component of its group's record for a group field, read through the
+     * method parameter that holds the record.
+     */
+    private List<String> generateValueNames(QueryModel query, JavaNames.QueryNames names) {
+        Map<String, String> groupNames = new LinkedHashMap<>();
+
+        for (JavaNames.MethodParameter methodParameter : names.methodParameters()) {
+            if (methodParameter.group() != null) {
+                groupNames.put(
+                    methodParameter.group().groupName(),
+                    methodParameter.name()
+                );
+            }
+        }
+
         return IntStream.range(0, query.parameters().size())
             .mapToObj(index -> {
                 QueryParameter parameter = query.parameters().get(index);
+                String name = names.parameterNames().get(index);
 
-                return javaType(
-                    parameter.type(),
-                    parameter.enumType(),
-                    parameter.array(),
-                    parameter.nullable(),
-                    scope
-                )
-                    + " "
-                    + names.parameterNames().get(index);
+                return parameter.group() == null
+                    ? name
+                    : groupNames.get(parameter.group()) + "." + name + "()";
             })
             .toList();
     }
@@ -1331,10 +1739,10 @@ public final class JavaCodeGenerator implements CodeGenerator {
             generateMethodParameters(query, names, scope)
         );
 
-        List<String> checks = generateNullChecks(
+        List<String> checks = generateParameterNullChecks(
             query,
             repositoryClassName,
-            names.parameterNames(),
+            names,
             BODY_INDENT,
             scope
         );
@@ -1345,11 +1753,11 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * Writes one null check per non-null parameter of one query, in logical
-     * parameter order and each on its own line indented by {@code indent}, so
-     * that a {@code null} argument fails where the caller passes it rather than
-     * as an empty result or a constraint violation. A nullable parameter is
-     * checked nowhere, because the query gives its {@code null} a meaning.
+     * Writes one null check per non-null component of one parameter record, in
+     * logical parameter order and each on its own line indented by
+     * {@code indent}, so that a {@code null} fails where the row is built
+     * rather than where the batch binds it. A nullable component is checked
+     * nowhere, because the query gives its {@code null} a meaning.
      */
     private List<String> generateNullChecks(
         QueryModel query,
@@ -1373,12 +1781,42 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
+     * Writes one null check per parameter of one generated method whose
+     * argument must not be {@code null}, in the order the method takes them, so
+     * that such an argument fails where the caller passes it rather than as an
+     * empty result or a constraint violation. A nullable plain parameter is
+     * checked nowhere, because the query gives its {@code null} a meaning,
+     * while a group record is always checked; the fields inside it are checked
+     * by the record itself.
+     */
+    private List<String> generateParameterNullChecks(
+        QueryModel query,
+        String repositoryClassName,
+        JavaNames.QueryNames names,
+        int indent,
+        NameScope scope
+    ) {
+        return names.methodParameters().stream()
+            .filter(
+                methodParameter -> methodParameter.group() != null
+                    || !query.parameters().get(methodParameter.parameter()).nullable()
+            )
+            .map(
+                methodParameter -> generateNullCheck(
+                    methodParameter.name(),
+                    query,
+                    repositoryClassName,
+                    indent,
+                    scope
+                )
+            )
+            .toList();
+    }
+
+    /**
      * Writes one null check, which names the parameter, the query, and the
      * repository, so that the failure says which argument of which call was
-     * {@code null}. A check that does not fit the limit writes its two
-     * arguments one per line, one call continuation past the line that opens
-     * the call, with the closing parenthesis at that line's column, the layout
-     * a wrapped bound-argument list already uses.
+     * {@code null}.
      */
     private String generateNullCheck(
         String parameterName,
@@ -1387,23 +1825,49 @@ public final class JavaCodeGenerator implements CodeGenerator {
         int indent,
         NameScope scope
     ) {
-        String margin = " ".repeat(indent);
-        String message = generateStringLiteral(
+        return generateCheck(
+            parameterName,
             "Parameter '%s' of query '%s' in %s must not be null"
-                .formatted(parameterName, query.name(), repositoryClassName)
+                .formatted(parameterName, query.name(), repositoryClassName),
+            indent,
+            0,
+            scope
         );
-        String call = "%s.requireNonNull(".formatted(scope.type(OBJECTS));
-        String oneLine = call + parameterName + ", " + message + ");";
+    }
 
-        if (fits(indent, oneLine)) {
+    /**
+     * Writes one null check of the value {@code name} reads, carrying
+     * {@code message} as its failure. A check that does not fit the limit
+     * writes its two arguments one per line, one call continuation past the
+     * line that opens the call, with the closing parenthesis at that line's
+     * column, the layout a wrapped bound-argument list already uses.
+     *
+     * <p>{@code indent} is the indentation of the line inside the member it
+     * stands in, and {@code enclosing} the indentation that member itself
+     * carries inside the repository beyond one level, so that a check of a type
+     * nested deeper is measured where it is written.
+     */
+    private String generateCheck(
+        String name,
+        String message,
+        int indent,
+        int enclosing,
+        NameScope scope
+    ) {
+        String margin = " ".repeat(indent);
+        String literal = generateStringLiteral(message);
+        String call = "%s.requireNonNull(".formatted(scope.type(OBJECTS));
+        String oneLine = call + name + ", " + literal + ");";
+
+        if (fits(enclosing + indent, oneLine)) {
             return margin + oneLine;
         }
 
         String argumentMargin = " ".repeat(indent + CONTINUATION_INDENT);
 
         return margin + call + "\n"
-            + argumentMargin + parameterName + ",\n"
-            + argumentMargin + message + "\n"
+            + argumentMargin + name + ",\n"
+            + argumentMargin + literal + "\n"
             + margin + ");";
     }
 
@@ -1453,7 +1917,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 generateStringLiteral(repositoryClassName),
                 generateStringLiteral(query.name()),
                 generateSql(query),
-                generateParameterList(query, names.parameterNames(), "", ",", scope),
+                generateParameterList(query, generateValueNames(query, names), "", ",", scope),
                 names.rowMapperName()
             );
     }
@@ -1479,7 +1943,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 generateStringLiteral(repositoryClassName),
                 generateStringLiteral(query.name()),
                 generateSql(query),
-                generateParameterList(query, names.parameterNames(), "", "", scope)
+                generateParameterList(query, generateValueNames(query, names), "", "", scope)
             );
     }
 
