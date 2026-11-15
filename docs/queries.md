@@ -1742,9 +1742,12 @@ reads as the operator itself rather than as a placeholder.
   `uuid`, `bytea`, `json`, `jsonb`, `citext`, `inet`, `cidr`, `macaddr`,
   `macaddr8`, `interval`, an enum type's declared name, or the element name
   followed by `[]` for an array.
-- Mixing `$N` and `:name` placeholders in one query is rejected, as are
-  anonymous `?` placeholders, a qualified name such as `:a.b`, a quoted name
-  such as `:"x"`, and an `&name` placeholder. A `?` written as the JSONB
+- Mixing `$N` and `:name` placeholders in one query is rejected, a
+  `:<group>.<field>` placeholder counting as the named form, as are
+  anonymous `?` placeholders, a quoted name such as `:"x"`, an `&name`
+  placeholder, and a qualified form outside one group and one field, such as
+  `:a.b.c`, `: a . b`, or `:"a".b`; the accepted group form is stated in
+  [Parameter groups](#parameter-groups). A `?` written as the JSONB
   key-existence operator is that operator rather than an anonymous
   placeholder, as [Predicates](#predicates) states, so only a `?` written where
   a value belongs is rejected: `meta ? $1` is accepted and `meta ? ?` is not.
@@ -1885,6 +1888,171 @@ Widening a parameter to `@Nullable` later is source-compatible for its callers,
 while narrowing one is not, so a position sqlcj does not read as nullable today
 may become nullable in a later version.
 
+### Parameter groups
+
+A named placeholder may name one **parameter group** and one field of it,
+written `:<group>.<field>`, so that the parameters that belong together are
+passed as one object: `LIMIT :page.size OFFSET :page.offset` gives the
+generated method one `page` parameter instead of two `Integer` ones.
+
+- The group and the field are unquoted names of ASCII letters, digits, and
+  underscores that do not start with a digit, exactly the names a plain `:name`
+  placeholder writes, and the colon, the group, the `.`, and the field follow
+  each other without a space.
+- A group placeholder is a named placeholder, so it may stand beside `:name`
+  placeholders of the same query, while a `$N` placeholder beside either is the
+  rejected mixing of the two forms.
+- A group placeholder stands wherever a plain named one stands and is typed and
+  null-marked by the same rules. It may be the operand of a cast, as in
+  `:criteria.search::text`, and it may repeat: every occurrence of one
+  `:<group>.<field>` is one parameter, bound at each of its own positions, and
+  one typed occurrence types the others.
+- The name a group placeholder states is the group and the field together, so
+  `:criteria.name` and `:name` are two parameters of one query.
+
+Each group a query uses becomes **one** method parameter, named in lower camel
+case after the group and typed by a record the repository nests, named in upper
+camel case after the group; see
+[Generated Java Names](configuration.md#generated-java-names). The record's
+components are the group's fields, each named in lower camel case and typed and
+null-marked exactly as the plain placeholder of that use would be, so a field a
+null test guards is `@Nullable` while a `LIMIT` field is a non-null `Integer`;
+see [Parameter nullness](#parameter-nullness).
+
+The method parameters stay ordered by first occurrence, with a group standing at
+its first field, so a query whose first placeholder is `:criteria.search` and
+whose page follows takes `(criteria, page)`. Binding is unchanged as well: every
+occurrence binds at its own `?` in textual order, read from the component of its
+group.
+
+One group is one record per repository. Every query of the entry that uses the
+group must therefore give it the same fields: they may come in any order, and
+each must agree in Java type and in nullness. The record is generated once,
+directly before the members of the first query that uses the group, and that
+query defines the components and their order. A later query that uses the group
+differently is rejected at its own header, naming the defining query and the
+line it stands at:
+
+```text
+/home/dev/project/sql/queries.sql:7: Invalid query 'ListAuthorNames': parameter group 'page' differs from its use in query 'ListAuthorPage' at line 1: fields (size, offset) there, (size) here; rename one of the two groups
+/home/dev/project/sql/queries.sql:7: Invalid query 'FindAuthors': parameter group 'criteria' differs from its use in query 'SearchAuthors' at line 1: field key is Long there, String here; rename one of the two groups
+/home/dev/project/sql/queries.sql:7: Invalid query 'FindAuthors': parameter group 'criteria' differs from its use in query 'SearchAuthors' at line 1: field term is nullable there, non-null here; rename one of the two groups
+```
+
+A group record is built through the builder it nests: `builder()` opens one,
+one setter per component returns the builder, and `build()` returns the record.
+A non-null component is checked in `build()` and in the record's own compact
+constructor alike, so a field left unset or set to `null` raises
+`NullPointerException` where the record is built, with the message
+`Field 'size' of AuthorRepository.Page must not be null`, and the generated
+method rejects a `null` group itself, with
+`Parameter 'page' of query 'ListAuthorPage' in AuthorRepository must not be
+null`, before any execution.
+
+A field named `build` or `builder` would take a name its own builder uses, so it
+is suffixed as a colliding name is, becoming `build1` and `builder1`.
+
+Two group names are rejected while the repository's names are resolved:
+
+- a group whose record would be `Builder`, the name every group record's builder
+  takes, rejected as `Parameter group 'builder' generates the record Builder,
+  which every group record's builder is named; rename the group`;
+- a group whose record would be equal ignoring case to another type the
+  repository names — its own class, a row record it uses, a result record, a
+  batch parameter record, or another group's record — rejected as
+  `Parameter group 'authorsrow' generates the record Authorsrow, which is equal
+  ignoring case to the row record AuthorsRow of table 'authors'; rename the
+  group`.
+
+A `:batchexec` query cannot use a group placeholder, because it already takes
+one generated record per row; such a query is rejected as
+`A :batchexec query cannot use the parameter group placeholder :page.size,
+because a batch already takes one record per row; write a plain named
+placeholder, such as :size`.
+
+The group form accepts one group and one field and nothing else, so a deeper
+chain `:a.b.c`, a spaced `: a . b`, and a quoted group or field `:"a".b` stay
+rejected as unsupported named placeholders. The diagnostic names the
+placeholder the parser read, which is `:a.b` for the spaced form, as in
+`Named placeholder ':a.b.c' is not supported; write an unquoted name of letters,
+digits, and underscores directly after ':', such as :userId`.
+
+Over the [Quickstart](quickstart.md) `Author` entry, a search and a page of the
+same feed share one `page` group:
+
+```sql
+-- name: SearchAuthors :many
+SELECT *
+FROM authors
+WHERE (:criteria.name::text IS NULL OR name ILIKE '%' || :criteria.name || '%')
+ORDER BY id
+LIMIT :page.size OFFSET :page.offset;
+
+-- name: ListAuthorPage :many
+SELECT *
+FROM authors
+ORDER BY id
+LIMIT :page.size OFFSET :page.offset;
+```
+
+`SearchAuthors` uses `page` first, so it defines the record, which
+`AuthorRepository` declares in full as:
+
+```java
+public record Page(
+    Integer size,
+    Integer offset
+) {
+
+    public Page {
+        Objects.requireNonNull(size, "Field 'size' of AuthorRepository.Page must not be null");
+        Objects.requireNonNull(offset, "Field 'offset' of AuthorRepository.Page must not be null");
+    }
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static final class Builder {
+
+        private @Nullable Integer size;
+        private @Nullable Integer offset;
+
+        private Builder() {
+        }
+
+        public Builder size(Integer size) {
+            this.size = size;
+
+            return this;
+        }
+
+        public Builder offset(Integer offset) {
+            this.offset = offset;
+
+            return this;
+        }
+
+        public Page build() {
+            return new Page(
+                    Objects.requireNonNull(size, "Field 'size' of AuthorRepository.Page must not be null"),
+                    Objects.requireNonNull(offset, "Field 'offset' of AuthorRepository.Page must not be null")
+            );
+        }
+    }
+}
+```
+
+`SearchAuthors` also uses a `criteria` group of its own, whose one component is
+the `@Nullable String name` its null test marks. The two methods, written
+without their Javadoc and bodies, are:
+
+```java
+public List<AuthorsRow> searchAuthors(Criteria criteria, Page page);
+
+public List<AuthorsRow> listAuthorPage(Page page);
+```
+
 ## Criteria Queries
 
 A **criteria query** filters its rows by criteria the caller may leave out: one
@@ -1924,6 +2092,12 @@ count complete the shape:
 - The count repeats the same `WHERE` text in a query of its own, unsorted and
   unpaged, so both queries take the criteria in one order and the caller passes
   the same arguments to both.
+
+The criteria and the page may each be written as one parameter group instead,
+so that both queries take one record per group and the caller builds the
+criteria once and passes the same record to both; see
+[Parameter groups](#parameter-groups) and the cookbook's
+[Criteria Search](cookbook.md#criteria-search).
 
 The reference service writes that shape over its tasks:
 
@@ -2169,21 +2343,25 @@ subpackage names are fixed.
     repository, below the repository's own marker, and directly above
     `public record` of every row record and `public enum` of every generated
     enum. Every type those declare is therefore non-null unless it is
-    annotated. A nested `<QueryName>Result` or `<QueryName>Params` record is
-    marked by its repository and carries no mark of its own.
+    annotated. A nested `<QueryName>Result` or `<QueryName>Params` record, and
+    a parameter group's record with the `Builder` it nests, are marked by their
+    repository and carry no mark of their own.
   - A result component carries `@Nullable` exactly when its column can be NULL:
     a column the schema models nullable, a column of a null-extended source, an
     aliased `MIN`, `MAX`, `SUM`, or `AVG`, an aliased cast whose operand sqlcj
     does not know reads no `NULL`, and a component holding an embedded row a
     join null-extends. Every other component is unannotated, and therefore
     non-null.
-  - A generated method parameter and a component of a `<QueryName>Params`
-    record carries `@Nullable` exactly when the query gives a `null` bound at
-    it a meaning, which [Parameter nullness](#parameter-nullness) states. Every
-    other parameter and component is unannotated, and therefore non-null, and
-    the generated method and the record's compact constructor reject a `null`
-    for each of them with `Objects.requireNonNull`, before any execution,
-    naming the parameter, the query, and the repository.
+  - A generated method parameter and a component of a `<QueryName>Params` or a
+    parameter group's record, with the setter its builder declares for that
+    component, carries `@Nullable` exactly when the query gives a `null` bound
+    at it a meaning, which [Parameter nullness](#parameter-nullness) states.
+    Every other parameter and component is unannotated, and therefore non-null,
+    and the generated method, the record's compact constructor, and a group
+    record's `build()` reject a `null` for each of them with
+    `Objects.requireNonNull`, before any execution, naming the parameter, the
+    query, and the repository, or the field and the group record; see
+    [Parameter groups](#parameter-groups).
   - An array element is always nullable, wherever the list type is written, as
     in `List<@Nullable String>`, because a SQL array may hold a `NULL` element.
     A nullable `BYTEA` is written `byte @Nullable []`, which states that the
@@ -2254,7 +2432,8 @@ subpackage names are fixed.
   names only its JSpecify annotations and `UnmappableValueException`.
 - On a simple name two types share, `java.lang` included, the file settles it
   alone. The types the file declares keep the simple name first, its nested
-  `<QueryName>Result` and `<QueryName>Params` records included, and a generated
+  `<QueryName>Result` and `<QueryName>Params` records and its parameter group
+  records with their `Builder` included, and a generated
   row record or enum keeps it next; every other type of that name is written
   fully qualified in that file alone, with a type annotation before the
   simple-name segment, as in `java.math.@Nullable BigDecimal`.
@@ -2592,9 +2771,10 @@ header-line order, before the run exits with status `1` having written nothing.
   cast does not widen them: `id <> ANY($1::bigint[])` is accepted only as any
   other cast placeholder is, named after its own index.
 - Anonymous `?` placeholders, `$N` and `:name` placeholders mixed in one query,
-  a qualified name such as `:a.b`, a quoted name such as `:"x"`, an `&name`
+  a qualified form outside one group and one field, such as `:a.b.c`,
+  `: a . b`, or `:"a".b`, a quoted name such as `:"x"`, an `&name`
   placeholder, each of them also as the operand of a cast, such as
-  `:"x"::text`, `&x::text`, or `:a.b::text`, one name whose occurrences have
+  `:"x"::text`, `&x::text`, or `:a.b.c::text`, one name whose occurrences have
   conflicting types, and non-contiguous or non-positive placeholder indexes.
 - An `INSERT` without an explicit column list; an `INSERT` whose rows come from
   neither parenthesized `VALUES` rows nor a `SELECT`, such as `VALUES ROW(1)`,
@@ -3772,6 +3952,49 @@ Parameters:
   `PostgresIntegrationTest.shouldReadAndFilterASubscriptedArrayElement` executes
   a cast subscript projection and a cast subscript filter against PostgreSQL 16
   as one `String` component and one `String` method parameter.
+- `SqlParserTest.shouldCompileParameterGroupPlaceholders`,
+  `SqlParserTest.shouldNotCompileADeeperChainAsAParameterGroup`,
+  `SqlParserTest.shouldCompileAGroupFieldAndAPlainNameAsDistinctParameters`,
+  `SqlParameterCompilerTest.shouldReplaceReportedParameterGroupSpans`,
+  `SqlParameterCompilerTest.shouldIgnoreParameterGroupFieldSeparatedFromItsSeparator`,
+  and `SqlParameterCompilerTest.shouldIgnoreADeeperChainAsAParameterGroup`
+  cover the compiled `:<group>.<field>` form, its cast and its repetition, the
+  four tokens it replaces, and the deeper chain and the spaced form it does not
+  compile.
+- `QueryAnalyzerTest.shouldResolveParameterGroupPlaceholders`,
+  `QueryAnalyzerTest.shouldResolveAGroupFieldAndAPlainNameAsDistinctParameters`,
+  and `QueryAnalyzerTest.shouldRejectAParameterGroupInABatchQuery` cover the
+  analyzed group parameter with its type, its nullness, and its binding order,
+  the group field beside a plain name of the same spelling, and the
+  `:batchexec` rejection.
+- `SqlcjCompilerIntegrationTest.shouldCompileQueriesThatShareOneParameterGroup`,
+  `SqlcjCompilerIntegrationTest.shouldRejectQueriesThatGiveOneParameterGroupDifferentFields`,
+  and
+  `SqlcjCompilerIntegrationTest.shouldRejectQueriesThatGiveOneParameterGroupFieldAnotherTypeOrNullness`
+  cover the one record two queries of a repository share and the located
+  conflict diagnostics of differing fields, types, and nullness.
+- `JavaNamesTest.shouldNameOneRecordPerParameterGroup`,
+  `JavaNamesTest.shouldResolveGroupComponentNamesReservedByItsBuilder`,
+  `JavaNamesTest.shouldOrderMethodParametersByFirstOccurrence`,
+  `JavaNamesTest.shouldRejectGroupRecordEqualIgnoringCaseToAnotherRepositoryType`,
+  `JavaNamesTest.shouldRejectTwoGroupRecordsEqualIgnoringCase`,
+  `JavaNamesTest.shouldRejectGroupRecordEqualIgnoringCaseToABatchParameterRecord`,
+  and `JavaNamesTest.shouldRejectGroupRecordEqualIgnoringCaseToARowRecord`
+  cover the record and component names of a group, the `build1` and `builder1`
+  its builder reserves, the method parameters ordered by first occurrence with
+  a group at its first field, and the rejected group names.
+- `JavaCodeGeneratorTest.shouldGenerateOneRecordPerParameterGroupSharedByItsQueries`,
+  `JavaCodeGeneratorTest.shouldFailWhenANonNullFieldOfAGroupRecordIsNotSet`,
+  `JavaCodeGeneratorTest.shouldBindGroupFieldsThroughTheirOwnWrappers`, and
+  `JavaCodeGeneratorTest.shouldRejectAnEnumTypeThatCollidesWithTheBuilderOfAGroupRecord`
+  cover the generated record with its builder and its null checks, the message
+  a missing non-null field raises, the wrappers a group field binds through,
+  and the enum rejected against a group record's `Builder`, with the generated
+  sources compiled, and
+  `PostgresIntegrationTest.shouldExecuteGeneratedParameterGroupsAgainstPostgres`
+  executes two queries that share a `page` group, one of them taking a
+  `criteria` group of optional filters, against PostgreSQL 16, and fails a
+  record built without one of its non-null fields.
 
 Parameter nullness:
 
