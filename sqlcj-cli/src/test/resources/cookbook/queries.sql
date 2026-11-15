@@ -4,7 +4,7 @@
 SELECT *
 FROM articles
 ORDER BY published_at DESC, id DESC
-LIMIT :pageSize OFFSET :pageOffset;
+LIMIT :page.size OFFSET :page.offset;
 
 -- name: ListLatestArticles :many
 SELECT *
@@ -22,18 +22,18 @@ LIMIT :pageSize;
 -- name: SearchArticles :many
 SELECT *
 FROM articles
-WHERE (:search::text IS NULL OR title ILIKE '%' || :search || '%')
-  AND (:statuses IS NULL OR status = ANY (:statuses))
-  AND (:publishedSince IS NULL OR published_at >= :publishedSince)
+WHERE (:criteria.search::text IS NULL OR title ILIKE '%' || :criteria.search || '%')
+  AND (:criteria.statuses IS NULL OR status = ANY (:criteria.statuses))
+  AND (:criteria.publishedSince IS NULL OR published_at >= :criteria.publishedSince)
 ORDER BY published_at DESC, id DESC
-LIMIT :pageSize OFFSET :pageOffset;
+LIMIT :page.size OFFSET :page.offset;
 
 -- name: CountSearchedArticles :one
 SELECT COUNT(*) AS total
 FROM articles
-WHERE (:search::text IS NULL OR title ILIKE '%' || :search || '%')
-  AND (:statuses IS NULL OR status = ANY (:statuses))
-  AND (:publishedSince IS NULL OR published_at >= :publishedSince);
+WHERE (:criteria.search::text IS NULL OR title ILIKE '%' || :criteria.search || '%')
+  AND (:criteria.statuses IS NULL OR status = ANY (:criteria.statuses))
+  AND (:criteria.publishedSince IS NULL OR published_at >= :criteria.publishedSince);
 
 -- name: UpsertSubscriber :one
 INSERT INTO subscribers (email, name)

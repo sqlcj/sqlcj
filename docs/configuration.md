@@ -380,7 +380,14 @@ The rules are applied as follows:
   field only for a row one of its queries returns whole, because an embedded row
   is built inside the mapper of the result that holds it,
 - record components and method parameters are the lower camel form of the column
-  name or projection alias, so `created_at` generates `createdAt`.
+  name or projection alias, so `created_at` generates `createdAt`,
+- a parameter group's record is the upper camel form of the group name, nested
+  in the repository, and its method parameter is the lower camel form of that
+  name, while its components and its builder's setters are the lower camel
+  forms of the group's fields, so `:search_criteria.created_at` generates the
+  record `SearchCriteria`, the parameter `searchCriteria`, and the component
+  and setter `createdAt`; see
+  [Parameter groups](queries.md#parameter-groups).
 
 Generated names also avoid names that Java or the generated source already uses:
 
