@@ -71,7 +71,7 @@ is registered as a singleton bean under its fully qualified class name, built
 from the one `QueryExecutor` bean definition. The generated repositories sit in
 `<java.package>.repositories`, which is one of those packages whenever
 `java.package` itself is. The generator marks every
-repository with `@org.sqlcj.runtime.GeneratedRepository`, which is how the
+repository with `@GeneratedRepository`, which is how the
 starter finds them; a row record and a generated enum carry no marker and are
 not registered.
 

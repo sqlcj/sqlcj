@@ -103,11 +103,10 @@ reported that failure, and a `null` passed to a non-null parameter raises
 column a null-extended source
 contributes on its own is nullable however its table declares it, so it keeps
 its plain read and reads back as `null`, while a whole row such a source
-contributes is instead the nullable component, guarded by
-`org.sqlcj.runtime.SqlRow.isNull`, whose own `NOT NULL` columns are read through
-`org.sqlcj.runtime.NotNullColumn` inside that guard. The exception a given
-SQLSTATE raises, the failures that stay plain, and that read's own message are
-listed in
+contributes is instead the nullable component, guarded by `SqlRow.isNull`,
+whose own `NOT NULL` columns are read through `NotNullColumn` inside that
+guard. The exception a given SQLSTATE raises, the failures that stay plain, and
+that read's own message are listed in
 [Connection Ownership and Transactions](postgresql.md#connection-ownership-and-transactions).
 
 ## Reads
@@ -1784,11 +1783,8 @@ in its `SET` clause, so the generated method takes `(id, bio)` and binds
 `(bio, id)`:
 
 ```java
-public int updateAuthorBio(Long id, @org.jspecify.annotations.Nullable String bio) {
-    java.util.Objects.requireNonNull(
-            id,
-            "Parameter 'id' of query 'UpdateAuthorBio' in AuthorRepository must not be null"
-    );
+public int updateAuthorBio(Long id, @Nullable String bio) {
+    Objects.requireNonNull(id, "Parameter 'id' of query 'UpdateAuthorBio' in AuthorRepository must not be null");
 
     return executor.execute(
             "AuthorRepository",
@@ -1797,7 +1793,7 @@ public int updateAuthorBio(Long id, @org.jspecify.annotations.Nullable String bi
             UPDATE authors
             SET bio = ?
             WHERE id = ?;""",
-            java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(bio, id)
+            Arrays.<@Nullable Object>asList(bio, id)
     );
 }
 ```
@@ -1828,10 +1824,9 @@ argument a meaning. Every other parameter is non-null, and a `null` passed to
 one of them raises `NullPointerException` at once, before the statement runs,
 with the message
 `Parameter '<parameter>' of query '<QueryName>' in <Repository> must not be
-null`. The nullable parameters are annotated
-`@org.jspecify.annotations.Nullable`, as
-[Generated Java](#generated-java) states, so a Kotlin caller and a null checker
-read the rule from the class files.
+null`. The nullable parameters are annotated `@Nullable`, as [Generated
+Java](#generated-java) states, so a Kotlin caller and a null checker read the
+rule from the class files.
 
 A parameter is nullable when **any** occurrence of it is:
 
@@ -1864,8 +1859,7 @@ Every other position is non-null, including a placeholder:
 - written as an item of the `SELECT` an `INSERT` reads its rows from.
 
 A list parameter stays non-null while its elements stay nullable, as in
-`List<@org.jspecify.annotations.Nullable Long> ids`, because a SQL array may
-hold a `NULL` element.
+`List<@Nullable Long> ids`, because a SQL array may hold a `NULL` element.
 
 The same rule applies to the components of a `<QueryName>Params` record, whose
 compact constructor rejects a `null` for each non-null component, so a batch row
@@ -1881,15 +1875,15 @@ RETURNING *;
 ```
 
 `UpsertAuthor` generates
-`upsertAuthor(Long id, String name, @org.jspecify.annotations.Nullable String bio)`,
+`upsertAuthor(Long id, String name, @Nullable String bio)`,
 because `authors.id` and `authors.name` are `NOT NULL` while `authors.bio` is
 not, and `upsertAuthor(1L, null, null)` fails with
 `Parameter 'name' of query 'UpsertAuthor' in AuthorRepository must not be null`
 instead of reaching the database.
 
-Widening a parameter to `@org.jspecify.annotations.Nullable` later is
-source-compatible for its callers, while narrowing one is not, so a position
-sqlcj does not read as nullable today may become nullable in a later version.
+Widening a parameter to `@Nullable` later is source-compatible for its callers,
+while narrowing one is not, so a position sqlcj does not read as nullable today
+may become nullable in a later version.
 
 ## Criteria Queries
 
@@ -1971,11 +1965,10 @@ pageOffset)`, which returns `List<TasksRow>`, and
 Long assigneeId, Short maxPriority)`, whose result is the non-null `total`
 column alone, so it returns `Long`.
 
-Each guarded criterion is `@org.jspecify.annotations.Nullable`, because its own
-null test gives a `null` argument the meaning of leaving the criterion out, so
-`search`, `statuses`, `assigneeId`, and `maxPriority` take a `null` while the
-required `projectId`, the `sort` key, and the page's `pageSize` and
-`pageOffset` do not; see
+Each guarded criterion is `@Nullable`, because its own null test gives a `null`
+argument the meaning of leaving the criterion out, so `search`, `statuses`,
+`assigneeId`, and `maxPriority` take a `null` while the required `projectId`,
+the `sort` key, and the page's `pageSize` and `pageOffset` do not; see
 [Parameter nullness](#parameter-nullness).
 
 At the occurrence that neither a clause nor a cast types, sqlcj writes the
@@ -2032,16 +2025,14 @@ subpackage names are fixed.
   `// Code generated by sqlcj. DO NOT EDIT.`, followed by one blank line and the
   `package` declaration. The notice holds no version, timestamp, or filesystem
   path.
-- Every repository class carries the marker annotation
-  `@org.sqlcj.runtime.GeneratedRepository`, written out in full on the line
-  directly above `public final class`, as every runtime helper is, so the
-  repository's import list is unchanged. It marks the class as one sqlcj
-  generated, which a hand-written class must not carry, and has no effect in
-  plain Java, while the Spring Boot starter registers the marked classes of the
-  application's packages as beans, as [Spring](spring.md) documents. A row
+- Every repository class carries the marker annotation `@GeneratedRepository`
+  on the line directly above `public final class`. It marks the class as one
+  sqlcj generated, which a hand-written class must not carry, and has no effect
+  in plain Java, while the Spring Boot starter registers the marked classes of
+  the application's packages as beans, as [Spring](spring.md) documents. A row
   record and a generated enum are no repositories and carry no marker.
-- The repository has one `org.sqlcj.runtime.QueryExecutor` field and one
-  constructor taking that executor.
+- The repository has one `QueryExecutor` field and one constructor taking that
+  executor.
 - Methods appear in query-source order. A method name is the lower camel form
   of the query name, as in `get_author` and `GetAuthor` to `getAuthor`.
 - A `:one`, `:optional`, or `:many` query that returns one complete table row — a
@@ -2062,7 +2053,7 @@ subpackage names are fixed.
 
   ```java
   private static final RowMapper<Long> countAuthorsRowMapper =
-          resultSet -> org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class);
+          resultSet -> NotNullColumn.getObject(resultSet, 1, Long.class);
   ```
 
   so `SELECT COUNT(*) AS total FROM authors` returns `Long` and a `:many` read
@@ -2091,26 +2082,25 @@ subpackage names are fixed.
 - A component that holds one table's complete row is typed by that table's
   `<TableName>Row` record, by its simple name, and is built inside the result's
   own mapper from the consecutive positions its wildcard selected, as in
-  `new ListUserProfilesResult(new UsersRow(org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
-  ...), new ProfilesRow(org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 3, Long.class), ...))`,
+  `new ListUserProfilesResult(new UsersRow(NotNullColumn.getObject(resultSet, 1, Long.class),
+  ...), new ProfilesRow(NotNullColumn.getObject(resultSet, 3, Long.class), ...))`,
   so a row the repository only embeds generates no mapper field of its own.
 - A nullable row component, which a null-extended source contributes, is guarded
-  by `org.sqlcj.runtime.SqlRow.isNull`, written out in full as every other
-  runtime helper is, over the one-based first and last positions of that row's
+  by `SqlRow.isNull` over the one-based first and last positions of that row's
   own columns:
 
   ```java
   private static final RowMapper<ListUserProfilesResult> listUserProfilesRowMapper =
           resultSet -> new ListUserProfilesResult(
                   new UsersRow(
-                          org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
+                          NotNullColumn.getObject(resultSet, 1, Long.class),
                           resultSet.getObject(2, String.class)
                   ),
-                  org.sqlcj.runtime.SqlRow.isNull(resultSet, 3, 5)
+                  SqlRow.isNull(resultSet, 3, 5)
                       ? null
                       : new ProfilesRow(
-                              org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 3, Long.class),
-                              org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 4, Long.class),
+                              NotNullColumn.getObject(resultSet, 3, Long.class),
+                              NotNullColumn.getObject(resultSet, 4, Long.class),
                               resultSet.getObject(5, String.class)
                       )
           );
@@ -2127,117 +2117,106 @@ subpackage names are fixed.
   `<method>(List<<QueryName>Params> batch)`. The method passes one argument list
   per element to `executor.executeBatch`, built as
   `batch.stream().map(params -> <argument list>).toList()`, where each
-  element's argument list is built with `java.util.Collections.emptyList`,
-  `java.util.Collections.singletonList`, or `java.util.Arrays.asList` by the
-  number of binding positions, as a single execution's list is, and each
-  argument is wrapped exactly as the same argument of a single execution is. A
-  query that binds no parameter reads no component, so its argument lists are
-  built with an added `.map(java.util.Objects::requireNonNull)` that rejects a
-  `null` element.
+  element's argument list is built with `Collections.emptyList`,
+  `Collections.singletonList`, or `Arrays.asList` by the number of binding
+  positions, as a single execution's list is, and each argument is wrapped
+  exactly as the same argument of a single execution is. A query that binds no
+  parameter reads no component, so its argument lists are built with an added
+  `.map(Objects::requireNonNull)` that rejects a `null` element.
   A component whose name a record cannot declare, because `Object` declares it,
   is disambiguated as a repeated name is, so a `hash_code` parameter becomes
   `hashCode1`.
 - Every generated method passes the repository class name and the query name to
   the executor, as the first two arguments of its call, so a runtime failure
   names the query the application called. A `JSON`, `JSONB`, `CITEXT`, `INET`,
-  `CIDR`, `MACADDR`, or `MACADDR8` argument is passed
-  as `new org.sqlcj.runtime.UntypedText(<parameter>)`, written out in full, so
-  that the runtime binds its text without a declared SQL type; see
+  `CIDR`, `MACADDR`, or `MACADDR8` argument is passed as
+  `new UntypedText(<parameter>)`, so that the runtime binds its text without a
+  declared SQL type; see
   [Supported Column Types](postgresql.md#supported-column-types).
 - The bound arguments of one execution are passed as a list of no element,
-  built with `java.util.Collections.emptyList`, of one, built with
-  `java.util.Collections.singletonList`, or of two or more, built with
-  `java.util.Arrays.asList`. Each of the three accepts a null argument, unlike
-  `List.of`, so a nullable parameter can be bound. A list of two or more
-  arguments states its element type, which is `Object` when no argument can be
-  null and `@org.jspecify.annotations.Nullable Object` when one can, so the
-  list's type follows from the arguments' nullness rather than from the Java
-  types they happen to have.
-- A column or parameter of a one-dimensional array type is a
-  `java.util.List<T>` of the element's Java type. Its argument is passed as
-  `new org.sqlcj.runtime.SqlArray("<element type>", <parameter>)`, or as
-  `org.sqlcj.runtime.SqlArray.of("<enum type>", <parameter>, <EnumType>::label)`
-  for an array of an enum. A nullable column is read as
-  `org.sqlcj.runtime.SqlArray.getList(resultSet, position, <Type>.class)` and a
-  non-null one as
-  `org.sqlcj.runtime.NotNullColumn.getList(resultSet, position, <Type>.class)`,
-  so an empty list is preserved in both directions, a `null` list only for a
-  nullable column, because the non-null read fails instead, and a `null`
-  element stays `null` in both forms; see
+  built with `Collections.emptyList`, of one, built with
+  `Collections.singletonList`, or of two or more, built with `Arrays.asList`.
+  Each of the three accepts a null argument, unlike `List.of`, so a nullable
+  parameter can be bound. A list of two or more arguments states its element
+  type, which is `Object` when no argument can be null and `@Nullable Object`
+  when one can, so the list's type follows from the arguments' nullness rather
+  than from the Java types they happen to have.
+- A column or parameter of a one-dimensional array type is a `List<T>` of the
+  element's Java type. Its argument is passed as
+  `new SqlArray("<element type>", <parameter>)`, or as
+  `SqlArray.of("<enum type>", <parameter>, <EnumType>::label)` for an array of
+  an enum. A nullable column is read as
+  `SqlArray.getList(resultSet, position, <Type>.class)` and a non-null one as
+  `NotNullColumn.getList(resultSet, position, <Type>.class)`, so an empty list
+  is preserved in both directions, a `null` list only for a nullable column,
+  because the non-null read fails instead, and a `null` element stays `null` in
+  both forms; see
   [Array Types](postgresql.md#array-types).
 - A column or parameter of an enum type the schema declares uses the Java enum
   `<java.package>.enums` holds for that type, imported by the repository and
-  used by its simple name. Its argument is
-  passed as
-  `new org.sqlcj.runtime.UntypedText(<parameter> == null ? null : <parameter>.label())`,
-  a nullable column is read as
+  used by its simple name. Its argument is passed as
+  `new UntypedText(<parameter> == null ? null : <parameter>.label())`, a
+  nullable column is read as
   `<EnumType>.fromLabel(resultSet.getString(position))`, and a non-null one as
-  `org.sqlcj.runtime.NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`,
-  so a `null` stays `null` in both directions for a nullable column, while the
+  `NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`, so a
+  `null` stays `null` in both directions for a nullable column, while the
   non-null read fails on a SQL `NULL`; see
   [Enum Types](postgresql.md#enum-types).
 - Every generated type states its nullness with
   [JSpecify](https://jspecify.dev) annotations, which the runtime brings as its
-  one dependency. Both are written out in full, as every runtime helper is, so
-  no generated enum can shadow them and the generated imports are unchanged:
-  - `@org.jspecify.annotations.NullMarked` is the line directly above
-    `public final class` of every repository, below the repository's own marker,
-    and directly above `public record` of every row record and
-    `public enum` of every generated enum. Every type those declare is
-    therefore non-null unless it is annotated. A nested `<QueryName>Result` or
-    `<QueryName>Params` record is marked by its repository and carries no mark
-    of its own.
-  - A result component carries `@org.jspecify.annotations.Nullable` exactly when
-    its column can be NULL: a column the schema models nullable, a column of a
-    null-extended source, an aliased `MIN`, `MAX`, `SUM`, or `AVG`, an aliased
-    cast whose operand sqlcj does not know reads no `NULL`, and a component
-    holding an embedded row a join null-extends. Every other component is
-    unannotated, and therefore non-null.
+  one dependency. A file that names one imports it and writes its simple name:
+  - `@NullMarked` is the line directly above `public final class` of every
+    repository, below the repository's own marker, and directly above
+    `public record` of every row record and `public enum` of every generated
+    enum. Every type those declare is therefore non-null unless it is
+    annotated. A nested `<QueryName>Result` or `<QueryName>Params` record is
+    marked by its repository and carries no mark of its own.
+  - A result component carries `@Nullable` exactly when its column can be NULL:
+    a column the schema models nullable, a column of a null-extended source, an
+    aliased `MIN`, `MAX`, `SUM`, or `AVG`, an aliased cast whose operand sqlcj
+    does not know reads no `NULL`, and a component holding an embedded row a
+    join null-extends. Every other component is unannotated, and therefore
+    non-null.
   - A generated method parameter and a component of a `<QueryName>Params`
-    record carries `@org.jspecify.annotations.Nullable` exactly when the query
-    gives a `null` bound at it a meaning, which
-    [Parameter nullness](#parameter-nullness) states. Every other parameter and
-    component is unannotated, and therefore non-null, and the generated method
-    and the record's compact constructor reject a `null` for each of them with
-    `java.util.Objects.requireNonNull`, before any execution, naming the
-    parameter, the query, and the repository.
+    record carries `@Nullable` exactly when the query gives a `null` bound at
+    it a meaning, which [Parameter nullness](#parameter-nullness) states. Every
+    other parameter and component is unannotated, and therefore non-null, and
+    the generated method and the record's compact constructor reject a `null`
+    for each of them with `Objects.requireNonNull`, before any execution,
+    naming the parameter, the query, and the repository.
   - An array element is always nullable, wherever the list type is written, as
-    in `java.util.List<@org.jspecify.annotations.Nullable String>`, because a
-    SQL array may hold a `NULL` element. A nullable `BYTEA` is written
-    `byte @org.jspecify.annotations.Nullable []`, which states that the array
-    itself may be null rather than its bytes.
-  - A generated enum's `fromLabel` accepts and returns
-    `@org.jspecify.annotations.Nullable`, and its constructor, `label()`, and
-    constants stay non-null. An enum or `INTERVAL` argument of a non-null
-    parameter is therefore bound as
-    `new org.sqlcj.runtime.UntypedText(<parameter>.label())` or
-    `new org.sqlcj.runtime.UntypedText(<parameter>.format())`, without the null
-    test a nullable one needs.
+    in `List<@Nullable String>`, because a SQL array may hold a `NULL` element.
+    A nullable `BYTEA` is written `byte @Nullable []`, which states that the
+    array itself may be null rather than its bytes.
+  - A generated enum's `fromLabel` accepts and returns `@Nullable`, and its
+    constructor, `label()`, and constants stay non-null. An enum or `INTERVAL`
+    argument of a non-null parameter is therefore bound as
+    `new UntypedText(<parameter>.label())` or
+    `new UntypedText(<parameter>.format())`, without the null test a nullable
+    one needs.
   - Unannotated, and therefore non-null, are the repository's
     `QueryExecutor` field and constructor parameter, a batch method's
     `List<<QueryName>Params> batch` and its elements, the `Optional` and
     `List` a query returns and their elements, the value a single non-null
     column returns, and an `int` or `int[]` return type.
 
-  So a Kotlin caller sees `AuthorsRow.bio` as `String?` and
-  `AuthorsRow.name` as `String`, and an IDE or a null checker reads the same
-  from the class files. The generated method bodies read every component and
-  every single-column value the model states non-null through
-  `org.sqlcj.runtime.NotNullColumn`, written out in full as every other runtime
-  helper is, so the generated imports are unchanged: `getObject` for a mapped
-  Java type, `getString` for a `JSON`, `JSONB`, `CITEXT`, `INET`, `CIDR`,
-  `MACADDR`, or `MACADDR8` column, `getString` with a converter for an enum
-  label and for an `INTERVAL`, and both `getList` forms for an array column.
+  So a Kotlin caller sees `AuthorsRow.bio` as `String?` and `AuthorsRow.name`
+  as `String`, and an IDE or a null checker reads the same from the class
+  files. The generated method bodies read every component and every
+  single-column value the model states non-null through `NotNullColumn`:
+  `getObject` for a mapped Java type, `getString` for a `JSON`, `JSONB`,
+  `CITEXT`, `INET`, `CIDR`, `MACADDR`, or `MACADDR8` column, `getString` with a
+  converter for an enum label and for an `INTERVAL`, and both `getList` forms
+  for an array column.
   Each of them fails where the database returns SQL `NULL` all the same, rather
   than returning `null`, so a generated body never contradicts the nullness it
   declares. sqlcj's own tests compile every generated tree with
   `javac -Xlint:all -Werror` and NullAway `0.14.3` in JSpecify mode and find
   nothing, so a build that runs a null checker over its own sources need not
   exclude the generated ones.
-- A method declaration that has parameters, a null check, a bound-argument
-  list built with `java.util.Collections.singletonList` or
-  `java.util.Arrays.asList`, and a
-  value row mapper are written wrapped when one line would pass 120 columns,
+- A method declaration that has parameters, a null check, a bound-argument list
+  built with `Collections.singletonList` or `Arrays.asList`, and a value row
+  mapper are written wrapped when one line would pass 120 columns,
   the repository's own formatter limit and an IDE's default right margin,
   counted with the member indentation and the trailing punctuation: the
   declaration puts each parameter, with its annotation, on a line of its own
@@ -2253,20 +2232,41 @@ subpackage names are fixed.
   the query source states; and a single parameter or argument that alone
   passes 120 stays on its line. The limit is fixed: sqlcj writes one output
   style and has no formatting setting.
-- Generated repository source imports only `org.sqlcj.runtime.QueryExecutor`,
-  `org.sqlcj.runtime.RowMapper`, `java.util.List`, `java.util.Optional` when the
-  entry declares an `:optional` query, and the JDK types of the mapped columns,
-  an embedded row's own columns included, so the runtime artifact is the only
-  sqlcj dependency a consumer needs. It also imports the generated types it
-  names: every row record it returns or embeds, from `<java.package>.rows`, and
-  the generated enum of every enum type its queries read or bind, an embedded
-  row's own columns included, from `<java.package>.enums`. Those imports follow
-  the runtime and JDK imports of the same block, once each and sorted by fully
-  qualified name. A row
-  record imports the JDK types of its components, which include
-  `java.util.List` for an array component, and the generated enum of each of its
-  scalar and array enum components; it depends on no sqlcj
-  type, and a generated enum imports nothing at all.
+- Every generated file imports each type it names outside `java.lang`, one
+  single-type import each, and writes its simple name. That covers the JSpecify
+  annotations of `org.jspecify.annotations`, the repository marker and every
+  runtime type and helper of `org.sqlcj.runtime`, the JDK types of the mapped
+  columns and parameters, an embedded row's own columns included, together with
+  the `Objects`, `Arrays`, and `Collections` helpers the generated bodies call,
+  and the row records and generated enums of `<java.package>.rows` and
+  `<java.package>.enums`.
+- `java.lang` is never imported, no import is written that the file does not
+  name, and no import is static.
+- The imports stand in two groups separated by one blank line: every import
+  outside `java.` first, then the `java.` imports, each group sorted by
+  qualified name, with an empty group omitted. That is the layout this
+  repository's own formatter enforces and IntelliJ IDEA writes by default.
+- The runtime artifact stays the only sqlcj dependency a consumer needs: a
+  repository names `QueryExecutor`, `RowMapper`, its own marker, the runtime
+  helpers its bodies call, and `SqlInterval` for an `INTERVAL` or `INTERVAL[]`
+  column or parameter, and nothing else of sqlcj. `SqlInterval` is likewise the
+  one sqlcj type a row record names, for such a component, and a generated enum
+  names only its JSpecify annotations and `UnmappableValueException`.
+- On a simple name two types share, `java.lang` included, the file settles it
+  alone. The types the file declares keep the simple name first, its nested
+  `<QueryName>Result` and `<QueryName>Params` records included, and a generated
+  row record or enum keeps it next; every other type of that name is written
+  fully qualified in that file alone, with a type annotation before the
+  simple-name segment, as in `java.math.@Nullable BigDecimal`.
+- A `java.lang` type is written qualified in a generated enum's own file as
+  well, when the run generates an enum of its simple name.
+- So an enum type named `big_decimal` generates the enum `BigDecimal`, and a
+  file that names that enum beside a `NUMERIC` column writes
+  `java.math.BigDecimal` for the column.
+- No generated name changes for such a collision, and no collision with a JDK,
+  runtime, or JSpecify type is rejected. Two generated types whose names are
+  equal ignoring case are still rejected, as
+  [Generated Java Names](configuration.md#generated-java-names) states.
 
 The `Author` entry of the [Quickstart](quickstart.md), which declares
 `CreateAuthor`, `GetAuthor`, `FindAuthor`, `ListAuthors`, `UpdateAuthorBio`, and
@@ -2277,6 +2277,9 @@ The `Author` entry of the [Quickstart](quickstart.md), which declares
 
 package com.example.app.db.rows;
 
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
+
 import java.time.LocalDateTime;
 
 /**
@@ -2284,12 +2287,12 @@ import java.time.LocalDateTime;
  *
  * <p>Table: authors
  */
-@org.jspecify.annotations.NullMarked
+@NullMarked
 public record AuthorsRow(
     Long id,
     String name,
-    @org.jspecify.annotations.Nullable String bio,
-    @org.jspecify.annotations.Nullable LocalDateTime createdAt
+    @Nullable String bio,
+    @Nullable LocalDateTime createdAt
 ) {
 }
 ```
@@ -2301,20 +2304,28 @@ and one `AuthorRepository` that uses it:
 
 package com.example.app.db.repositories;
 
+import com.example.app.db.rows.AuthorsRow;
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
+import org.sqlcj.runtime.GeneratedRepository;
+import org.sqlcj.runtime.NotNullColumn;
 import org.sqlcj.runtime.QueryExecutor;
 import org.sqlcj.runtime.RowMapper;
-import java.util.List;
-import java.util.Optional;
+
 import java.time.LocalDateTime;
-import com.example.app.db.rows.AuthorsRow;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Generated by sqlcj.
  *
  * <p>Repository: Author
  */
-@org.sqlcj.runtime.GeneratedRepository
-@org.jspecify.annotations.NullMarked
+@GeneratedRepository
+@NullMarked
 public final class AuthorRepository {
 
     private final QueryExecutor executor;
@@ -2325,8 +2336,8 @@ public final class AuthorRepository {
 
     private static final RowMapper<AuthorsRow> authorsRowMapper =
             resultSet -> new AuthorsRow(
-                    org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 1, Long.class),
-                    org.sqlcj.runtime.NotNullColumn.getObject(resultSet, 2, String.class),
+                    NotNullColumn.getObject(resultSet, 1, Long.class),
+                    NotNullColumn.getObject(resultSet, 2, String.class),
                     resultSet.getObject(3, String.class),
                     resultSet.getObject(4, LocalDateTime.class)
             );
@@ -2336,11 +2347,8 @@ public final class AuthorRepository {
      * Table: authors
      * Type: ONE
      */
-    public AuthorsRow createAuthor(String name, @org.jspecify.annotations.Nullable String bio) {
-        java.util.Objects.requireNonNull(
-                name,
-                "Parameter 'name' of query 'CreateAuthor' in AuthorRepository must not be null"
-        );
+    public AuthorsRow createAuthor(String name, @Nullable String bio) {
+        Objects.requireNonNull(name, "Parameter 'name' of query 'CreateAuthor' in AuthorRepository must not be null");
 
         return executor.queryOne(
                 "AuthorRepository",
@@ -2349,7 +2357,7 @@ public final class AuthorRepository {
                 INSERT INTO authors (name, bio)
                 VALUES (?, ?)
                 RETURNING "authors"."id", "authors"."name", "authors"."bio", "authors"."created_at";""",
-                java.util.Arrays.<@org.jspecify.annotations.Nullable Object>asList(name, bio),
+                Arrays.<@Nullable Object>asList(name, bio),
                 authorsRowMapper
         );
     }
@@ -2362,10 +2370,7 @@ public final class AuthorRepository {
      * Type: OPTIONAL
      */
     public Optional<AuthorsRow> findAuthor(Long id) {
-        java.util.Objects.requireNonNull(
-                id,
-                "Parameter 'id' of query 'FindAuthor' in AuthorRepository must not be null"
-        );
+        Objects.requireNonNull(id, "Parameter 'id' of query 'FindAuthor' in AuthorRepository must not be null");
 
         return executor.queryOptional(
                 "AuthorRepository",
@@ -2374,7 +2379,7 @@ public final class AuthorRepository {
                 SELECT "authors"."id", "authors"."name", "authors"."bio", "authors"."created_at"
                 FROM authors
                 WHERE id = ?;""",
-                java.util.Collections.singletonList(id),
+                Collections.singletonList(id),
                 authorsRowMapper
         );
     }
@@ -2738,6 +2743,24 @@ Query sources and annotations:
   and
   `JavaCodeGeneratorNamingTest.shouldPassExactRepositoryAndQueryNameToTheExecutor`
   cover the generated calls, return types, imports, and identity literals.
+- `JavaCodeGeneratorTest.shouldImportTheRowsAndEnumsOneRepositoryNames`,
+  `JavaCodeGeneratorTest.shouldImportCollectionsAndNoListForSingleResultWithoutParameters`,
+  `JavaCodeGeneratorTest.shouldImportNoGeneratedTypeForARepositoryNamingNone`,
+  `JavaCodeGeneratorTest.shouldQualifyAJdkTypeAnEnumOfTheSameSimpleNameTakes`,
+  `JavaCodeGeneratorTest.shouldQualifyAJSpecifyAnnotationAnEnumOfTheSameSimpleNameTakes`,
+  `JavaCodeGeneratorTest.shouldQualifyJavaLangStringBesideAGeneratedEnumOfThatName`,
+  `JavaCodeGeneratorTest.shouldQualifyTheRuntimeClassARowRecordOfThatNameTakes`,
+  and
+  `JavaCodeGeneratorTest.shouldQualifyTheRepositoryMarkerARepositoryOfThatNameTakes`
+  cover the two sorted import groups, the imports a file writes only for the
+  types it names, and each qualified form a shared simple name takes, with the
+  generated sources compiled;
+  `GeneratedSourceCheckTest.shouldReportNoFindingOnTheShadowedNameFixtureTree`
+  compiles the eight-enum fixture tree whose enum names shadow JDK, runtime,
+  and JSpecify types with `javac -Xlint:all -Werror` and NullAway, with no
+  finding and no import it does not name, and
+  `PostgresIntegrationTest.shouldRoundTripEnumTypesNamedLikeTheTypesGeneratedCodeWrites`
+  binds and reads those eight enum types against PostgreSQL 16.
 
 Reads:
 
@@ -2812,7 +2835,7 @@ Reads:
   `JavaCodeGeneratorTest.shouldGenerateGuardedConstructionForALeftJoinedEmbeddedRow`
   and
   `JavaCodeGeneratorTest.shouldGenerateResultRecordForALoneLeftJoinedWildcard`
-  cover the `org.sqlcj.runtime.SqlRow.isNull` guard at the row's own positions,
+  cover the `SqlRow.isNull` guard at the row's own positions,
   the row record generated without a mapper field, and the compiled sources;
   `SqlRowTest.shouldReportAnAllNullRangeAsNull`,
   `SqlRowTest.shouldReportAPartlyNullRangeAsPresent`, and
@@ -3849,7 +3872,7 @@ Generated Java:
   array column.
 - `JavaCodeGeneratorTest.shouldReadEveryNonNullColumnThroughNotNullColumn`
   pins both forms of every read a result mapper writes: a column the model
-  states non-null read through `org.sqlcj.runtime.NotNullColumn` and a nullable
+  states non-null read through `NotNullColumn` and a nullable
   column keeping the read it had, character for character, in the generated
   text, and
   `GeneratedSourceCheckTest.shouldReportNoFindingOnTheReferenceServiceTree`

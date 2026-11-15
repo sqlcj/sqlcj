@@ -75,7 +75,7 @@ from those three generated subpackages.
 The recipes read the components of the two row records, which generate as:
 
 ```java
-@org.jspecify.annotations.NullMarked
+@NullMarked
 public record ArticlesRow(
     Long id,
     String slug,
@@ -87,7 +87,7 @@ public record ArticlesRow(
 ```
 
 ```java
-@org.jspecify.annotations.NullMarked
+@NullMarked
 public record SubscribersRow(
     Long id,
     String email,
@@ -254,17 +254,17 @@ WHERE (:search::text IS NULL OR title ILIKE '%' || :search || '%')
 
 ```java
 public List<ArticlesRow> searchArticles(
-    @org.jspecify.annotations.Nullable String search,
-    @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable ArticleStatus> statuses,
-    @org.jspecify.annotations.Nullable OffsetDateTime publishedSince,
+    @Nullable String search,
+    @Nullable List<@Nullable ArticleStatus> statuses,
+    @Nullable OffsetDateTime publishedSince,
     Integer pageSize,
     Integer pageOffset
 );
 
 public Long countSearchedArticles(
-    @org.jspecify.annotations.Nullable String search,
-    @org.jspecify.annotations.Nullable List<@org.jspecify.annotations.Nullable ArticleStatus> statuses,
-    @org.jspecify.annotations.Nullable OffsetDateTime publishedSince
+    @Nullable String search,
+    @Nullable List<@Nullable ArticleStatus> statuses,
+    @Nullable OffsetDateTime publishedSince
 );
 ```
 
@@ -436,7 +436,7 @@ ORDER BY id;
 ```
 
 ```java
-public List<ArticlesRow> listArticlesByIds(List<@org.jspecify.annotations.Nullable Long> ids);
+public List<ArticlesRow> listArticlesByIds(List<@Nullable Long> ids);
 ```
 
 ```java

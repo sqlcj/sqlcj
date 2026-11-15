@@ -807,7 +807,7 @@ so a call this test did not plan for fails loudly.
 Since 0.8.3, JaCoCo leaves out of its report every class and method annotated
 with an annotation whose simple name contains `Generated` and whose retention
 is class or runtime. Every generated repository carries
-`@org.sqlcj.runtime.GeneratedRepository`, which is retained at run time, so
+`@GeneratedRepository`, which is retained at run time, so
 JaCoCo filters it with no configuration: no `excludes`, no exclusion pattern to
 keep in step with the generated packages.
 
