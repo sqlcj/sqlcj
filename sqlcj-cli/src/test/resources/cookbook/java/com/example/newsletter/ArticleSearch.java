@@ -31,14 +31,19 @@ public final class ArticleSearch {
         int pageNumber,
         int pageSize
     ) {
-        List<ArticlesRow> articles = newsletter.searchArticles(
-            titleContains,
-            statuses,
-            publishedSince,
-            pageSize,
-            (pageNumber - 1) * pageSize
-        );
+        NewsletterRepository.Criteria criteria = NewsletterRepository.Criteria.builder()
+            .search(titleContains)
+            .statuses(statuses)
+            .publishedSince(publishedSince)
+            .build();
 
-        return new Result(articles, newsletter.countSearchedArticles(titleContains, statuses, publishedSince));
+        NewsletterRepository.Page page = NewsletterRepository.Page.builder()
+            .size(pageSize)
+            .offset((pageNumber - 1) * pageSize)
+            .build();
+
+        List<ArticlesRow> articles = newsletter.searchArticles(criteria, page);
+
+        return new Result(articles, newsletter.countSearchedArticles(criteria));
     }
 }

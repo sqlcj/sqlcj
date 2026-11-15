@@ -16,6 +16,11 @@ public final class ArticlePages {
      * page number becomes the offset the query skips.
      */
     public List<ArticlesRow> page(NewsletterRepository newsletter, int pageNumber, int pageSize) {
-        return newsletter.listArticlePage(pageSize, (pageNumber - 1) * pageSize);
+        NewsletterRepository.Page page = NewsletterRepository.Page.builder()
+            .size(pageSize)
+            .offset((pageNumber - 1) * pageSize)
+            .build();
+
+        return newsletter.listArticlePage(page);
     }
 }

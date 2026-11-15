@@ -13,8 +13,9 @@ each recipe's Java is copied from the cookbook fixture of this repository,
 which `CookbookIntegrationTest` generates, compiles, and runs against
 PostgreSQL 16; each generated record and each generated method declaration is
 copied from the tree sqlcj generates from that fixture, a declaration written
-with a `;` in place of its Javadoc and body. [Verified by](#verified-by) names
-the test of each recipe and what it asserts.
+with a `;` in place of its Javadoc and body, and a record written without its
+compact constructor. [Verified by](#verified-by) names the test of each recipe
+and what it asserts.
 
 Related documents:
 
@@ -100,8 +101,13 @@ public record SubscribersRow(
 
 A page addressed by a page number: the query orders the whole feed and skips
 the pages before the one asked for, so the recipe turns a page number into the
-offset its query skips. `LIMIT` and `OFFSET` each bind one `Integer` parameter
-named after its own placeholder, as [Pagination](queries.md#pagination) states.
+offset its query skips. The row count and the offset are written as the fields
+of one `page` parameter group, so the method takes one `Page` record rather
+than two `Integer` parameters. The record is nested in the repository, is built
+through its builder, and rejects a field left unset; each field is typed and
+null-marked as the plain placeholder of its own clause would be, so both are
+non-null `Integer`s, as [Pagination](queries.md#pagination) and
+[Parameter groups](queries.md#parameter-groups) state.
 
 The order must be total for consecutive pages to partition the feed.
 `published_at` alone repeats among the fixture's articles, so `id` breaks its
@@ -112,11 +118,28 @@ ties and no article is returned twice or skipped.
 SELECT *
 FROM articles
 ORDER BY published_at DESC, id DESC
-LIMIT :pageSize OFFSET :pageOffset;
+LIMIT :page.size OFFSET :page.offset;
 ```
 
 ```java
-public List<ArticlesRow> listArticlePage(Integer pageSize, Integer pageOffset);
+public record Page(
+    Integer size,
+    Integer offset
+) {
+
+    public static Builder builder();
+
+    public static final class Builder {
+
+        public Builder size(Integer size);
+
+        public Builder offset(Integer offset);
+
+        public Page build();
+    }
+}
+
+public List<ArticlesRow> listArticlePage(Page page);
 ```
 
 ```java
@@ -138,7 +161,12 @@ public final class ArticlePages {
      * page number becomes the offset the query skips.
      */
     public List<ArticlesRow> page(NewsletterRepository newsletter, int pageNumber, int pageSize) {
-        return newsletter.listArticlePage(pageSize, (pageNumber - 1) * pageSize);
+        NewsletterRepository.Page page = NewsletterRepository.Page.builder()
+            .size(pageSize)
+            .offset((pageNumber - 1) * pageSize)
+            .build();
+
+        return newsletter.listArticlePage(page);
     }
 }
 ```
@@ -156,6 +184,10 @@ comparison between a direct column and a placeholder, so neither placeholder is
 typed by the column written beside it, and each parameter states its own type:
 `:publishedAt::timestamptz` and `:id::bigint`. Without them the query is
 rejected with `Cannot infer the type of :publishedAt`.
+
+These two queries keep plain placeholders rather than the `page` group of the
+offset recipe, because a keyset page has no offset and one group has the same
+fields in every query of the repository.
 
 ```sql
 -- name: ListLatestArticles :many
@@ -221,12 +253,12 @@ public final class ArticleFeed {
 ## Criteria Search
 
 One statement serves every combination of three criteria the caller may leave
-out, because a null criterion switches itself off: `:search::text IS NULL`
-holds when no search was given, so its `OR` matches every row, and the status
-list and the published-since bound are written the same way. The query stays
-one static SQL text whichever criteria a call supplies, so sqlcj assembles no
-SQL at run time. The rules, including the one cast such a search needs and what
-a reused query plan means for it, are in
+out, because a null criterion switches itself off:
+`:criteria.search::text IS NULL` holds when no search was given, so its `OR`
+matches every row, and the status list and the published-since bound are
+written the same way. The query stays one static SQL text whichever criteria a
+call supplies, so sqlcj assembles no SQL at run time. The rules, including the
+one cast such a search needs and what a reused query plan means for it, are in
 [Criteria Queries](queries.md#criteria-queries).
 
 The page and the number of matches are two queries that repeat the same
@@ -234,38 +266,58 @@ criteria: the `:many` read returns one page, and the `:one` count returns how
 many articles the criteria match unpaged, which the recipe returns beside the
 page.
 
+The three criteria are the fields of one `criteria` parameter group, so each
+query takes one `Criteria` record and the recipe builds one record and passes
+it to both, instead of repeating three arguments per call. Each component is
+typed and null-marked as the plain placeholder of that use would be, so all
+three are `@Nullable`. The page of the search is the `page` group of
+[Offset Pagination](#offset-pagination): one group has the same fields in every
+query of the repository, and its record is generated once, with the first query
+that uses it, so `Page` is declared with `ListArticlePage` above and named here
+as well; see [Parameter groups](queries.md#parameter-groups).
+
 ```sql
 -- name: SearchArticles :many
 SELECT *
 FROM articles
-WHERE (:search::text IS NULL OR title ILIKE '%' || :search || '%')
-  AND (:statuses IS NULL OR status = ANY (:statuses))
-  AND (:publishedSince IS NULL OR published_at >= :publishedSince)
+WHERE (:criteria.search::text IS NULL OR title ILIKE '%' || :criteria.search || '%')
+  AND (:criteria.statuses IS NULL OR status = ANY (:criteria.statuses))
+  AND (:criteria.publishedSince IS NULL OR published_at >= :criteria.publishedSince)
 ORDER BY published_at DESC, id DESC
-LIMIT :pageSize OFFSET :pageOffset;
+LIMIT :page.size OFFSET :page.offset;
 
 -- name: CountSearchedArticles :one
 SELECT COUNT(*) AS total
 FROM articles
-WHERE (:search::text IS NULL OR title ILIKE '%' || :search || '%')
-  AND (:statuses IS NULL OR status = ANY (:statuses))
-  AND (:publishedSince IS NULL OR published_at >= :publishedSince);
+WHERE (:criteria.search::text IS NULL OR title ILIKE '%' || :criteria.search || '%')
+  AND (:criteria.statuses IS NULL OR status = ANY (:criteria.statuses))
+  AND (:criteria.publishedSince IS NULL OR published_at >= :criteria.publishedSince);
 ```
 
 ```java
-public List<ArticlesRow> searchArticles(
-    @Nullable String search,
-    @Nullable List<@Nullable ArticleStatus> statuses,
-    @Nullable OffsetDateTime publishedSince,
-    Integer pageSize,
-    Integer pageOffset
-);
-
-public Long countSearchedArticles(
+public record Criteria(
     @Nullable String search,
     @Nullable List<@Nullable ArticleStatus> statuses,
     @Nullable OffsetDateTime publishedSince
-);
+) {
+
+    public static Builder builder();
+
+    public static final class Builder {
+
+        public Builder search(@Nullable String search);
+
+        public Builder statuses(@Nullable List<@Nullable ArticleStatus> statuses);
+
+        public Builder publishedSince(@Nullable OffsetDateTime publishedSince);
+
+        public Criteria build();
+    }
+}
+
+public List<ArticlesRow> searchArticles(Criteria criteria, Page page);
+
+public Long countSearchedArticles(Criteria criteria);
 ```
 
 ```java
@@ -302,15 +354,20 @@ public final class ArticleSearch {
         int pageNumber,
         int pageSize
     ) {
-        List<ArticlesRow> articles = newsletter.searchArticles(
-            titleContains,
-            statuses,
-            publishedSince,
-            pageSize,
-            (pageNumber - 1) * pageSize
-        );
+        NewsletterRepository.Criteria criteria = NewsletterRepository.Criteria.builder()
+            .search(titleContains)
+            .statuses(statuses)
+            .publishedSince(publishedSince)
+            .build();
 
-        return new Result(articles, newsletter.countSearchedArticles(titleContains, statuses, publishedSince));
+        NewsletterRepository.Page page = NewsletterRepository.Page.builder()
+            .size(pageSize)
+            .offset((pageNumber - 1) * pageSize)
+            .build();
+
+        List<ArticlesRow> articles = newsletter.searchArticles(criteria, page);
+
+        return new Result(articles, newsletter.countSearchedArticles(criteria));
     }
 }
 ```
