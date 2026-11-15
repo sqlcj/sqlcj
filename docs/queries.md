@@ -1814,6 +1814,7 @@ public int updateAuthorBio(Long id, @Nullable String bio) {
             "AuthorRepository",
             "UpdateAuthorBio",
             """
+            /* sqlcj AuthorRepository.updateAuthorBio */
             UPDATE authors
             SET bio = ?
             WHERE id = ?;""",
@@ -2558,6 +2559,7 @@ public final class AuthorRepository {
                 "AuthorRepository",
                 "CreateAuthor",
                 """
+                /* sqlcj AuthorRepository.createAuthor */
                 INSERT INTO authors (name, bio)
                 VALUES (?, ?)
                 RETURNING "authors"."id", "authors"."name", "authors"."bio", "authors"."created_at";""",
@@ -2584,6 +2586,7 @@ public final class AuthorRepository {
                 "AuthorRepository",
                 "FindAuthor",
                 """
+                /* sqlcj AuthorRepository.findAuthor */
                 SELECT "authors"."id", "authors"."name", "authors"."bio", "authors"."created_at"
                 FROM authors
                 WHERE id = ?;""",
@@ -2601,7 +2604,11 @@ Each text block above is the statement the database executes, so the `*` of
 analysis resolved, which
 [Wildcards in the executed statement](#wildcards-in-the-executed-statement)
 states, while each method's documentation shows the query as
-`sql/queries.sql` writes it.
+`sql/queries.sql` writes it. Every such statement begins with one comment line
+naming the repository class and the method that sends it, as in
+`/* sqlcj AuthorRepository.createAuthor */`, so a statement PostgreSQL logs or
+reports leads back to the method; see
+[Finding a Statement's Query](postgresql.md#finding-a-statements-query).
 
 `CreateAuthor`, `GetAuthor`, `FindAuthor`, and `ListAuthors` each return one
 complete `authors` row, so all four use the one `AuthorsRow` record and the one
