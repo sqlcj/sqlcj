@@ -261,14 +261,27 @@ configuration entry.
   data-modifying body as
   `A data-modifying statement in WITH is not supported; run it as a query of its
   own.`
-- sqlcj models one namespace, so a source resolves by its unqualified name:
-  `users`, `public.users`, and `"public"."users"` are one table, matched without
-  SQL identifier delimiters and case-insensitively. A source qualified with any
-  other schema names a table sqlcj models nowhere and is rejected as
-  `<schema>.<t> belongs to schema <schema>, which sqlcj does not model; sqlcj
-  models only the public schema.`, in a `FROM`, a `JOIN`, and the target of an
-  `INSERT`, an `UPDATE`, and a `DELETE` alike. `search_path` is not followed;
-  see [Schema Snapshot Input](postgresql.md#schema-snapshot-input).
+- A query group models one namespace, which is the schema
+  [`sql[].namespace`](configuration.md#sqlnamespace) names and `public` when it
+  names none, so a source resolves by its unqualified name: under the default,
+  `users`, `public.users`, and `"public"."users"` are one table, and under
+  `namespace: billing`, `invoices`, `billing.invoices`, and
+  `"billing"."invoices"` are, each matched without SQL identifier delimiters and
+  case-insensitively. A source qualified with any other schema, `public`
+  included when the group models another, names a table the group models
+  nowhere and is rejected as
+  `<schema>.<t> belongs to schema <schema>, which this query group does not
+  model; it models schema <modeled>. Set sql[].namespace to <schema> to model
+  that schema instead.`, in a `FROM`, a `JOIN`, and the target of an `INSERT`,
+  an `UPDATE`, and a `DELETE` alike. `search_path` is not followed while the
+  schema is read; see
+  [Schema Snapshot Input](postgresql.md#schema-snapshot-input).
+- The executable SQL keeps each name as the query writes it, qualified or not,
+  so an unqualified name resolves through the `search_path` of the connection
+  the application executes it on, as it did for the migrations. A connection
+  that reaches the modeled schema is the application's own setting, such as
+  pgJDBC's `currentSchema`; see
+  [`sql[].namespace`](configuration.md#sqlnamespace).
 - A source that names a view the schema source creates is rejected as
   `<v> is a view, which sqlcj does not model; write its query in a WITH clause
   instead.`, and a materialized view as
@@ -3089,6 +3102,11 @@ Reads:
   source, and `QueryAnalyzerTest.shouldRejectASourceOfAnotherSchema` covers the
   rejected message of a source of another schema in a `FROM`, an `INNER` and a
   `LEFT JOIN`, and an `INSERT`, an `UPDATE`, and a `DELETE` target.
+- `QueryAnalyzerTest.shouldResolveASourceAndACastTypeOfTheConfiguredNamespace`
+  covers the unqualified and the `billing`-qualified source and cast type of a
+  group that models `billing`, and
+  `QueryAnalyzerTest.shouldRejectAPublicSourceUnderAConfiguredNamespace` covers
+  the rejected message of a `public` source in such a group.
 - `SqlcjCompilerIntegrationTest.shouldExecuteGeneratedAliasedQualifiedQuery`,
   `SqlcjCompilerIntegrationTest.shouldExecuteGeneratedJoinQueryWithDuplicateColumnNames`,
   `SqlcjCompilerIntegrationTest.shouldExecuteGeneratedJoinQueryWithProjectionAliases`,

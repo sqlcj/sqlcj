@@ -64,8 +64,9 @@ usage on standard error and exits with status `2`.
 
 ## Supported Version
 
-Only configuration version `"1"` is supported. Every field below is required;
-none of them has a default value.
+Only configuration version `"1"` is supported. Every field below is required
+apart from `sql[].namespace`, which is the one optional field and names the
+schema `public` when it is absent.
 
 Version `"1"` commits sqlcj to PostgreSQL schema and query input and to
 blocking JDBC execution; there is no engine or dialect option. See
@@ -92,6 +93,7 @@ java:
 | `sql[].name` | string | Identity of the query group. Names the generated repository. |
 | `sql[].schema` | string or list | One path, or a non-empty ordered list of paths, to a file containing `CREATE TABLE` statements, such as a `pg_dump --schema-only` snapshot, or to a directory of `.sql` migration files. |
 | `sql[].queries` | string | Path to a file containing named queries. |
+| `sql[].namespace` | string | Optional. The one PostgreSQL schema the entry models, which is `public` when the field is absent. |
 | `java` | mapping | Java generation settings. |
 | `java.package` | string | Root package of the generated Java classes, which are generated into its `repositories`, `rows`, and `enums` subpackages. |
 | `java.out` | string | Directory that receives the generated package directories. |
@@ -215,6 +217,51 @@ What sqlcj reads of each of those inputs, and the two commands that write a
 schema file, stand in
 [Migration Tool Schemas](postgresql.md#migration-tool-schemas).
 
+### `sql[].namespace`
+
+`sql[].namespace` names the one PostgreSQL schema the entry models. It is
+optional: an entry without it models `public`, so a configuration written
+without the field keeps the model it has always had.
+
+```yaml
+sql:
+  - name: Billing
+    schema: sql/billing/migrations
+    queries: sql/billing/queries.sql
+    namespace: billing
+```
+
+With `namespace: billing`, the tables, enum types, domains, and views of the
+schema `billing` are the ones sqlcj models, whether a schema statement names
+them unqualified, as a Flyway history with `defaultSchema: billing` writes
+them, or qualified with `billing.`, as a `pg_dump --schema-only` snapshot writes
+them. A query of the entry names those tables the same two ways.
+
+Every other schema is ignored, `public` included: a schema statement whose own
+table or type stands there leaves the model unchanged, and a query that names
+such a table is rejected rather than resolved to the modeled table of the same
+unqualified name; see [Query Sources](queries.md#query-sources). One entry
+models one schema, and a query reads no second schema.
+
+A schema source's `search_path` is never read, neither from a
+`SET search_path` statement nor from the `set_config` call a dump writes, so an
+unqualified name in any schema source belongs to the configured schema. The
+schema a migration tool applies its files under is stated here once, as the
+tool states it in its own configuration.
+
+The setting names the schema sqlcj models at build time; it changes no
+generated SQL. Generated statements keep each name as its query writes it, so
+the application's own connection has to resolve an unqualified name in that
+schema, exactly as the migration tool's connection did for the migrations. With
+pgJDBC, `currentSchema=billing` on the JDBC URL or
+`spring.datasource.hikari.data-source-properties.currentSchema=billing` sets it,
+as Flyway's `defaultSchema` or `schemas` setting did while migrating.
+
+A stated value is compared with a schema qualifier as every other name is:
+without SQL identifier delimiters and case-insensitively, so with
+`namespace: billing` the qualifiers `billing.`, `"billing".`, and `BILLING.`
+all name the modeled schema.
+
 ### `java.package`
 
 `java.package` must be a dot-separated sequence of valid, non-keyword Java
@@ -250,6 +297,9 @@ generated/dev/example/generated/repositories/AuthorRepository.java
 - A missing or unsupported `version`, a missing section, an empty `sql` list, an
   empty `sql[].schema` list, a null `sql` entry, a blank value, an invalid
   `sql[].name`, and an invalid `java.package` are all invalid configuration.
+- `sql[].namespace` may be left out, which models `public`, but a stated value
+  must name a schema, so a blank one is reported as
+  `'sql[0].namespace' must not be blank`.
 
 ## Path Resolution
 
