@@ -4881,11 +4881,11 @@ class DefaultSchemaParserTest {
 
     /**
      * {@code citext} is an extension type, which {@code pg_dump} writes
-     * qualified with the schema it was installed in, so a declaration of it is
-     * modeled under its unqualified and its {@code public}-qualified name
-     * alike, scalar and array alike, through every path that types a column. A
-     * name qualified with any other schema never resolves and is recorded with
-     * its declared text, as any other unmapped type is.
+     * qualified with the schema it was installed in, which is often not the
+     * one the query group models, so a declaration of it is modeled under its
+     * unqualified name and under any one schema qualifier alike, scalar and
+     * array alike, through every path that types a column. A name of more
+     * parts is recorded with its declared text, as any other unmapped type is.
      */
     @Test
     void shouldModelPublicQualifiedCitextColumnTypes() {
@@ -4912,10 +4912,141 @@ class DefaultSchemaParserTest {
                 new Column("handles", ColumnType.CITEXT, true, null, null, true),
                 new Column("sized", ColumnType.CITEXT, true, null, null, true),
                 new Column("nested", null, true, "PUBLIC.CITEXT[][]"),
-                new Column("external", null, true, "REPORTING.CITEXT"),
+                new Column("external", ColumnType.CITEXT, true),
                 new Column("added", ColumnType.CITEXT, true, null, null, true)
             ),
             table(schema, "hosts").columns()
+        );
+    }
+
+    /**
+     * A query group that models a schema of its own models the tables, enum
+     * types, and column types of that schema, named unqualified as a migration
+     * history with a {@code search_path} writes them and qualified as
+     * {@code pg_dump} writes them, exactly as it models {@code public}'s by
+     * default.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "",
+            "billing.",
+            "\"billing\".",
+            "BILLING."
+        }
+    )
+    void shouldModelTheConfiguredNamespaceQualifiedAndUnqualifiedAlike(String qualifier) {
+        Schema schema = parser.parse(
+            new Schema("billing"),
+            """
+                CREATE TYPE %1$sinvoice_state AS ENUM ('draft', 'sent');
+
+                CREATE TABLE %1$sinvoices (
+                    id    BIGINT NOT NULL,
+                    state %1$sinvoice_state NOT NULL,
+                    note  TEXT
+                );
+
+                ALTER TABLE %1$sinvoices ADD COLUMN label VARCHAR(32);
+                """.formatted(qualifier)
+        );
+
+        assertEquals("billing", schema.namespace());
+
+        assertEquals(
+            List.of(new EnumType("invoice_state", List.of("draft", "sent"))),
+            schema.enums()
+        );
+
+        assertEquals(List.of("invoices"), tableNames(schema));
+
+        assertEquals(
+            List.of(
+                new Column("id", ColumnType.BIGINT, false),
+                new Column("state", ColumnType.ENUM, false, null, "invoice_state", false),
+                new Column("note", ColumnType.TEXT, true),
+                new Column("label", ColumnType.VARCHAR, true)
+            ),
+            table(schema, "invoices").columns()
+        );
+
+        assertEquals(
+            List.of(),
+            tableNames(parser.parse(schema, "DROP TABLE %sinvoices;".formatted(qualifier)))
+        );
+    }
+
+    /**
+     * {@code public} is a schema like any other: a group that models
+     * {@code billing} ignores every statement whose own table or type stands in
+     * {@code public}, so a {@code public} table of a modeled table's name is
+     * left alone.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "CREATE TABLE public.invoices (code TEXT);",
+            "ALTER TABLE public.invoices ADD COLUMN code TEXT;",
+            "DROP TABLE public.invoices;",
+            "CREATE TYPE public.invoice_state AS ENUM ('void');",
+            "ALTER TYPE public.invoice_state ADD VALUE 'void';",
+            "CREATE DOMAIN public.amount AS NUMERIC;",
+            "DROP DOMAIN public.amount;",
+            "CREATE VIEW public.open_invoices AS SELECT id FROM invoices;"
+        }
+    )
+    void shouldIgnoreAPublicStatementUnderAConfiguredNamespace(String statement) {
+        Schema schema = billingSchema();
+
+        assertEquals(schema, parser.parse(schema, statement));
+    }
+
+    /**
+     * {@code citext} stands in the schema its extension was installed in, which
+     * is often not the one the group models, so a {@code citext} column of the
+     * modeled schema, of {@code public}, and of any other one schema all map.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "citext",
+            "public.citext",
+            "billing.citext",
+            "\"public\".\"citext\"",
+            "extensions.citext"
+        }
+    )
+    void shouldMapCitextOfAnySchemaUnderAConfiguredNamespace(String declaredType) {
+        Schema schema = parser.parse(
+            new Schema("billing"),
+            """
+                CREATE TABLE contacts (
+                    handle %s NOT NULL
+                );
+                """.formatted(declaredType)
+        );
+
+        assertEquals(
+            List.of(new Column("handle", ColumnType.CITEXT, false)),
+            table(schema, "contacts").columns()
+        );
+    }
+
+    /** The schema of a group that models {@code billing} rather than {@code public}. */
+    private Schema billingSchema() {
+        return parser.parse(
+            new Schema("billing"),
+            """
+                CREATE TYPE invoice_state AS ENUM ('draft', 'sent');
+
+                CREATE DOMAIN amount AS NUMERIC;
+
+                CREATE TABLE invoices (
+                    id    BIGINT NOT NULL,
+                    state invoice_state NOT NULL,
+                    total amount
+                );
+                """
         );
     }
 

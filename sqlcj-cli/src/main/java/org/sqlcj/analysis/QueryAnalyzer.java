@@ -334,14 +334,16 @@ public final class QueryAnalyzer {
         Join column %s has types %s and %s; write the join condition with ON and a cast.""";
 
     /**
-     * The rejection of a source qualified with a schema other than
-     * {@code public}, which names the source as the query writes it, without
-     * its SQL identifier delimiters, and the schema it names. sqlcj models no
-     * other schema at all, so the rejection states that rather than a fix.
+     * The rejection of a source qualified with a schema other than the one its
+     * query group models, which names the source as the query writes it,
+     * without its SQL identifier delimiters, the schema it names, the schema
+     * the group models, and the setting that would model the named schema
+     * instead.
      */
     private static final String OTHER_SCHEMA_SOURCE_REJECTION = """
-        %s belongs to schema %s, which sqlcj does not model; \
-        sqlcj models only the public schema.""";
+        %s belongs to schema %s, which this query group does not model; \
+        it models schema %s. Set sql[].namespace to %s to model that schema \
+        instead.""";
 
     /**
      * The rejection of a source that names a view or a materialized view the
@@ -1084,7 +1086,8 @@ public final class QueryAnalyzer {
             ColumnTypeMapping.MappedType type = columnTypeMapping.map(
                 cast.getColDataType(),
                 schema.enums(),
-                schema.domains()
+                schema.domains(),
+                new SchemaNamespace(schema.namespace())
             );
 
             if (!type.mapped()) {
@@ -4843,10 +4846,11 @@ public final class QueryAnalyzer {
     }
 
     /**
-     * The modeled table one query source names. sqlcj models one namespace, so
-     * an unqualified and a {@code public}-qualified name are the same table,
-     * and a name qualified with any other schema names a table sqlcj models
-     * nowhere, which is reported from the qualifier alone before any lookup.
+     * The modeled table one query source names. A query group models one
+     * namespace, so an unqualified name and a name qualified with the modeled
+     * schema are the same table, and a name qualified with any other schema
+     * names a table the group models nowhere, which is reported from the
+     * qualifier alone before any lookup.
      *
      * <p>A modeled table is found before a recorded view of its name, so a
      * source that resolves to a table keeps resolving to it. A source that
@@ -4854,11 +4858,17 @@ public final class QueryAnalyzer {
      * {@link #unmodeledSource(Schema, String)}.
      */
     private org.sqlcj.schema.Table findSourceTable(Schema schema, Table table) {
-        if (!SchemaNamespace.isModeled(table)) {
+        SchemaNamespace namespace = new SchemaNamespace(schema.namespace());
+
+        if (!namespace.isModeled(table)) {
+            String declaredSchema = MultiPartName.unquote(table.getSchemaName());
+
             throw new IllegalArgumentException(
                 OTHER_SCHEMA_SOURCE_REJECTION.formatted(
-                    SchemaNamespace.declaredName(table),
-                    MultiPartName.unquote(table.getSchemaName())
+                    namespace.declaredName(table),
+                    declaredSchema,
+                    namespace.name(),
+                    declaredSchema
                 )
             );
         }
@@ -6956,7 +6966,8 @@ public final class QueryAnalyzer {
         ColumnTypeMapping.MappedType type = columnTypeMapping.map(
             cast.getColDataType(),
             schema.enums(),
-            schema.domains()
+            schema.domains(),
+            new SchemaNamespace(schema.namespace())
         );
 
         if (!type.mapped()) {

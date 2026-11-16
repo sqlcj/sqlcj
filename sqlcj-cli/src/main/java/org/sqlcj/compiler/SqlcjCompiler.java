@@ -277,9 +277,13 @@ public final class SqlcjCompiler {
      * Applies the schema files of one entry in order to that entry's schema, so
      * a table keeps the position of the file that declares it and a later file
      * alters what the earlier files left.
+     *
+     * <p>The entry's own modeled namespace is the schema model's from the start,
+     * so every statement of every file of the entry, and every query analyzed
+     * against it, resolves its names there.
      */
     private Schema parseSchema(Source source) {
-        Schema schema = new Schema(List.of());
+        Schema schema = new Schema(source.namespace());
 
         for (SchemaFile schemaFile : source.schemaFiles()) {
             schema = parseSchemaFile(schema, schemaFile);

@@ -74,6 +74,7 @@ final class ConfigValidator {
 
             validateSchema(entry.schema(), i, configFile);
             requireValue(entry.queries(), "sql[%d].queries".formatted(i), configFile);
+            validateNamespace(entry.namespace(), i, configFile);
         }
     }
 
@@ -105,6 +106,18 @@ final class ConfigValidator {
         for (int i = 0; i < schema.size(); i++) {
             requireValue(schema.get(i), "%s[%d]".formatted(field, i), configFile);
         }
+    }
+
+    /**
+     * Accepts an entry that names no schema of its own, which models
+     * {@code public}, and requires a stated one to name a schema.
+     */
+    private void validateNamespace(String namespace, int index, Path configFile) {
+        if (namespace == null) {
+            return;
+        }
+
+        requireValue(namespace, "sql[%d].namespace".formatted(index), configFile);
     }
 
     /**

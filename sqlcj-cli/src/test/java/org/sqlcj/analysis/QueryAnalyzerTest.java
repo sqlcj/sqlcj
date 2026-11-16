@@ -290,6 +290,28 @@ class QueryAnalyzerTest {
         )
     );
 
+    /**
+     * The schema of a query group that models {@code billing} rather than
+     * {@code public}, whose {@code invoices} table carries a column of the enum
+     * type that schema declares.
+     */
+    private static final Schema billingSchema = new Schema(
+        List.of(
+            new Table(
+                "invoices",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("state", ColumnType.ENUM, false, null, "invoice_state")
+                ),
+                List.of()
+            )
+        ),
+        List.of(new EnumType("invoice_state", List.of("draft", "sent"))),
+        List.of(),
+        List.of(),
+        "billing"
+    );
+
     private static final Schema joinSchema = new Schema(
         List.of(
             new Table(
@@ -11892,9 +11914,10 @@ class QueryAnalyzerTest {
     }
 
     /**
-     * A source qualified with a schema other than {@code public} names a table
-     * sqlcj models nowhere, so it states the schema it belongs to and that
-     * sqlcj models only {@code public}, rather than resolving to the modeled
+     * A source qualified with a schema other than the one its query group
+     * models names a table that group models nowhere, so it states the schema
+     * it belongs to, the schema the group models, and the setting that would
+     * model the named schema instead, rather than resolving to the modeled
      * table of the same unqualified name, in every query that names a table.
      */
     @ParameterizedTest
@@ -11920,12 +11943,69 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "reporting.%s belongs to schema reporting, which sqlcj does not model; ".formatted(
+            "reporting.%s belongs to schema reporting, ".formatted(
                 sql.contains("profiles")
                     ? "profiles"
                     : "users"
             )
-                + "sqlcj models only the public schema.",
+                + "which this query group does not model; it models schema public. "
+                + "Set sql[].namespace to reporting to model that schema instead.",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A query group that models a schema of its own resolves a source and a
+     * cast type there, named unqualified as the query's own service writes it
+     * and qualified with the modeled schema alike.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = { "", "billing." })
+    void shouldResolveASourceAndACastTypeOfTheConfiguredNamespace(String qualifier) {
+        String sql = """
+            SELECT id, state
+            FROM %1$sinvoices
+            WHERE state = $1::%1$sinvoice_state""".formatted(qualifier);
+
+        Query query = new Query("ListInvoices", QueryType.MANY, sql);
+
+        QueryModel model = analyzer.analyze(query, parser.parse(sql), billingSchema);
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("state", ColumnType.ENUM, false, "invoice_state")
+            ),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "state", ColumnType.ENUM, "invoice_state")),
+            model.parameters()
+        );
+    }
+
+    /**
+     * {@code public} is a schema like any other: a source of it in a group that
+     * models {@code billing} states the schema it belongs to, the schema the
+     * group models, and the setting that would model {@code public} instead.
+     */
+    @Test
+    void shouldRejectAPublicSourceUnderAConfiguredNamespace() {
+        String sql = "SELECT id FROM public.invoices";
+
+        Query query = new Query("ListInvoices", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> analyzer.analyze(query, parsedSql, billingSchema)
+        );
+
+        assertEquals(
+            "public.invoices belongs to schema public, "
+                + "which this query group does not model; it models schema billing. "
+                + "Set sql[].namespace to public to model that schema instead.",
             exception.getMessage()
         );
     }

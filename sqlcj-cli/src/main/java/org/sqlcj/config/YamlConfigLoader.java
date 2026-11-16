@@ -247,7 +247,8 @@ public class YamlConfigLoader implements ConfigLoader {
                 entry -> new SqlConfig(
                     entry.name(),
                     resolvePaths(entry.schema(), baseDirectory),
-                    resolvePath(entry.queries(), baseDirectory)
+                    resolvePath(entry.queries(), baseDirectory),
+                    entry.namespace()
                 )
             )
             .toList();
