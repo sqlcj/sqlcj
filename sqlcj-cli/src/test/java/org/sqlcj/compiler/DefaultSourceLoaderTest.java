@@ -119,6 +119,43 @@ class DefaultSourceLoaderTest {
         assertEquals("Orders", sources.get(1).name());
     }
 
+    /**
+     * An entry carries the schema it models: the configured namespace, and
+     * {@code public} when the configuration names none, so a configuration
+     * written before the setting existed keeps modeling {@code public}.
+     */
+    @Test
+    void shouldCarryTheModeledNamespaceOfEachEntry() throws IOException {
+        Path schema = write("schema.sql", """
+            CREATE TABLE users
+            (
+                id BIGINT NOT NULL
+            );
+            """);
+
+        Path queries = write("queries.sql", """
+            -- name: GetUser :one
+            SELECT id
+            FROM users
+            WHERE id = $1;
+            """);
+
+        List<Source> sources = sourceLoader.load(
+            config(
+                new SqlConfig("Users", schema.toString(), queries.toString()),
+                new SqlConfig(
+                    "Billing",
+                    List.of(schema.toString()),
+                    queries.toString(),
+                    "billing"
+                )
+            )
+        );
+
+        assertEquals("public", sources.get(0).namespace());
+        assertEquals("billing", sources.get(1).namespace());
+    }
+
     @Test
     void shouldRejectUnreadableQueriesSource() throws IOException {
         Path schema = write("schema.sql", """

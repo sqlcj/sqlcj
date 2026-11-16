@@ -71,6 +71,10 @@ public class DefaultSchemaParser implements SchemaParser {
     /** Resolves the type a column declaration states. */
     private final ColumnTypeMapping columnTypeMapping = new ColumnTypeMapping();
 
+    /**
+     * Applies one schema source to the schema the sources before it left, in
+     * the one namespace that schema models, which the returned schema keeps.
+     */
     @Override
     public Schema parse(Schema schema, String sql) {
         List<Table> tables = new ArrayList<>(schema.tables());
@@ -78,11 +82,13 @@ public class DefaultSchemaParser implements SchemaParser {
         List<DomainType> domains = new ArrayList<>(schema.domains());
         List<View> views = new ArrayList<>(schema.views());
 
+        SchemaNamespace namespace = new SchemaNamespace(schema.namespace());
+
         for (SchemaSourceSplitter.SourceStatement statement : SchemaSourceSplitter.split(sql)) {
-            apply(statement, tables, enums, domains, views);
+            apply(statement, tables, enums, domains, views, namespace);
         }
 
-        return new Schema(tables, enums, domains, views);
+        return new Schema(tables, enums, domains, views, schema.namespace());
     }
 
     /**
@@ -117,13 +123,14 @@ public class DefaultSchemaParser implements SchemaParser {
         List<Table> tables,
         List<EnumType> enums,
         List<DomainType> domains,
-        List<View> views
+        List<View> views,
+        SchemaNamespace namespace
     ) {
         if (namesAVariableTable(statement.tokens())) {
             return;
         }
 
-        if (appliesViewStatement(statement.tokens(), views)) {
+        if (appliesViewStatement(statement.tokens(), views, namespace)) {
             return;
         }
 
@@ -141,19 +148,19 @@ public class DefaultSchemaParser implements SchemaParser {
                 && parsed.size() == 1
                 && !(parsed.get(0) instanceof UnsupportedStatement)
         ) {
-            apply(parsed.get(0), statement.line(), tables, enums, domains);
+            apply(parsed.get(0), statement.line(), tables, enums, domains, namespace);
 
             return;
         }
 
         if (statesWords(statement.tokens(), 0, "CREATE", "DOMAIN")) {
-            applyUnreadableCreateDomain(statement, failure, enums, domains);
+            applyUnreadableCreateDomain(statement, failure, enums, domains, namespace);
 
             return;
         }
 
         if (statesWords(statement.tokens(), 0, "DROP", "DOMAIN")) {
-            applyDropDomain(statement, domains);
+            applyDropDomain(statement, domains, namespace);
 
             return;
         }
@@ -162,7 +169,7 @@ public class DefaultSchemaParser implements SchemaParser {
 
         if (
             opening == null
-                || namesAnotherSchema(opening, statement.tokens())
+                || namesAnotherSchema(opening, statement.tokens(), namespace)
                 || ignoresEveryAlterTableAction(opening, statement.tokens())
         ) {
             return;
@@ -220,7 +227,11 @@ public class DefaultSchemaParser implements SchemaParser {
      * <p>{@code DROP TABLE} is excluded, because it may name a modeled table
      * beside a table of another schema.
      */
-    private boolean namesAnotherSchema(String opening, List<String> tokens) {
+    private boolean namesAnotherSchema(
+        String opening,
+        List<String> tokens,
+        SchemaNamespace namespace
+    ) {
         if (opening.startsWith("DROP")) {
             return false;
         }
@@ -238,7 +249,7 @@ public class DefaultSchemaParser implements SchemaParser {
         }
 
         return statesWords(tokens, index + 1, ".")
-            && !SchemaNamespace.isModeled(tokens.get(index));
+            && !namespace.isModeled(tokens.get(index));
     }
 
     /**
@@ -454,9 +465,13 @@ public class DefaultSchemaParser implements SchemaParser {
      * No form is ever rejected here, so every schema history that loads keeps
      * loading: a {@code DROP} of an unrecorded name changes nothing.
      */
-    private boolean appliesViewStatement(List<String> tokens, List<View> views) {
+    private boolean appliesViewStatement(
+        List<String> tokens,
+        List<View> views,
+        SchemaNamespace namespace
+    ) {
         if (statesWords(tokens, 0, "CREATE")) {
-            return appliesCreateView(tokens, views);
+            return appliesCreateView(tokens, views, namespace);
         }
 
         if (!statesWords(tokens, 0, "DROP")) {
@@ -478,7 +493,7 @@ public class DefaultSchemaParser implements SchemaParser {
         }
 
         for (String declaredName : names) {
-            String viewName = SchemaNamespace.modeledTypeName(declaredName);
+            String viewName = namespace.modeledTypeName(declaredName);
 
             if (viewName != null) {
                 removeView(views, viewName);
@@ -493,7 +508,11 @@ public class DefaultSchemaParser implements SchemaParser {
      * state such a statement at all. Words that state no name after the view
      * words record nothing and are left to the statement rules that follow.
      */
-    private boolean appliesCreateView(List<String> tokens, List<View> views) {
+    private boolean appliesCreateView(
+        List<String> tokens,
+        List<View> views,
+        SchemaNamespace namespace
+    ) {
         int index = 1;
         boolean materialized = statesWords(tokens, index, "MATERIALIZED");
 
@@ -525,7 +544,7 @@ public class DefaultSchemaParser implements SchemaParser {
             return false;
         }
 
-        String viewName = SchemaNamespace.modeledTypeName(declaredName(tokens, index, nameEnd));
+        String viewName = namespace.modeledTypeName(declaredName(tokens, index, nameEnd));
 
         if (viewName != null) {
             addView(new View(viewName, materialized), views);
@@ -613,29 +632,30 @@ public class DefaultSchemaParser implements SchemaParser {
         int line,
         List<Table> tables,
         List<EnumType> enums,
-        List<DomainType> domains
+        List<DomainType> domains,
+        SchemaNamespace namespace
     ) {
         if (statement instanceof CreateTable createTable) {
-            if (SchemaNamespace.isModeled(createTable.getTable())) {
-                applyCreateTable(createTable, line, enums, domains, tables);
+            if (namespace.isModeled(createTable.getTable())) {
+                applyCreateTable(createTable, line, enums, domains, tables, namespace);
             }
         } else if (statement instanceof Alter alter) {
-            if (SchemaNamespace.isModeled(alter.getTable())) {
-                applyAlterTable(alter, line, enums, domains, tables);
+            if (namespace.isModeled(alter.getTable())) {
+                applyAlterTable(alter, line, enums, domains, tables, namespace);
             }
         } else if (statement instanceof Drop drop && drop.getObjectType() == Drop.ObjectType.TABLE) {
-            applyDropTable(drop, tables);
+            applyDropTable(drop, tables, namespace);
         } else if (
             statement instanceof CreateType createType
                 && createType.getDefinition() instanceof EnumTypeDefinition definition
         ) {
-            applyCreateEnumType(createType, definition, enums, domains);
+            applyCreateEnumType(createType, definition, enums, domains, namespace);
         } else if (statement instanceof AlterType alterType) {
-            applyAlterType(alterType, line, enums, domains, tables);
+            applyAlterType(alterType, line, enums, domains, tables, namespace);
         } else if (statement instanceof CreateDomain createDomain) {
-            applyCreateDomain(createDomain, enums, domains);
+            applyCreateDomain(createDomain, enums, domains, namespace);
         } else if (statement instanceof AlterDomain alterDomain) {
-            applyAlterDomain(alterDomain, domains);
+            applyAlterDomain(alterDomain, domains, namespace);
         }
     }
 
@@ -704,9 +724,10 @@ public class DefaultSchemaParser implements SchemaParser {
         CreateType createType,
         EnumTypeDefinition definition,
         List<EnumType> enums,
-        List<DomainType> domains
+        List<DomainType> domains,
+        SchemaNamespace namespace
     ) {
-        String typeName = SchemaNamespace.modeledTypeName(createType.getName());
+        String typeName = namespace.modeledTypeName(createType.getName());
 
         if (typeName == null) {
             return;
@@ -741,8 +762,8 @@ public class DefaultSchemaParser implements SchemaParser {
 
     /**
      * Applies one {@code ALTER TYPE} action, resolving the stated type name in
-     * the one namespace sqlcj models, so a {@code public}-qualified name
-     * resolves as its unqualified name and a type of any other schema is
+     * the one namespace the query group models, so a name qualified with that
+     * schema resolves as its unqualified name and a type of any other schema is
      * ignored.
      *
      * <p>An action that cannot change a modeled enum is ignored without the
@@ -759,7 +780,8 @@ public class DefaultSchemaParser implements SchemaParser {
         int line,
         List<EnumType> enums,
         List<DomainType> domains,
-        List<Table> tables
+        List<Table> tables,
+        SchemaNamespace namespace
     ) {
         AlterType.Action action = alterType.getAction();
 
@@ -767,7 +789,7 @@ public class DefaultSchemaParser implements SchemaParser {
             return;
         }
 
-        String typeName = SchemaNamespace.modeledTypeName(alterType.getName());
+        String typeName = namespace.modeledTypeName(alterType.getName());
 
         if (typeName == null) {
             return;
@@ -791,7 +813,7 @@ public class DefaultSchemaParser implements SchemaParser {
                 domains,
                 tables
             );
-            case SET_SCHEMA -> moveEnumTypeToSchema(alterType, line, index);
+            case SET_SCHEMA -> moveEnumTypeToSchema(alterType, line, index, namespace);
             default -> throw unsupportedAlterTypeAction(String.valueOf(action), line);
         }
     }
@@ -916,8 +938,13 @@ public class DefaultSchemaParser implements SchemaParser {
      * one namespace it models leaves the type where it already is, and a type
      * sqlcj does not model is ignored.
      */
-    private void moveEnumTypeToSchema(AlterType alterType, int line, int index) {
-        if (index < 0 || SchemaNamespace.isModeled(alterType.getNewName())) {
+    private void moveEnumTypeToSchema(
+        AlterType alterType,
+        int line,
+        int index,
+        SchemaNamespace namespace
+    ) {
+        if (index < 0 || namespace.isModeled(alterType.getNewName())) {
             return;
         }
 
@@ -1022,9 +1049,10 @@ public class DefaultSchemaParser implements SchemaParser {
     private void applyCreateDomain(
         CreateDomain createDomain,
         List<EnumType> enums,
-        List<DomainType> domains
+        List<DomainType> domains,
+        SchemaNamespace namespace
     ) {
-        String typeName = SchemaNamespace.modeledTypeName(createDomain.getName());
+        String typeName = namespace.modeledTypeName(createDomain.getName());
 
         if (typeName == null) {
             return;
@@ -1033,7 +1061,8 @@ public class DefaultSchemaParser implements SchemaParser {
         ColumnTypeMapping.MappedType base = columnTypeMapping.map(
             createDomain.getDataType(),
             enums,
-            domains
+            domains,
+            namespace
         );
 
         addDomain(
@@ -1068,11 +1097,12 @@ public class DefaultSchemaParser implements SchemaParser {
         SchemaSourceSplitter.SourceStatement statement,
         JSQLParserException failure,
         List<EnumType> enums,
-        List<DomainType> domains
+        List<DomainType> domains,
+        SchemaNamespace namespace
     ) {
         List<String> tokens = statement.tokens();
 
-        if (namesAnotherSchema("CREATE DOMAIN", tokens)) {
+        if (namesAnotherSchema("CREATE DOMAIN", tokens, namespace)) {
             return;
         }
 
@@ -1086,7 +1116,7 @@ public class DefaultSchemaParser implements SchemaParser {
             throw unsupportedOpening("CREATE DOMAIN", statement.line());
         }
 
-        String typeName = SchemaNamespace.modeledTypeName(declaredName(tokens, 2, nameEnd));
+        String typeName = namespace.modeledTypeName(declaredName(tokens, 2, nameEnd));
 
         if (typeName == null) {
             return;
@@ -1095,7 +1125,7 @@ public class DefaultSchemaParser implements SchemaParser {
         CreateDomain createDomain = declaredCreateDomain(tokens, nameEnd);
 
         if (createDomain != null) {
-            applyCreateDomain(createDomain, enums, domains);
+            applyCreateDomain(createDomain, enums, domains, namespace);
 
             return;
         }
@@ -1156,12 +1186,16 @@ public class DefaultSchemaParser implements SchemaParser {
      * {@code NOT NULL} never decides a column's nullability. A domain sqlcj
      * does not model, one of a schema it does not model included, is ignored.
      */
-    private void applyAlterDomain(AlterDomain alterDomain, List<DomainType> domains) {
+    private void applyAlterDomain(
+        AlterDomain alterDomain,
+        List<DomainType> domains,
+        SchemaNamespace namespace
+    ) {
         if (alterDomain.getAction() != AlterDomain.Action.RENAME) {
             return;
         }
 
-        String typeName = SchemaNamespace.modeledTypeName(alterDomain.getName());
+        String typeName = namespace.modeledTypeName(alterDomain.getName());
 
         if (typeName == null) {
             return;
@@ -1189,7 +1223,8 @@ public class DefaultSchemaParser implements SchemaParser {
      */
     private void applyDropDomain(
         SchemaSourceSplitter.SourceStatement statement,
-        List<DomainType> domains
+        List<DomainType> domains,
+        SchemaNamespace namespace
     ) {
         List<String> names = droppedNames(statement.tokens(), 2);
 
@@ -1198,7 +1233,7 @@ public class DefaultSchemaParser implements SchemaParser {
         }
 
         for (String declaredName : names) {
-            String typeName = SchemaNamespace.modeledTypeName(declaredName);
+            String typeName = namespace.modeledTypeName(declaredName);
 
             if (typeName != null) {
                 removeDomain(domains, typeName);
@@ -1371,7 +1406,8 @@ public class DefaultSchemaParser implements SchemaParser {
         int line,
         List<EnumType> enums,
         List<DomainType> domains,
-        List<Table> tables
+        List<Table> tables,
+        SchemaNamespace namespace
     ) {
         String tableName = createTable.getTable().getUnquotedName();
 
@@ -1385,7 +1421,7 @@ public class DefaultSchemaParser implements SchemaParser {
 
         rejectUnsupportedCreateTableClause(createTable, line);
 
-        tables.add(parseTable(createTable, line, enums, domains, tables));
+        tables.add(parseTable(createTable, line, enums, domains, tables, namespace));
     }
 
     /**
@@ -1424,8 +1460,8 @@ public class DefaultSchemaParser implements SchemaParser {
      * already removed as a partition of it is left alone, because it is dropped
      * either way.
      */
-    private void applyDropTable(Drop drop, List<Table> tables) {
-        for (String tableName : droppedTableNames(drop, tables)) {
+    private void applyDropTable(Drop drop, List<Table> tables, SchemaNamespace namespace) {
+        for (String tableName : droppedTableNames(drop, tables, namespace)) {
             int index = indexOfTable(tables, tableName);
 
             if (index >= 0) {
@@ -1444,11 +1480,15 @@ public class DefaultSchemaParser implements SchemaParser {
      * leaves unmodeled and is skipped without failing, because the statement
      * may name a modeled table beside it.
      */
-    private List<String> droppedTableNames(Drop drop, List<Table> tables) {
+    private List<String> droppedTableNames(
+        Drop drop,
+        List<Table> tables,
+        SchemaNamespace namespace
+    ) {
         List<String> names = new ArrayList<>();
 
         for (net.sf.jsqlparser.schema.Table dropped : drop.getNames()) {
-            if (!SchemaNamespace.isModeled(dropped)) {
+            if (!namespace.isModeled(dropped)) {
                 continue;
             }
 
@@ -1509,7 +1549,8 @@ public class DefaultSchemaParser implements SchemaParser {
         int line,
         List<EnumType> enums,
         List<DomainType> domains,
-        List<Table> tables
+        List<Table> tables,
+        SchemaNamespace namespace
     ) {
         String tableName = alter.getTable().getUnquotedName();
 
@@ -1526,13 +1567,13 @@ public class DefaultSchemaParser implements SchemaParser {
         String schemaName = soleSetSchemaAction(alter);
 
         if (schemaName != null) {
-            moveTableToSchema(line, schemaName, tables, index);
+            moveTableToSchema(line, schemaName, tables, index, namespace);
 
             return;
         }
 
         for (AlterExpression expression : alter.getAlterExpressions()) {
-            applyToTableAndPartitions(line, expression, enums, domains, tables, index);
+            applyToTableAndPartitions(line, expression, enums, domains, tables, index, namespace);
         }
     }
 
@@ -1576,8 +1617,14 @@ public class DefaultSchemaParser implements SchemaParser {
      * its partitions would stay in the modeled namespace following a parent
      * sqlcj no longer models.
      */
-    private void moveTableToSchema(int line, String schemaName, List<Table> tables, int index) {
-        if (SchemaNamespace.isModeled(schemaName)) {
+    private void moveTableToSchema(
+        int line,
+        String schemaName,
+        List<Table> tables,
+        int index,
+        SchemaNamespace namespace
+    ) {
+        if (namespace.isModeled(schemaName)) {
             return;
         }
 
@@ -1601,11 +1648,15 @@ public class DefaultSchemaParser implements SchemaParser {
         List<EnumType> enums,
         List<DomainType> domains,
         List<Table> tables,
-        int index
+        int index,
+        SchemaNamespace namespace
     ) {
         String tableName = tables.get(index).name();
 
-        tables.set(index, applyAlterExpression(line, expression, enums, domains, tables, index));
+        tables.set(
+            index,
+            applyAlterExpression(line, expression, enums, domains, tables, index, namespace)
+        );
 
         if (!propagatesToPartitions(expression)) {
             return;
@@ -1615,7 +1666,7 @@ public class DefaultSchemaParser implements SchemaParser {
             String parent = tables.get(i).partitionOf();
 
             if (parent != null && parent.equalsIgnoreCase(tableName)) {
-                applyToTableAndPartitions(line, expression, enums, domains, tables, i);
+                applyToTableAndPartitions(line, expression, enums, domains, tables, i, namespace);
             }
         }
     }
@@ -1674,13 +1725,14 @@ public class DefaultSchemaParser implements SchemaParser {
         List<EnumType> enums,
         List<DomainType> domains,
         List<Table> tables,
-        int index
+        int index,
+        SchemaNamespace namespace
     ) {
         Table table = tables.get(index);
         AlterOperation operation = expression.getOperation();
 
         if (operation == AlterOperation.ADD && isNotEmpty(expression.getColDataTypeList())) {
-            return addColumns(expression, enums, domains, table);
+            return addColumns(expression, enums, domains, table, namespace);
         }
 
         if (operation == AlterOperation.DROP && expression.getColumnName() != null) {
@@ -1696,11 +1748,11 @@ public class DefaultSchemaParser implements SchemaParser {
         }
 
         if (operation == AlterOperation.ALTER) {
-            return alterColumns(line, expression, enums, domains, table);
+            return alterColumns(line, expression, enums, domains, table, namespace);
         }
 
         if (operation == AlterOperation.ATTACH_PARTITION || operation == AlterOperation.DETACH_PARTITION) {
-            return changePartitionLink(expression, tables, table);
+            return changePartitionLink(expression, tables, table, namespace);
         }
 
         if (addsPrimaryKey(expression)) {
@@ -1728,13 +1780,14 @@ public class DefaultSchemaParser implements SchemaParser {
     private Table changePartitionLink(
         AlterExpression expression,
         List<Table> tables,
-        Table table
+        Table table,
+        SchemaNamespace namespace
     ) {
         if (!(expression instanceof AlterExpressionPartition partition)) {
             return table;
         }
 
-        int index = indexOfReferencedTable(tables, partition.getPartitionTable());
+        int index = indexOfReferencedTable(tables, partition.getPartitionTable(), namespace);
 
         if (index < 0) {
             return table;
@@ -1917,7 +1970,8 @@ public class DefaultSchemaParser implements SchemaParser {
         AlterExpression expression,
         List<EnumType> enums,
         List<DomainType> domains,
-        Table table
+        Table table,
+        SchemaNamespace namespace
     ) {
         if (isNotEmpty(expression.getColumnSetDefaultList()) || isNotEmpty(expression.getColumnDropDefaultList())) {
             return table;
@@ -1925,7 +1979,7 @@ public class DefaultSchemaParser implements SchemaParser {
 
         if (isNotEmpty(expression.getColDataTypeList())) {
             if (statesNewTypes(expression.getColDataTypeList())) {
-                return changeColumnTypes(expression, enums, domains, table);
+                return changeColumnTypes(expression, enums, domains, table, namespace);
             }
 
             if (ignoresColumnActions(expression.getColDataTypeList())) {
@@ -2019,13 +2073,14 @@ public class DefaultSchemaParser implements SchemaParser {
         AlterExpression expression,
         List<EnumType> enums,
         List<DomainType> domains,
-        Table table
+        Table table,
+        SchemaNamespace namespace
     ) {
         List<Column> columns = new ArrayList<>(table.columns());
         List<Constraint> constraints = new ArrayList<>(table.constraints());
 
         for (AlterExpression.ColumnDataType definition : expression.getColDataTypeList()) {
-            Column column = parseColumn(definition, enums, domains);
+            Column column = parseColumn(definition, enums, domains, namespace);
 
             if (indexOfColumn(columns, column.name()) >= 0) {
                 if (expression.isUseIfNotExists()) {
@@ -2149,7 +2204,8 @@ public class DefaultSchemaParser implements SchemaParser {
         AlterExpression expression,
         List<EnumType> enums,
         List<DomainType> domains,
-        Table table
+        Table table,
+        SchemaNamespace namespace
     ) {
         List<Column> columns = new ArrayList<>(table.columns());
 
@@ -2163,7 +2219,7 @@ public class DefaultSchemaParser implements SchemaParser {
             }
 
             Column column = columns.get(index);
-            Column retyped = parseColumn(definition, enums, domains);
+            Column retyped = parseColumn(definition, enums, domains, namespace);
 
             columns.set(
                 index,
@@ -2258,17 +2314,18 @@ public class DefaultSchemaParser implements SchemaParser {
      * and the partition of {@code ATTACH} or {@code DETACH PARTITION}, or
      * {@code -1} when sqlcj does not model it.
      *
-     * <p>sqlcj models one namespace, so an unqualified and a
-     * {@code public}-qualified name are the same table, and a name qualified
-     * with any other schema names a table sqlcj leaves unmodeled rather than
-     * the modeled table of the same unqualified name; see
+     * <p>A query group models one namespace, so an unqualified name and a name
+     * qualified with the modeled schema are the same table, and a name
+     * qualified with any other schema names a table sqlcj leaves unmodeled
+     * rather than the modeled table of the same unqualified name; see
      * {@link SchemaNamespace}.
      */
     private int indexOfReferencedTable(
         List<Table> tables,
-        net.sf.jsqlparser.schema.Table referenced
+        net.sf.jsqlparser.schema.Table referenced,
+        SchemaNamespace namespace
     ) {
-        if (!SchemaNamespace.isModeled(referenced)) {
+        if (!namespace.isModeled(referenced)) {
             return -1;
         }
 
@@ -2432,7 +2489,8 @@ public class DefaultSchemaParser implements SchemaParser {
         int line,
         List<EnumType> enums,
         List<DomainType> domains,
-        List<Table> tables
+        List<Table> tables,
+        SchemaNamespace namespace
     ) {
         String tableName = createTable.getTable().getUnquotedName();
 
@@ -2441,7 +2499,7 @@ public class DefaultSchemaParser implements SchemaParser {
         String partitionOf = null;
 
         if (createTable.getPartitionOf() != null) {
-            Table parent = referencedTable(tables, createTable.getPartitionOf());
+            Table parent = referencedTable(tables, createTable.getPartitionOf(), namespace);
 
             partitionOf = parent.name();
             columns.addAll(parent.columns());
@@ -2456,10 +2514,16 @@ public class DefaultSchemaParser implements SchemaParser {
         } else {
             for (TableElement element : elements) {
                 if (element instanceof ColumnDefinition definition) {
-                    addColumn(columns, tableName, parseColumn(definition, enums, domains));
+                    addColumn(
+                        columns,
+                        tableName,
+                        parseColumn(definition, enums, domains, namespace)
+                    );
                     constraints.addAll(parseColumnConstraints(definition));
                 } else if (element instanceof LikeClause like) {
-                    for (Column column : referencedTable(tables, like.getTable()).columns()) {
+                    Table source = referencedTable(tables, like.getTable(), namespace);
+
+                    for (Column column : source.columns()) {
                         addColumn(columns, tableName, column);
                     }
                 }
@@ -2500,14 +2564,15 @@ public class DefaultSchemaParser implements SchemaParser {
      */
     private Table referencedTable(
         List<Table> tables,
-        net.sf.jsqlparser.schema.Table referenced
+        net.sf.jsqlparser.schema.Table referenced,
+        SchemaNamespace namespace
     ) {
-        int index = indexOfReferencedTable(tables, referenced);
+        int index = indexOfReferencedTable(tables, referenced, namespace);
 
         if (index < 0) {
             throw tableNotFound(
-                SchemaNamespace.declaredName(referenced),
-                SchemaNamespace.isModeled(referenced)
+                namespace.declaredName(referenced),
+                namespace.isModeled(referenced)
                     ? tables
                     : List.of()
             );
@@ -2554,12 +2619,14 @@ public class DefaultSchemaParser implements SchemaParser {
     private Column parseColumn(
         ColumnDefinition definition,
         List<EnumType> enums,
-        List<DomainType> domains
+        List<DomainType> domains,
+        SchemaNamespace namespace
     ) {
         ColumnTypeMapping.MappedType mappedType = columnTypeMapping.map(
             definition.getColDataType(),
             enums,
-            domains
+            domains,
+            namespace
         );
 
         return new Column(

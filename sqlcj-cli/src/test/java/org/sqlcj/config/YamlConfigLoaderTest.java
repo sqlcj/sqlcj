@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class YamlConfigLoaderTest {
@@ -501,6 +502,50 @@ class YamlConfigLoaderTest {
             """);
 
         assertInvalid(configFile, "'sql[0].queries' must not be blank");
+    }
+
+    /**
+     * An entry that names the schema it models carries that name, and an entry
+     * that names none carries no name, which models {@code public}.
+     */
+    @Test
+    void shouldMapTheNamespaceOfEachEntry() throws IOException {
+        Path configFile = write("""
+            version: "1"
+            sql:
+              - name: Billing
+                schema: billing/schema.sql
+                queries: billing/queries.sql
+                namespace: billing
+              - name: Users
+                schema: schema.sql
+                queries: queries.sql
+            java:
+              package: dev.example.generated
+              out: generated
+            """);
+
+        Config config = configLoader.load(configFile);
+
+        assertEquals("billing", config.sql().get(0).namespace());
+        assertNull(config.sql().get(1).namespace());
+    }
+
+    @Test
+    void shouldRejectBlankNamespaceValue() throws IOException {
+        Path configFile = write("""
+            version: "1"
+            sql:
+              - name: Users
+                schema: schema.sql
+                queries: queries.sql
+                namespace: "  "
+            java:
+              package: dev.example.generated
+              out: generated
+            """);
+
+        assertInvalid(configFile, "'sql[0].namespace' must not be blank");
     }
 
     @Test

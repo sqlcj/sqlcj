@@ -8,6 +8,7 @@ import org.sqlcj.io.FileSystemReason;
 import org.sqlcj.parser.DefaultQueryParser;
 import org.sqlcj.parser.ParsedQueries;
 import org.sqlcj.parser.QueryParser;
+import org.sqlcj.schema.Schema;
 
 import java.io.IOException;
 import java.math.BigInteger;
@@ -40,6 +41,9 @@ public final class DefaultSourceLoader implements SourceLoader {
      * Loads every configured entry as its own query group. A query name is
      * scoped to the group that declares it, so two groups may name the same
      * query.
+     *
+     * <p>An entry that names no schema of its own models {@code public}, so
+     * every configuration written before the setting existed keeps its model.
      */
     @Override
     public List<Source> load(Config config) {
@@ -54,6 +58,9 @@ public final class DefaultSourceLoader implements SourceLoader {
             sources.add(
                 new Source(
                     sqlConfig.name(),
+                    sqlConfig.namespace() == null
+                        ? Schema.PUBLIC_NAMESPACE
+                        : sqlConfig.namespace(),
                     schemaFiles,
                     queriesPath,
                     parsed.queries(),

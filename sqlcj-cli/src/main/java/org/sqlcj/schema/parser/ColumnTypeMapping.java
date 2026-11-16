@@ -77,12 +77,16 @@ public final class ColumnTypeMapping {
      * <p>A built-in spelling is resolved before a domain and a domain before an
      * enum type, as PostgreSQL resolves a declared name: a domain is the type
      * it is declared over, so it carries that type's mapping; see
-     * {@link #declaredDomain(String, List)}.
+     * {@link #declaredDomain(String, List, SchemaNamespace)}.
+     *
+     * <p>A declared name is resolved in the one namespace the query group
+     * models, so a domain and an enum type of any other schema never resolve.
      */
     public MappedType map(
         ColDataType declaredType,
         List<EnumType> enums,
-        List<DomainType> domains
+        List<DomainType> domains,
+        SchemaNamespace namespace
     ) {
         String elementText = elementText(declaredType.getDataType());
         String typeName = typeName(elementText);
@@ -112,7 +116,7 @@ public final class ColumnTypeMapping {
                     );
                 }
             } else {
-                DomainType domain = declaredDomain(elementText, domains);
+                DomainType domain = declaredDomain(elementText, domains, namespace);
 
                 if (domain != null) {
                     if (!array && domain.type() != null) {
@@ -129,7 +133,7 @@ public final class ColumnTypeMapping {
                     return unmappedType(typeName, arrayDimensions);
                 }
 
-                EnumType enumType = declaredEnum(elementText, enums);
+                EnumType enumType = declaredEnum(elementText, enums, namespace);
 
                 if (enumType != null) {
                     return new MappedType(
@@ -272,8 +276,12 @@ public final class ColumnTypeMapping {
      * array of a domain and a domain over a type sqlcj does not map are
      * recorded with their declared type rather than resolved further.
      */
-    private DomainType declaredDomain(String elementText, List<DomainType> domains) {
-        String typeName = SchemaNamespace.modeledTypeName(elementText);
+    private DomainType declaredDomain(
+        String elementText,
+        List<DomainType> domains,
+        SchemaNamespace namespace
+    ) {
+        String typeName = namespace.modeledTypeName(elementText);
 
         if (typeName == null) {
             return null;
@@ -288,12 +296,16 @@ public final class ColumnTypeMapping {
     /**
      * The enum type an unmapped declared element type names, or {@code null}
      * when the schema declares no such type. The name is resolved in the one
-     * namespace sqlcj models, so a {@code public}-qualified name resolves as
-     * its unqualified name and a name of any other schema never resolves; see
-     * {@link SchemaNamespace}.
+     * namespace the query group models, so a name qualified with that schema
+     * resolves as its unqualified name and a name of any other schema never
+     * resolves; see {@link SchemaNamespace}.
      */
-    private EnumType declaredEnum(String elementText, List<EnumType> enums) {
-        String typeName = SchemaNamespace.modeledTypeName(elementText);
+    private EnumType declaredEnum(
+        String elementText,
+        List<EnumType> enums,
+        SchemaNamespace namespace
+    ) {
+        String typeName = namespace.modeledTypeName(elementText);
 
         if (typeName == null) {
             return null;
@@ -383,16 +395,16 @@ public final class ColumnTypeMapping {
 
     /**
      * The mapped type a qualified declared element type names, or {@code null}
-     * when it names none. An extension type belongs to the schema it was
-     * installed in, which {@code pg_dump} writes as a qualifier, so
-     * {@code citext} is resolved in the one namespace sqlcj models, exactly as
-     * an enum type's name is: {@code public.citext} is the type {@code citext}
-     * and a name qualified with any other schema never resolves. A built-in
-     * type is never qualified by {@code pg_dump}, so only {@code citext} is
-     * resolved this way.
+     * when it names none. An extension type belongs to the schema the extension
+     * was installed in, which {@code pg_dump} writes as a qualifier and which
+     * is often not the schema the query group models, so {@code citext}
+     * qualified with any one schema is the type {@code citext}, as it is
+     * unqualified: {@code citext}, {@code public.citext}, and
+     * {@code billing.citext} all resolve. A built-in type is never qualified by
+     * {@code pg_dump}, so only {@code citext} is resolved this way.
      */
     private ColumnType extensionType(String elementText) {
-        String modeledName = SchemaNamespace.modeledTypeName(elementText);
+        String modeledName = SchemaNamespace.typeNameInAnySchema(elementText);
 
         if (modeledName == null) {
             return null;

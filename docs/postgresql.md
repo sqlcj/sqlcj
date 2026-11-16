@@ -499,20 +499,25 @@ order the files are read in.
 - SQL identifier delimiters are removed for the parsed model, so the table
   `"user data"` is modeled as `user data` and the column `"user id"` is modeled
   as `user id`.
-- sqlcj models one namespace, so an unqualified and a `public`-qualified name
-  are the same name: `users`, `public.users`, and `"public"."users"` are one
-  table, and `mood`, `public.mood`, and `"public"."mood"` are one type. A schema
-  qualifier is compared without its SQL identifier delimiters and
-  case-insensitively, as every other name is.
-- A table or a type qualified with any other schema is invisible: sqlcj never
-  models it, every statement whose own table or type stands there is ignored
-  before anything it names is resolved, and a query that names such a table is
-  rejected as
-  `<schema>.<t> belongs to schema <schema>, which sqlcj does not model; sqlcj
-  models only the public schema.`, whether or not the snapshot creates it.
+- A query group models one namespace, which is the schema
+  [`sql[].namespace`](configuration.md#sqlnamespace) names and `public` when it
+  names none. An unqualified name and a name qualified with that schema are
+  the same name: under the default, `users`, `public.users`, and
+  `"public"."users"` are one table, and `mood`, `public.mood`, and
+  `"public"."mood"` are one type, and under `namespace: billing`, `invoices`,
+  `billing.invoices`, and `"billing"."invoices"` are. A schema qualifier is
+  compared without its SQL identifier delimiters and case-insensitively, as
+  every other name is.
+- A table or a type qualified with any other schema is invisible, `public`
+  included when the group models another: sqlcj never models it, every
+  statement whose own table or type stands there is ignored before anything it
+  names is resolved, and a query that names such a table is rejected as
+  `<schema>.<t> belongs to schema <schema>, which this query group does not
+  model; it models schema <modeled>. Set sql[].namespace to <schema> to model
+  that schema instead.`, whether or not the snapshot creates it.
   `search_path` is not followed, so an
-  unqualified name always belongs to the one namespace sqlcj models, whatever a
-  `SET search_path` statement in the snapshot says.
+  unqualified name always belongs to the one namespace the group models,
+  whatever a `SET search_path` statement in the snapshot says.
 
 A `pg_dump --schema-only` file is such a snapshot and loads unchanged: it is
 configured as one schema file, and nothing in it has to be edited, removed, or
@@ -535,7 +540,9 @@ rather than rejecting it:
 - its constraint and index statements, its `OWNER TO` statements, and its
   grants, policies, comments, extensions, composite types, functions,
   triggers, views, and materialized views, and
-- the tables, types, and statements of every schema other than `public`.
+- the tables, types, and statements of every schema other than the one the
+  group models, so a dump of a whole database holds the schemas of other
+  services without modeling them.
 
 A dump's `CREATE DOMAIN` statements are modeled rather than ignored, including
 the forms sqlcj's parser cannot read: a domain with a `CONSTRAINT ... CHECK`
@@ -545,10 +552,12 @@ over an operator and one with a `COLLATE` and a `NOT NULL DEFAULT`; see
 A dump writes a partition as a plain `CREATE TABLE` followed by
 `ALTER TABLE ONLY ... ATTACH PARTITION`, so the partition is modeled with its
 own columns and then linked to its partitioned table, and it qualifies every
-table, type, and column type with `public.`, which is the one namespace sqlcj
-models. A dump of a database built by a migration history that changes the
-schema only through statements sqlcj reads therefore generates the same Java as
-that history. A schema change the history makes indirectly, such as DDL inside
+table, type, and column type with the schema it stands in, which the group
+models when `sql[].namespace` names it. A dump of a database built by a
+migration history that changes the schema only through statements sqlcj reads
+therefore generates the same Java as that history, whether that history writes
+its names unqualified, as a migration tool with a default schema applies them,
+or qualified. A schema change the history makes indirectly, such as DDL inside
 a `DO` block or a function body, or a column dropped by
 `DROP TYPE ... CASCADE`, stands in the database and in its dump but not in the
 history sqlcj reads; see [Ignored Statements](#ignored-statements).
@@ -677,12 +686,12 @@ precision of `1` through `24` is `REAL` and one of `25` through `53` is
 | `BYTEA` | `byte[]` | A record compares an array component by reference, so two row records holding equal bytes are not `equals`. |
 | `JSON` | `String` | The JSON text itself. PostgreSQL stores it as written, so it reads back exactly as written. sqlcj never parses, validates, or normalizes it. |
 | `JSONB` | `String` | The JSON text itself. PostgreSQL stores a decomposed value, so the text reads back as PostgreSQL renders it rather than as written, and `=` compares by value. sqlcj never parses, validates, or normalizes it. |
-| `CITEXT` | `String` | The text itself. PostgreSQL compares, matches, and orders a `citext` ignoring case, so an equality, a `LIKE`, an `ILIKE`, and an `= ANY(citext[])` over such a column are case-insensitive. The type comes from the `citext` extension, which belongs to the schema it was installed in, so the name is resolved in the one namespace sqlcj models: `public.citext` and `"public"."citext"` are the type `citext`, and a name qualified with any other schema never resolves. |
+| `CITEXT` | `String` | The text itself. PostgreSQL compares, matches, and orders a `citext` ignoring case, so an equality, a `LIKE`, an `ILIKE`, and an `= ANY(citext[])` over such a column are case-insensitive. The type comes from the `citext` extension, which belongs to the schema the extension was installed in, which is often not the one the group models, so `citext` qualified with any one schema is the type `citext`, as it is unqualified: `citext`, `public.citext`, `"public"."citext"`, and `billing.citext` all resolve. |
 | `INET`, `CIDR` | `String` | PostgreSQL's own text of the value, its netmask included, as in `192.168.0.10/24` and `10.0.0.0/8`. `java.net.InetAddress` holds no netmask, so the text is the exact value. |
 | `MACADDR`, `MACADDR8` | `String` | PostgreSQL's own text of the address, as in `08:00:2b:01:02:03`. |
 | `INTERVAL`, with any fields and any precision, such as `INTERVAL YEAR TO MONTH` and `INTERVAL(3)` | `org.sqlcj.runtime.SqlInterval` | A record of `int months`, `int days`, and `long microseconds`, which is PostgreSQL's own representation: none of the three converts into another without a calendar, because a month is 28 to 31 days and a day is 23, 24, or 25 hours across a daylight-saving change. The fields and the precision of the spelling are ignored, as PostgreSQL ignores them for the stored value. `SqlInterval.of(java.time.Period)` and `SqlInterval.of(java.time.Duration)` build one, and `toPeriod()` and `toDuration()` convert back, each throwing `java.time.DateTimeException` when the value holds a component the target cannot hold: a `Period` holds no time part and a `Duration` holds no month. `toDuration()` counts a day as 24 hours, as `Duration.ofDays` does and as PostgreSQL compares two intervals. |
-| The name of an enum type the schema declares | The generated Java enum of that type | Matched without SQL identifier delimiters and case-insensitively, as PostgreSQL resolves an unquoted type name. A `public`-qualified name resolves as its unqualified name, so `public.mood` and `"public"."mood"` are the type `mood`, and a name qualified with any other schema never resolves. See [Enum Types](#enum-types). |
-| The name of a domain the schema declares | The Java type of the type the domain is declared over | A domain is a name for its base type, so a column or a cast of it has that type's Java type, binding, and reading, a domain over a domain and a domain over an array type included. Matched without SQL identifier delimiters and case-insensitively, and a `public`-qualified name resolves as its unqualified name, as an enum type's name does. A built-in spelling resolves before a domain and a domain before an enum type. A domain over a type that is not listed above, and an array of a domain, such as `email_address[]`, have no mapping. See [Domain Types](#domain-types). |
+| The name of an enum type the schema declares | The generated Java enum of that type | Matched without SQL identifier delimiters and case-insensitively, as PostgreSQL resolves an unquoted type name. A name qualified with the schema the group models resolves as its unqualified name, so under the default `public.mood` and `"public"."mood"` are the type `mood`, and a name qualified with any other schema never resolves. See [Enum Types](#enum-types). |
+| The name of a domain the schema declares | The Java type of the type the domain is declared over | A domain is a name for its base type, so a column or a cast of it has that type's Java type, binding, and reading, a domain over a domain and a domain over an array type included. Matched without SQL identifier delimiters and case-insensitively, and a name qualified with the modeled schema resolves as its unqualified name, as an enum type's name does. A built-in spelling resolves before a domain and a domain before an enum type. A domain over a type that is not listed above, and an array of a domain, such as `email_address[]`, have no mapping. See [Domain Types](#domain-types). |
 | A one-dimensional array of any spelling above except `BYTEA`, `JSON`, and `JSONB`, written `type[]` or `type[n]` | `java.util.List<T>` of the element's Java type | The declared size is ignored, as PostgreSQL ignores it. See [Array Types](#array-types). |
 
 Any spelling that is not listed above has no Java mapping. Such a column is
@@ -859,23 +868,24 @@ left:
 | A `CREATE TYPE ... AS ENUM (...)` or an `ALTER TYPE ... RENAME TO` whose name a modeled enum already has | Replaces that enum in its position with the newly declared or renamed one, because the `DROP TYPE ... CASCADE` that freed the name is never seen. This is how the migration that replaces an enum loads, in either of its usual shapes: renaming the old type away before declaring the new one under its name, or declaring the new type beside it and renaming the new type onto its name once the columns are retyped. A column that still names a replaced enum keeps that name, so it is modeled as a column of the replacing enum with its labels, which is the same unseen `DROP TYPE ... CASCADE` case: PostgreSQL would have removed the column. |
 | `ALTER TYPE ... OWNER TO`, `RENAME ATTRIBUTE`, `ADD ATTRIBUTE`, `DROP ATTRIBUTE`, and `ALTER ATTRIBUTE` | Ignored. Ownership cannot change a modeled enum and the attribute actions belong to a composite type, so the stated type is not resolved at all. |
 | `ALTER TYPE ... SET SCHEMA <schema>` | Rejected for a modeled enum as `Unsupported ALTER TYPE action: SET SCHEMA <schema>`, located at the line its statement begins on, because the columns of that type would keep it in a namespace sqlcj does not model. |
-| `ALTER TYPE ... SET SCHEMA public` | Does nothing for a modeled enum: the type already stands in the one namespace sqlcj models. |
+| `ALTER TYPE ... SET SCHEMA` naming the modeled schema | Does nothing for a modeled enum: the type already stands in the one namespace the group models. |
 | `ALTER TYPE ... RENAME TO` or `SET SCHEMA` of a type sqlcj does not model | Ignored, however the type is qualified, because such a type is none of its enum types. |
-| A `CREATE TYPE` or an `ALTER TYPE` whose own type is qualified with a schema other than `public` | Ignored before anything it states is resolved, so it never touches the modeled enum of the same unqualified name and neither a repeated label nor a missing label or neighbor fails. |
+| A `CREATE TYPE` or an `ALTER TYPE` whose own type is qualified with a schema other than the modeled one | Ignored before anything it states is resolved, so it never touches the modeled enum of the same unqualified name and neither a repeated label nor a missing label or neighbor fails. |
 | `CREATE TYPE` of a composite, range, or shell type | Ignored. A column of such a type is recorded with its declared type, as [Unsupported Types and DDL](#unsupported-types-and-ddl) describes. |
 | `DROP TYPE` | Ignored. sqlcj's parser cannot read the statement, and an unreadable statement that does not open as table or type DDL is ignored, so an enum the schema models stays modeled with its labels and the columns of that type stay modeled; see [Ignored Statements](#ignored-statements). |
 
 An `ALTER TYPE` written in a form sqlcj's parser cannot read, such as a
 qualified `RENAME TO` target, several actions joined by commas, or
 `SET (...)`, is rejected as unreadable type DDL, unless its own type is
-qualified with a schema other than `public`, which is ignored; see
+qualified with a schema other than the modeled one, which is ignored; see
 [Ignored Statements](#ignored-statements).
 
 Type names are matched case-insensitively, after their SQL identifier
-delimiters are removed, and labels are matched exactly. Because sqlcj models one
-namespace, a type name resolves by its unqualified name, so
-`CREATE TYPE public.stage_setting` and `CREATE TYPE "public"."stage_setting"`
-declare the type `stage_setting` and replace a modeled `stage_setting` rather
+delimiters are removed, and labels are matched exactly. Because a query group
+models one namespace, a type name resolves by its unqualified name, so under
+the default `CREATE TYPE public.stage_setting` and
+`CREATE TYPE "public"."stage_setting"` declare the type `stage_setting` and
+replace a modeled `stage_setting` rather
 than adding a second enum, and `ADD VALUE`, `RENAME VALUE`, and `RENAME TO`
 written through `public.stage_setting` act on that one type and name it
 unqualified in their diagnostics. A statement that repeats a label, or that
@@ -958,12 +968,13 @@ These statements update the domains the statements and files before them left:
 | Every other `ALTER DOMAIN` action, readable or not: `SET DEFAULT`, `DROP DEFAULT`, `SET NOT NULL`, `DROP NOT NULL`, `ADD`, `DROP`, `RENAME`, and `VALIDATE CONSTRAINT`, `OWNER TO`, and `SET SCHEMA` | Ignored. None of them can change the type a column of the domain has, and a domain's own `NOT NULL` never decides a column's nullability. |
 | `DROP DOMAIN [IF EXISTS] <name>[, <name> ...]`, with or without `CASCADE` or `RESTRICT` | Removes every modeled domain it names and skips every other name. sqlcj's parser reads no `DROP DOMAIN` at all, so the statement is classified by its own words, each name an identifier optionally qualified with a schema. A column already resolved keeps the type its own statement gave it, and a column declared afterwards is recorded with its declared type. |
 | A `DROP DOMAIN` whose words state no such statement | Rejected as `Unsupported schema statement: DROP DOMAIN`, located at the line its statement begins on, because sqlcj cannot tell what it would drop. |
-| A `CREATE DOMAIN`, `ALTER DOMAIN`, or `DROP DOMAIN` name qualified with a schema other than `public` | Ignored before anything it states is resolved, as every other statement of another schema is; a `DROP DOMAIN` skips such a name among its names. |
+| A `CREATE DOMAIN`, `ALTER DOMAIN`, or `DROP DOMAIN` name qualified with a schema other than the modeled one | Ignored before anything it states is resolved, as every other statement of another schema is; a `DROP DOMAIN` skips such a name among its names. |
 
 Domain names are matched case-insensitively, after their SQL identifier
-delimiters are removed, and resolve in the one namespace sqlcj models, so
-`CREATE DOMAIN public.email_address` and
-`CREATE DOMAIN "public"."email_address"` declare the domain `email_address`.
+delimiters are removed, and resolve in the one namespace the query group
+models, so under the default `CREATE DOMAIN public.email_address` and
+`CREATE DOMAIN "public"."email_address"` declare the domain `email_address`,
+and under `namespace: billing` `CREATE DOMAIN billing.email_address` does.
 
 ## Array Types
 
@@ -1104,9 +1115,10 @@ its own statement states. A `LIKE` copy is independent of its source afterwards,
 as in PostgreSQL. A `LIKE` or `PARTITION OF` source sqlcj does not model fails
 as `Table not found in schema: <t>`.
 
-Because sqlcj models one namespace, a `LIKE` or `PARTITION OF` source and an
-`ATTACH` or `DETACH PARTITION` partition resolve by their unqualified name, so
-`public.t` is `t`. Such a name qualified with any other schema names a table
+Because a query group models one namespace, a `LIKE` or `PARTITION OF` source
+and an `ATTACH` or `DETACH PARTITION` partition resolve by their unqualified
+name, so a name qualified with the modeled schema, such as `public.t` under the
+default, is `t`. Such a name qualified with any other schema names a table
 sqlcj leaves unmodeled rather than a modeled `t`: a `LIKE` or `PARTITION OF`
 source fails as `Table not found in schema: <schema>.<t>`, because the created
 table's columns would otherwise be unknown, and an `ATTACH` or
@@ -1133,7 +1145,7 @@ statements and files before them left; the enum-type statements are listed in
 | --- | --- |
 | `CREATE TABLE` | Adds the table after the tables already modeled. |
 | `CREATE TABLE IF NOT EXISTS` | Does nothing when the table already exists. |
-| `DROP TABLE`, with one or several names | Removes each named table and, recursively, every partition of it, as PostgreSQL does. A name qualified with a schema other than `public` names a table sqlcj leaves unmodeled and is skipped without failing, because the statement may name a modeled table beside it. |
+| `DROP TABLE`, with one or several names | Removes each named table and, recursively, every partition of it, as PostgreSQL does. A name qualified with a schema other than the modeled one names a table sqlcj leaves unmodeled and is skipped without failing, because the statement may name a modeled table beside it. |
 | `DROP TABLE IF EXISTS` | Does nothing for a name that is not modeled. |
 | `ALTER TABLE ... ADD COLUMN` | Appends the column, typed exactly as a `CREATE TABLE` column of the same declaration, so an added key or identity column is non-null, and records its column-level `PRIMARY KEY` or `UNIQUE`. |
 | `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` | Does nothing when the column already exists. |
@@ -1148,8 +1160,8 @@ statements and files before them left; the enum-type statements are listed in
 | `ALTER TABLE ... ALTER COLUMN ... DROP NOT NULL` | Models the column nullable. |
 | `ALTER TABLE ... ADD [CONSTRAINT name] PRIMARY KEY (...)`, named or unnamed | Models every column it lists non-null, as PostgreSQL sets `NOT NULL` on a key column, and records no constraint. A listed column the table does not have fails as `SET NOT NULL` of one does. A key form sqlcj cannot read the columns of, such as `ADD PRIMARY KEY USING INDEX`, is ignored instead; see [Ignored Statements](#ignored-statements). |
 | `ALTER TABLE IF EXISTS ...` | Does nothing when the table is not modeled. It covers only the table, so a missing column of a modeled table still fails. |
-| `ALTER TABLE ... SET SCHEMA <schema>`, as the statement's sole action, which is the only form PostgreSQL accepts | Removes the table, keeping the order of the remaining ones, because it moves out of the one namespace sqlcj models. `SET SCHEMA public` does nothing: the table already stands there. A table with modeled partitions is rejected as `Unsupported ALTER TABLE action: SET SCHEMA <schema>`, because its partitions would stay in the modeled namespace following a parent sqlcj no longer models. |
-| A `CREATE TABLE` or an `ALTER TABLE` whose own table is qualified with a schema other than `public` | Ignored before anything it names is resolved, so neither its rejected clauses, its rejected actions, nor its `LIKE` and `PARTITION OF` sources are resolved and a modeled table of the same unqualified name is left alone. |
+| `ALTER TABLE ... SET SCHEMA <schema>`, as the statement's sole action, which is the only form PostgreSQL accepts | Removes the table, keeping the order of the remaining ones, because it moves out of the one namespace the group models. `SET SCHEMA` naming the modeled schema does nothing: the table already stands there. A table with modeled partitions is rejected as `Unsupported ALTER TABLE action: SET SCHEMA <schema>`, because its partitions would stay in the modeled namespace following a parent sqlcj no longer models. |
+| A `CREATE TABLE` or an `ALTER TABLE` whose own table is qualified with a schema other than the modeled one | Ignored before anything it names is resolved, so neither its rejected clauses, its rejected actions, nor its `LIKE` and `PARTITION OF` sources are resolved and a modeled table of the same unqualified name is left alone. |
 | Any other `ALTER TABLE` action outside the ignored actions listed in [Ignored Statements](#ignored-statements) | Rejected as `Unsupported ALTER TABLE action: <action>`, quoting the action's own SQL. |
 | `DROP` of any object other than a table, such as `DROP VIEW` or `DROP INDEX` | Ignored; see [Ignored Statements](#ignored-statements). A `DROP VIEW` or `DROP MATERIALIZED VIEW` changes no modeled table either, and only removes the names it states from the recorded views. |
 
@@ -1182,8 +1194,8 @@ A missing table suggests the modeled table closest to the written name, by the
 rule [Queries](queries.md#query-sources) states, as in
 `Table not found in schema: ordrs. Did you mean 'orders'?`. The tables compared
 are those modeled where the statement stands, in declaration order, and a name
-qualified with a schema other than `public` states no suggestion, because what
-fails is its schema and not its spelling.
+qualified with a schema other than the modeled one states no suggestion,
+because what fails is its schema and not its spelling.
 
 ## Ignored Statements
 
@@ -1234,7 +1246,8 @@ Everything else a migration history holds is ignored, including
 - `CREATE RULE` and `CREATE EVENT TRIGGER`,
 - a `CREATE TYPE` of a composite, range, or shell type, and `DROP TYPE`,
 - a `CREATE TABLE`, `ALTER TABLE`, `CREATE TYPE`, or `ALTER TYPE` whose own
-  table or type is qualified with a schema other than `public`, readable or not,
+  table or type is qualified with a schema other than the modeled one, readable
+  or not,
 - a `CREATE TABLE [IF NOT EXISTS] ${name} (` and an
   `ALTER TABLE [IF EXISTS] [ONLY] ${name}` whose every top-level action adds a
   constraint, which are the two statements of the MyBatis Migrations changelog
@@ -1278,9 +1291,9 @@ sqlcj does not model, decided from its words alone: the qualifier before the
 dot of the name that follows the opening words, an optional `IF [NOT] EXISTS`,
 and an optional `ONLY`. An unreadable
 `ALTER TABLE reporting.users ALTER COLUMN x SET DATA TYPE int` is therefore
-ignored, while the same statement about `users` or `public.users` stays rejected
-with the parser's reason. An unreadable `DROP TABLE` keeps its handling, because
-another of its names may be modeled.
+ignored in a group that models `public`, while the same statement about `users`
+or `public.users` stays rejected with the parser's reason. An unreadable
+`DROP TABLE` keeps its handling, because another of its names may be modeled.
 
 Every `ALTER TABLE` action that cannot change a column's existence, name, type,
 or nullability is ignored like any other unmodeled statement, except that the
@@ -1606,7 +1619,22 @@ Schema snapshot input:
   `ReferenceServiceIntegrationTest.shouldRejectAQueryOnASecondSchemaTable`
   cover the located `SET DATA TYPE` diagnostic and the other-schema diagnostic
   of a query that names a table of the reporting schema, which belongs to a
-  schema sqlcj does not model, each writing no file.
+  schema that group does not model, each writing no file.
+- `BillingServiceIntegrationTest.shouldGenerateIdenticalRepositoriesFromHistoryAndDump`
+  applies a billing service's migrations, whose names are unqualified, to
+  PostgreSQL 16 with `psql` under the `search_path` `billing, public`, runs
+  `pg_dump --schema-only` against the whole migrated database, and generates
+  one byte-identical, compiling output tree, manifest included, from that
+  history and from the dump with `namespace: billing`, modeling neither the
+  `public` table the history creates beside them nor the `public` schema of its
+  `citext` extension;
+  `BillingServiceIntegrationTest.shouldExecuteTheGeneratedBillingServiceQueries`
+  executes the generated repository, whose queries name their tables
+  unqualified and `billing`-qualified, over a connection whose `search_path`
+  names `billing`; and
+  `BillingServiceIntegrationTest.shouldRejectAQueryOnAPublicTable` covers the
+  other-schema diagnostic of a query that names the `public` table, writing no
+  file.
 
 Migration tool schemas:
 
@@ -1666,8 +1694,12 @@ Type table:
   text as written and as PostgreSQL renders it, and a `JSONB` equality
   predicate, against PostgreSQL 16.
 - `DefaultSchemaParserTest.shouldModelPublicQualifiedCitextColumnTypes` covers
-  the `public`-qualified and quoted `citext` spellings, their arrays, and the
-  names that stay unmapped, and
+  the `public`-qualified and quoted `citext` spellings, their arrays, the
+  `citext` of another schema that resolves as well, and the multidimensional
+  name that stays unmapped;
+  `DefaultSchemaParserTest.shouldMapCitextOfAnySchemaUnderAConfiguredNamespace`
+  covers the unqualified, modeled-schema, `public`, and other-schema `citext`
+  of a group that models `billing`; and
   `PostgresIntegrationTest.shouldRoundTripCitextAndNetworkValues` executes a
   round trip of `citext` and of every network address type, scalar and array,
   with nulls, a case-insensitive equality, `LIKE`, and `= ANY`, and an `inet`
@@ -2020,6 +2052,13 @@ Ordered table DDL:
   actions, and sources it never resolves; and
   `DefaultSchemaParserTest.shouldSkipTheDroppedNamesOfAnotherSchema` covers the
   `DROP TABLE` that carries on past such a name.
+- `DefaultSchemaParserTest.shouldModelTheConfiguredNamespaceQualifiedAndUnqualifiedAlike`
+  covers the unqualified, `billing`-qualified, quoted, and upper-case qualifier
+  forms of one `CREATE TYPE`, `CREATE TABLE`, `ALTER TABLE`, and `DROP TABLE`
+  of a group that models `billing`, and
+  `DefaultSchemaParserTest.shouldIgnoreAPublicStatementUnderAConfiguredNamespace`
+  covers the `public` table, type, domain, and view statements such a group
+  ignores.
 - `DefaultSchemaParserTest.shouldIgnoreSetSchemaPublicOfAModeledTable`,
   `DefaultSchemaParserTest.shouldRemoveATableMovedToAnotherSchema`, and
   `DefaultSchemaParserTest.shouldRejectSetSchemaOfATableWithModeledPartitions`
