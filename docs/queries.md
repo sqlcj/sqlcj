@@ -435,9 +435,9 @@ configuration entry.
 - An unqualified column must be found in exactly one source; an ambiguous or
   unknown column is rejected.
 - A result expression that is not a direct column, a wildcard, one of the
-  aggregates below, the cast projection below, or the `EXISTS` projection
-  below — such as another function call, an arithmetic expression, or a
-  literal — is rejected as
+  aggregates below, one of the catalogue functions below, the cast projection
+  below, or the `EXISTS` projection below — such as a function outside the
+  catalogue, an arithmetic expression, or a literal — is rejected as
   `Cannot infer the type of <expression> in SELECT; state it with a cast and an
   alias, such as <expression>::<type> AS <alias>`, naming the expression as the
   query writes it, on one line, twice: once as the rejected item and once as the
@@ -536,6 +536,122 @@ GROUP BY r.author_id;
   `OVER` forms. A cast states the type of such a form, and a `COUNT` written
   with `FILTER` is non-null as a plain one is, so
   `count(*) FILTER (WHERE active)::bigint AS n` is a non-null `Long`.
+
+A read may also project a call of the built-in PostgreSQL functions sqlcj holds
+a catalogue of, which needs no cast either:
+
+```sql
+-- name: ListAuthorDays :many
+SELECT lower(a.name)                     AS name,
+       coalesce(a.country, 'unknown')    AS country,
+       date_trunc('day', a.created_at)   AS created_day,
+       row_number() OVER (ORDER BY a.id) AS position
+FROM authors a;
+```
+
+A call is a catalogue call when it is written unqualified, in any case, without
+`DISTINCT`, `ALL`, `*`, an `ORDER BY` inside the call, or a named argument and,
+for a window function, with `OVER` and without `FILTER` or `IGNORE NULLS`.
+Every other spelling, a qualified `pg_catalog.lower(name)` and a function
+outside the catalogue such as `initcap(name)` included, stays a computed
+projection. The result type and the nullness are the ones PostgreSQL 16
+returns:
+
+| Call | Accepted arguments | Result | Non-null when |
+| --- | --- | --- | --- |
+| `now()` | none | `TIMESTAMPTZ`, an `OffsetDateTime` | always |
+| `gen_random_uuid()` | none | `UUID`, a `UUID` | always |
+| `nextval(s)` | `s` a string literal | `BIGINT`, a `Long` | `s` is non-null |
+| `pg_try_advisory_xact_lock(k)` | `k` a `SMALLINT`, `INTEGER`, or `BIGINT`, or a string literal | `BOOLEAN`, a `Boolean` | `k` is non-null |
+| `pg_try_advisory_xact_lock(k1, k2)` | each a `SMALLINT` or `INTEGER`, or a string literal | `BOOLEAN`, a `Boolean` | both are non-null |
+| `row_number()`, `rank()`, `dense_rank()` `OVER (...)` | none | `BIGINT`, a `Long` | always |
+| `lower(s)`, `upper(s)` | `s` a `TEXT`, `VARCHAR`, `CHAR(n)`, or `CITEXT` column, a string literal, or `NULL` | `TEXT`, a `String` | `s` is non-null |
+| `trim(s)`, `trim(s, c)`, `trim(c FROM s)`, `trim([LEADING \| TRAILING \| BOTH] c FROM s)` | each as `lower`'s | `TEXT`, a `String` | every argument is non-null |
+| `date_trunc(u, v)`, `date_trunc(u, v, z)` | `u` and `z` as `lower`'s; `v` a `TIMESTAMP`, `TIMESTAMPTZ`, `DATE`, or `INTERVAL`, and not an `INTERVAL` beside `z` | `TIMESTAMP`, a `LocalDateTime`, for a `TIMESTAMP` `v` written without `z`; `INTERVAL`, an `SqlInterval`, for an `INTERVAL` `v`; `TIMESTAMPTZ`, an `OffsetDateTime`, otherwise | every argument is non-null |
+| `coalesce(v, ...)` | arguments of a common type | the common type | one argument is non-null |
+| `greatest(v, ...)`, `least(v, ...)` | as `coalesce`'s, but no `JSON` | the common type | one argument is non-null |
+| `lag(v)`, `lag(v, n)`, `lag(v, n, d)`, `lead(...)` `OVER (...)` | `n` a `SMALLINT` or `INTEGER`, or a string literal; `v` and `d` as `coalesce`'s | `v`'s type, or the common type of `v` and `d` | never |
+| `first_value(v)`, `last_value(v)` `OVER (...)` | `v` as `coalesce`'s | `v`'s type | never |
+
+- Each argument states a type, or none, and whether it reads no `NULL`:
+  - a direct column resolves against the query's sources exactly as a selected
+    column does, so an unknown or an ambiguous reference is rejected there, and
+    it carries its mapped type, its enum type, and its array and blank-padded
+    spellings. It reads no `NULL` when it is a `NOT NULL` column of a source no
+    outer join null-extends, written qualified or not;
+  - a cast carries the type it states, mapped exactly as a schema column's
+    declared type is, and reads no `NULL` where its operand does by these rules
+    or by the rule a cast projection's operand follows, which reads a
+    `NOT NULL` column of a source no outer join null-extends and a `COUNT`. The
+    operand itself reaches the database as written, as a cast projection's
+    operand does, so nothing in it is required to resolve: an operand no source
+    has, such as the `xmin` of `lower(xmin::text)` or the row reference of
+    `lower(e::text)`, leaves the cast nullable rather than rejecting the query;
+  - a nested catalogue call and an aggregate above carry their own result type
+    and nullness, so `coalesce(SUM(amount), 0)`, `coalesce(COUNT(*), 0)`, and
+    `lower(trim(name))` are typed, while an aggregate of a column whose type
+    sqlcj does not map has no type here instead of the rejection that aggregate
+    reports when the projection writes it on its own, so
+    `coalesce(MAX(tags)::text, name)` is a non-null `TEXT` and
+    `coalesce(MAX(tags), tags)` needs a cast;
+  - an integer literal is the narrowest of `INTEGER`, `BIGINT`, and `NUMERIC`
+    that holds it, with or without a leading sign, a literal written with a
+    decimal point or an exponent is `NUMERIC`, and `TRUE` and `FALSE` are
+    `BOOLEAN`. Each is non-null;
+  - a string literal and `NULL` are untyped literals, which take the type their
+    position or the other arguments state, and only `NULL` reads `NULL`;
+  - a placeholder takes the type its position states in the table above, has
+    none at a position that states one for no placeholder, and reads no `NULL`
+    unless the query tests its parameter for null, wherever that test is
+    written, because a parameter no test makes nullable is non-null. The
+    call itself types no placeholder, so an uncast placeholder argument is still
+    rejected as [Parameters](#parameters) states unless another occurrence of
+    its parameter types it, while a cast one, as in
+    `pg_try_advisory_xact_lock($1::bigint)`, is typed by its own cast;
+  - every other argument, a column of a type sqlcj does not map and a cast to
+    such a type included, has no type. At a position whose result does not
+    depend on it — the arguments of `lower`, `upper`, and `trim`,
+    `date_trunc`'s unit and time zone, the offset of `lag` and `lead`,
+    `nextval`'s argument, and the advisory-lock keys — it is accepted as
+    written and read as nullable, and anywhere else it leaves the call untyped.
+- A typed argument a position does not accept leaves the call untyped as well,
+  so `lower(visits)`, `lower(labels)`, `greatest(payload, payload)`,
+  `lag(score, id)`, `nextval(id)`, and `date_trunc('hour', span, 'UTC')`, each
+  of which PostgreSQL 16 itself rejects, keep the computed-projection
+  rejection, as does a call of another number of arguments, such as `now(id)`
+  or `row_number() OVER (...)` written with one.
+- The common type is PostgreSQL's own resolution where that resolution does not
+  depend on argument order. An untyped literal takes no part in it, and with no
+  typed argument at all the type is `TEXT`, except for `lag`, `lead`,
+  `first_value`, and `last_value`, which PostgreSQL rejects then, so
+  `coalesce('a', 'b')` is a `TEXT` while `lag('x')` is rejected. Typed arguments
+  of one type, their enum type, array spelling, and blank-padded spelling
+  included, have that type; scalar numeric arguments of different types widen to
+  the widest of `SMALLINT`, `INTEGER`, `BIGINT`, `NUMERIC`, `REAL`, and
+  `DOUBLE PRECISION`, so `coalesce(score, 0)` of a `smallint` column is an
+  `INTEGER` and `coalesce(SUM(total), 0)` of a `bigint` column is a `NUMERIC`;
+  every other mix is left untyped, because PostgreSQL resolves it by argument
+  order, so `coalesce(nickname, name)` of a `varchar` and a `text` column needs
+  a cast.
+- The alias is required wherever an aggregate's is and may be written with or
+  without `AS`, so both `lower(name) AS lowered` and `lower(name) lowered` name
+  the result column `lowered`. A missing alias is rejected with
+  `<call> requires a result alias, such as <call> AS <alias>.`, naming the call
+  as the query writes it, and the type is resolved first, so a call the
+  catalogue types no result of says why instead. As an aggregate's alias is, it
+  is required only where the projection names the result columns, so a branch of
+  a set operation other than the leftmost and a position a column list on a
+  `WITH` name renames may write a catalogue call without one.
+- A cast over a catalogue call states the type and keeps the cast's own nullness
+  rule, so `nextval('audit_log_id_seq')::bigint AS next_id` stays a nullable
+  `Long` while `nextval('audit_log_id_seq') AS next_id` is a non-null `Long`.
+- A catalogue call reaches the database exactly as the query writes it, and
+  stands in its own result position, so it may stand beside direct columns,
+  wildcards, aggregates, casts, and an `EXISTS`, in any order. It is typed
+  wherever a projection is analyzed: at the top level, in a `WITH` body, in a
+  subquery or `LATERAL` source, and in a branch of a set operation. A
+  `RETURNING` item is still a direct column or a wildcard, as
+  [`RETURNING`](#returning) states.
 
 A read may also project a computed value by stating its type in a cast:
 
@@ -2692,16 +2808,16 @@ header-line order, before the run exits with status `1` having written nothing.
   column, or which is written with `MINUS`, each with the diagnostic
   [Set operations](#set-operations) states.
 - A result expression that is not a direct column, a wildcard, an aliased
-  `COUNT`, `MIN`, `MAX`, `SUM`, or `AVG` of one argument, an aliased cast, or
-  an aliased `EXISTS` of a subquery, including another function call and a
-  literal. An aggregate without an alias, a cast projection without an alias,
+  `COUNT`, `MIN`, `MAX`, `SUM`, or `AVG` of one argument, an aliased call of
+  the function catalogue, an aliased cast, or an aliased `EXISTS` of a
+  subquery, including a function outside the catalogue and a literal. An aggregate without an alias, a cast projection without an alias,
   an `EXISTS` projection without an alias, a cast projection whose type sqlcj
   does not map, and a `MIN`, `MAX`, `SUM`, or `AVG` of a column whose type
   sqlcj does not map each fail with their own diagnostic, while
   `COUNT(DISTINCT *)`, `COUNT(ALL *)`, `pg_catalog.count(*)`,
   `pg_catalog.max(id)`, `MAX(id, name)`, `MIN(labels[1])`, `MAX(active)`,
-  `MIN(external_id)`, `SUM(bio)`, `SUM(labels)`, `lower(name) AS n`,
-  `name || 'x' AS n`, `NOT EXISTS (SELECT 1 FROM users) AS missing`,
+  `MIN(external_id)`, `SUM(bio)`, `SUM(labels)`, `initcap(name) AS n`,
+  `lower(visits) AS n`, `name || 'x' AS n`, `NOT EXISTS (SELECT 1 FROM users) AS missing`,
   `EXISTS (SELECT 1 FROM users)::boolean AS present`, and the `FILTER` and
   `OVER` forms are rejected as
   `Cannot infer the type of COUNT(*) OVER () in SELECT; state it with a cast
@@ -3256,6 +3372,39 @@ Reads:
   `AVG` read into its `Long`, `LocalDateTime`, and `BigDecimal` components and
   reads the counts as `0` and every other component as `null` over no matching
   row.
+- `QueryAnalyzerTest.shouldTypeACatalogueCallOfAFixedResultType`,
+  `QueryAnalyzerTest.shouldTypeATextCatalogueCallFromItsArguments`,
+  `QueryAnalyzerTest.shouldTypeDateTruncFromItsValueAndItsTimeZone`,
+  `QueryAnalyzerTest.shouldTypeACommonTypeCatalogueCallFromItsArguments`,
+  `QueryAnalyzerTest.shouldTypeAWindowValueCatalogueCallFromItsArguments`,
+  `QueryAnalyzerTest.shouldTypeACatalogueCallFromItsNestedCallAndAggregateArguments`,
+  `QueryAnalyzerTest.shouldKeepTheEnumTypeAndArraySpellingOfACommonType`,
+  `QueryAnalyzerTest.shouldReadACatalogueCallOfAPlaceholderArgument`,
+  `QueryAnalyzerTest.shouldRejectAnUnknownColumnArgumentOfACatalogueCall`,
+  `QueryAnalyzerTest.shouldKeepTheComputedProjectionRejectionForAnUntypedCall`,
+  `QueryAnalyzerTest.shouldRequireAResultAliasForATypedCatalogueCall`,
+  `QueryAnalyzerTest.shouldTypeACatalogueCallWhereverAProjectionIsResolved`,
+  `QueryAnalyzerTest.shouldKeepTheCastTypeAndNullnessOverACatalogueCall`, and
+  `QueryAnalyzerTest.shouldWriteACatalogueCallIntoTheExecutableStatementAsWritten`
+  cover every catalogue row's type and nullness with a non-null and a nullable
+  argument, each argument fact including the literal types, the numeric
+  widening, a nested call, an aggregate, a cast, and a placeholder the query
+  tests for null, the enum and array common types, the unknown column
+  argument, every call the catalogue leaves untyped and its unchanged
+  computed-projection rejection, the missing-alias diagnostic and that the type
+  is checked before it, a call in a `WITH` body, a subquery source, and a set
+  operation branch, a cast over a catalogue call keeping its own type and
+  nullness, and the executable statement that writes the call as the query
+  does, while
+  `FunctionCatalogueIntegrationTest.shouldGenerateTheAnalyzedJavaTypeAndNullnessOfEachResult`,
+  `FunctionCatalogueIntegrationTest.shouldReadTheAnalyzedTypeFromPostgresForEachResultColumn`,
+  and `FunctionCatalogueIntegrationTest.shouldExecuteEachCatalogueQuery` cover
+  one query per catalogue row and form, each `date_trunc` overload, the
+  widening `coalesce`, and a `lag` with a default among them, generating a
+  repository that compiles, whose Java result type and nullness are asserted
+  per column, for each of which PostgreSQL 16 reports the analyzed type, and
+  every query of which runs against PostgreSQL 16 with each nullable form
+  reading `null` for the row whose columns are `NULL`.
 - `QueryAnalyzerTest.shouldResolveCastProjectionColumnFromItsAlias`,
   `QueryAnalyzerTest.shouldResolveEnumCastProjectionColumn`,
   `QueryAnalyzerTest.shouldResolveArrayCastProjectionColumn`,
