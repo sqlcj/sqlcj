@@ -193,6 +193,47 @@ class QueryAnalyzerTest {
     );
 
     /**
+     * A schema whose {@code events} table carries one column of every kind a
+     * catalogue function reads: the text, temporal, and numeric columns its
+     * arguments take, each as a non-null and as a nullable column where both
+     * are read, the enum and array columns a common type keeps, and the
+     * {@code tags} column the parser recorded without a mapped type.
+     */
+    private static final Schema catalogueSchema = new Schema(
+        List.of(
+            new Table(
+                "events",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("label", ColumnType.TEXT, false),
+                    new Column("note", ColumnType.TEXT, true),
+                    new Column("nickname", ColumnType.VARCHAR, true),
+                    new Column("code", ColumnType.VARCHAR, true, null, null, false, true),
+                    new Column("handle", ColumnType.CITEXT, true),
+                    new Column("score", ColumnType.SMALLINT, true),
+                    new Column("visits", ColumnType.INTEGER, false),
+                    new Column("total", ColumnType.BIGINT, true),
+                    new Column("amount", ColumnType.DECIMAL, true),
+                    new Column("ratio", ColumnType.REAL, true),
+                    new Column("weight", ColumnType.DOUBLE_PRECISION, true),
+                    new Column("at_day", ColumnType.DATE, true),
+                    new Column("at_local", ColumnType.TIMESTAMP, true),
+                    new Column("at_zoned", ColumnType.TIMESTAMP_WITH_TIME_ZONE, false),
+                    new Column("span", ColumnType.INTERVAL, true),
+                    new Column("active", ColumnType.BOOLEAN, true),
+                    new Column("payload", ColumnType.JSON, true),
+                    new Column("document", ColumnType.JSONB, true),
+                    new Column("state", ColumnType.ENUM, true, null, "event_state"),
+                    new Column("labels", ColumnType.VARCHAR, true, null, null, true),
+                    new Column("tags", null, true, "JSONB[]")
+                ),
+                List.of()
+            )
+        ),
+        List.of(new EnumType("event_state", List.of("open", "closed")))
+    );
+
+    /**
      * A schema whose {@code tags} column the parser recorded without a mapped
      * type, beside the supported columns of the same table.
      */
@@ -2734,10 +2775,10 @@ class QueryAnalyzerTest {
                 + "|Cannot infer the type of pg_catalog.max(id) in SELECT;"
                 + " state it with a cast and an alias,"
                 + " such as pg_catalog.max(id)::<type> AS n",
-            "SELECT lower(name) AS n FROM users"
-                + "|Cannot infer the type of lower(name) in SELECT;"
+            "SELECT initcap(name) AS n FROM users"
+                + "|Cannot infer the type of initcap(name) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as lower(name)::<type> AS n",
+                + " such as initcap(name)::<type> AS n",
             "SELECT COUNT(*) FILTER (WHERE id > 1) AS n FROM users"
                 + "|Cannot infer the type of COUNT(*) FILTER (WHERE id > 1) in SELECT;"
                 + " state it with a cast and an alias,"
@@ -2772,10 +2813,10 @@ class QueryAnalyzerTest {
     @Test
     void shouldQuoteTheProjectionAndItsAliasInTheComputedProjectionRejection() {
         assertEquals(
-            "Cannot infer the type of date_trunc('day', created_at) in SELECT;"
+            "Cannot infer the type of initcap(name) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as date_trunc('day', created_at)::<type> AS day",
-            aggregateRejection("SELECT date_trunc('day', created_at) AS day FROM users")
+                + " such as initcap(name)::<type> AS cased",
+            aggregateRejection("SELECT initcap(name) AS cased FROM users")
         );
 
         assertEquals(
@@ -2800,12 +2841,12 @@ class QueryAnalyzerTest {
      */
     @Test
     void shouldAcceptTheQuotedComputedProjectionCast() {
-        String function = "SELECT date_trunc('day', created_at)::timestamp AS day FROM users";
+        String function = "SELECT initcap(name)::text AS cased FROM users";
 
         assertEquals(
-            List.of(new QueryColumn("day", ColumnType.TIMESTAMP, true)),
+            List.of(new QueryColumn("cased", ColumnType.TEXT, true)),
             analyzer.analyze(
-                new Query("ListDays", QueryType.MANY, function),
+                new Query("ListCasedNames", QueryType.MANY, function),
                 parser.parse(function),
                 aggregateSchema
             )
@@ -2833,6 +2874,700 @@ class QueryAnalyzerTest {
         return assertThrows(
             UnsupportedOperationException.class,
             () -> analyzer.analyze(query, parsedSql, aggregateSchema)
+        )
+            .getMessage();
+    }
+
+    /**
+     * A catalogue call whose result type is fixed is typed without a cast:
+     * {@code now}, {@code gen_random_uuid}, and {@code nextval}, which never
+     * return {@code NULL}, the advisory lock, which is strict and so reads no
+     * {@code NULL} where every key does, and the ranking window functions,
+     * which count rows rather than read them. The name is matched
+     * case-insensitively, and an untyped literal and an argument of no type are
+     * accepted where the result does not depend on them.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        quoteCharacter = '"',
+        value = {
+            "SELECT now() AS n|TIMESTAMP_WITH_TIME_ZONE|false",
+            "SELECT NOW() AS n|TIMESTAMP_WITH_TIME_ZONE|false",
+            "SELECT gen_random_uuid() AS n|UUID|false",
+            "SELECT nextval('event_id_seq') AS n|BIGINT|false",
+            "SELECT nextval(tags) AS n FROM events|BIGINT|true",
+            "SELECT pg_try_advisory_xact_lock(id) AS n FROM events|BOOLEAN|false",
+            "SELECT pg_try_advisory_xact_lock(visits) AS n FROM events|BOOLEAN|false",
+            "SELECT pg_try_advisory_xact_lock(score) AS n FROM events|BOOLEAN|true",
+            "SELECT pg_try_advisory_xact_lock(total) AS n FROM events|BOOLEAN|true",
+            "SELECT pg_try_advisory_xact_lock('42') AS n|BOOLEAN|false",
+            "SELECT pg_try_advisory_xact_lock(visits, visits) AS n FROM events|BOOLEAN|false",
+            "SELECT pg_try_advisory_xact_lock(visits, score) AS n FROM events|BOOLEAN|true",
+            "SELECT row_number() OVER (ORDER BY id) AS n FROM events|BIGINT|false",
+            "SELECT rank() OVER (ORDER BY score) AS n FROM events|BIGINT|false",
+            "SELECT DENSE_RANK() OVER (ORDER BY score) AS n FROM events|BIGINT|false"
+        }
+    )
+    void shouldTypeACatalogueCallOfAFixedResultType(
+        String sql,
+        ColumnType type,
+        boolean nullable
+    ) {
+        assertEquals(
+            List.of(new QueryColumn("n", type, nullable)),
+            catalogueColumns(sql)
+        );
+    }
+
+    /**
+     * {@code lower}, {@code upper}, and {@code trim} are a {@code TEXT} of
+     * every text argument PostgreSQL 16 defines them for — {@code text},
+     * {@code varchar}, {@code char(n)}, and {@code citext} — and of an untyped
+     * literal, and each is non-null where every argument reads no {@code NULL}.
+     * {@code trim} accepts its characters and its string alike, in each
+     * spelling the parser reports.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        quoteCharacter = '"',
+        value = {
+            "SELECT lower(label) AS n FROM events|TEXT|false",
+            "SELECT LOWER(label) AS n FROM events|TEXT|false",
+            "SELECT upper(label) AS n FROM events|TEXT|false",
+            "SELECT lower(note) AS n FROM events|TEXT|true",
+            "SELECT lower(nickname) AS n FROM events|TEXT|true",
+            "SELECT lower(code) AS n FROM events|TEXT|true",
+            "SELECT lower(handle) AS n FROM events|TEXT|true",
+            "SELECT lower(tags) AS n FROM events|TEXT|true",
+            "SELECT lower('X') AS n|TEXT|false",
+            "SELECT lower(NULL) AS n|TEXT|true",
+            "SELECT trim(label) AS n FROM events|TEXT|false",
+            "SELECT TRIM(label) AS n FROM events|TEXT|false",
+            "SELECT trim(note) AS n FROM events|TEXT|true",
+            "SELECT trim(BOTH ' ' FROM label) AS n FROM events|TEXT|false",
+            "SELECT trim(TRAILING note FROM label) AS n FROM events|TEXT|true",
+            "SELECT trim(' ' FROM label) AS n FROM events|TEXT|false",
+            "SELECT trim(label, ' ') AS n FROM events|TEXT|false"
+        }
+    )
+    void shouldTypeATextCatalogueCallFromItsArguments(
+        String sql,
+        ColumnType type,
+        boolean nullable
+    ) {
+        assertEquals(
+            List.of(new QueryColumn("n", type, nullable)),
+            catalogueColumns(sql)
+        );
+    }
+
+    /**
+     * {@code date_trunc} takes its unit and its time zone as {@code lower}
+     * takes its argument and its result type from the truncated value and from
+     * whether a time zone is written, as PostgreSQL 16 defines it: a
+     * {@code timestamp} alone stays a {@code timestamp}, an {@code interval}
+     * stays an {@code interval}, and a {@code date}, a {@code timestamptz}, and
+     * every value written beside a time zone are a {@code timestamptz}. It is
+     * strict, so it reads no {@code NULL} where every argument does.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        quoteCharacter = '"',
+        value = {
+            "SELECT date_trunc('day', at_local) AS n FROM events|TIMESTAMP|true",
+            "SELECT date_trunc('day', at_zoned) AS n FROM events|TIMESTAMP_WITH_TIME_ZONE|false",
+            "SELECT date_trunc('day', at_day) AS n FROM events|TIMESTAMP_WITH_TIME_ZONE|true",
+            "SELECT date_trunc('hour', span) AS n FROM events|INTERVAL|true",
+            "SELECT DATE_TRUNC('day', at_zoned) AS n FROM events|TIMESTAMP_WITH_TIME_ZONE|false",
+            "SELECT date_trunc(note, at_zoned) AS n FROM events|TIMESTAMP_WITH_TIME_ZONE|true",
+            "SELECT date_trunc('day', at_zoned, 'UTC') AS n FROM events"
+                + "|TIMESTAMP_WITH_TIME_ZONE|false",
+            "SELECT date_trunc('day', at_local, 'UTC') AS n FROM events"
+                + "|TIMESTAMP_WITH_TIME_ZONE|true",
+            "SELECT date_trunc('day', at_zoned, note) AS n FROM events"
+                + "|TIMESTAMP_WITH_TIME_ZONE|true"
+        }
+    )
+    void shouldTypeDateTruncFromItsValueAndItsTimeZone(
+        String sql,
+        ColumnType type,
+        boolean nullable
+    ) {
+        assertEquals(
+            List.of(new QueryColumn("n", type, nullable)),
+            catalogueColumns(sql)
+        );
+    }
+
+    /**
+     * {@code coalesce}, {@code greatest}, and {@code least} are the common type
+     * of their arguments and read no {@code NULL} as soon as one argument does.
+     * An untyped literal takes no part in that type and arguments of one type
+     * have it, while scalar numeric arguments of different types widen to the
+     * widest of them, which is PostgreSQL 16's own resolution; an integer
+     * literal is the narrowest integer type that holds it, with or without a
+     * sign, and one written with a decimal point or an exponent is
+     * {@code numeric}.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        quoteCharacter = '"',
+        value = {
+            "SELECT coalesce(note, label) AS n FROM events|TEXT|false",
+            "SELECT COALESCE(note, note) AS n FROM events|TEXT|true",
+            "SELECT coalesce(note, 'x') AS n FROM events|TEXT|false",
+            "SELECT coalesce(note, NULL) AS n FROM events|TEXT|true",
+            "SELECT coalesce('x', 'y') AS n|TEXT|false",
+            "SELECT coalesce(NULL, NULL) AS n|TEXT|true",
+            "SELECT coalesce(active, TRUE) AS n FROM events|BOOLEAN|false",
+            "SELECT coalesce(score, 0) AS n FROM events|INTEGER|false",
+            "SELECT coalesce(score, -1) AS n FROM events|INTEGER|false",
+            "SELECT coalesce(score, 2147483648) AS n FROM events|BIGINT|false",
+            "SELECT coalesce(score, 9223372036854775808) AS n FROM events|DECIMAL|false",
+            "SELECT coalesce(score, 1.5) AS n FROM events|DECIMAL|false",
+            "SELECT coalesce(amount, 1e3) AS n FROM events|DECIMAL|false",
+            "SELECT coalesce(score, total) AS n FROM events|BIGINT|true",
+            "SELECT coalesce(amount, ratio) AS n FROM events|REAL|true",
+            "SELECT coalesce(amount, weight) AS n FROM events|DOUBLE_PRECISION|true",
+            "SELECT coalesce(score, visits, total, amount, ratio, weight) AS n FROM events"
+                + "|DOUBLE_PRECISION|false",
+            "SELECT greatest(score, visits) AS n FROM events|INTEGER|false",
+            "SELECT greatest(score, visits, total) AS n FROM events|BIGINT|false",
+            "SELECT least(note, label) AS n FROM events|TEXT|false",
+            "SELECT least(at_zoned, at_zoned) AS n FROM events|TIMESTAMP_WITH_TIME_ZONE|false",
+            "SELECT greatest(document, document) AS n FROM events|JSONB|true"
+        }
+    )
+    void shouldTypeACommonTypeCatalogueCallFromItsArguments(
+        String sql,
+        ColumnType type,
+        boolean nullable
+    ) {
+        assertEquals(
+            List.of(new QueryColumn("n", type, nullable)),
+            catalogueColumns(sql)
+        );
+    }
+
+    /**
+     * {@code lag} and {@code lead} are the type of the value they read, or the
+     * common type of that value and the default beside it, with the offset
+     * between them a {@code smallint}, an {@code integer}, or an untyped
+     * literal, and {@code first_value} and {@code last_value} are the type of
+     * the value they read. Each is nullable however its arguments read, because
+     * the row it reads may be absent from the window frame.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        quoteCharacter = '"',
+        value = {
+            "SELECT lag(score) OVER (ORDER BY id) AS n FROM events|SMALLINT|true",
+            "SELECT lead(label) OVER (ORDER BY id) AS n FROM events|TEXT|true",
+            "SELECT LAG(label) OVER (ORDER BY id) AS n FROM events|TEXT|true",
+            "SELECT lag(score, 1) OVER (ORDER BY id) AS n FROM events|SMALLINT|true",
+            "SELECT lag(label, visits) OVER (ORDER BY id) AS n FROM events|TEXT|true",
+            "SELECT lag(label, score) OVER (ORDER BY id) AS n FROM events|TEXT|true",
+            "SELECT lag(label, '1') OVER (ORDER BY id) AS n FROM events|TEXT|true",
+            "SELECT lag(score, 1, 0) OVER (ORDER BY id) AS n FROM events|INTEGER|true",
+            "SELECT lead(label, 1, note) OVER (ORDER BY id) AS n FROM events|TEXT|true",
+            "SELECT lag(label, 1, 'x') OVER (ORDER BY id) AS n FROM events|TEXT|true",
+            "SELECT first_value(score) OVER (ORDER BY id) AS n FROM events|SMALLINT|true",
+            "SELECT last_value(label) OVER (ORDER BY id) AS n FROM events|TEXT|true",
+            "SELECT first_value(label) OVER (PARTITION BY note ORDER BY id) AS n FROM events"
+                + "|TEXT|true"
+        }
+    )
+    void shouldTypeAWindowValueCatalogueCallFromItsArguments(
+        String sql,
+        ColumnType type,
+        boolean nullable
+    ) {
+        assertEquals(
+            List.of(new QueryColumn("n", type, nullable)),
+            catalogueColumns(sql)
+        );
+    }
+
+    /**
+     * An argument that is itself a catalogue call or an aggregate this subset
+     * types carries that call's own result type and nullness, so a nested call
+     * types the call around it.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        quoteCharacter = '"',
+        value = {
+            "SELECT lower(trim(label)) AS n FROM events|TEXT|false",
+            "SELECT coalesce(lower(note), label) AS n FROM events|TEXT|false",
+            "SELECT lower(coalesce(note, label)) AS n FROM events|TEXT|false",
+            "SELECT coalesce(lower(note), note) AS n FROM events|TEXT|true",
+            "SELECT date_trunc('day', coalesce(at_zoned, at_zoned)) AS n FROM events"
+                + "|TIMESTAMP_WITH_TIME_ZONE|false",
+            "SELECT coalesce(COUNT(*), 0) AS n FROM events|BIGINT|false",
+            "SELECT coalesce(SUM(total), 0) AS n FROM events|DECIMAL|false",
+            "SELECT coalesce(AVG(score), 0) AS n FROM events|DECIMAL|false",
+            "SELECT coalesce(MIN(at_day), at_day) AS n FROM events|DATE|true",
+            "SELECT lower(MAX(label)) AS n FROM events|TEXT|true"
+        }
+    )
+    void shouldTypeACatalogueCallFromItsNestedCallAndAggregateArguments(
+        String sql,
+        ColumnType type,
+        boolean nullable
+    ) {
+        assertEquals(
+            List.of(new QueryColumn("n", type, nullable)),
+            catalogueColumns(sql)
+        );
+    }
+
+    /**
+     * A common type keeps the enum type and the array spelling its arguments
+     * state, because arguments of one type have that type however it is
+     * declared.
+     */
+    @Test
+    void shouldKeepTheEnumTypeAndArraySpellingOfACommonType() {
+        assertEquals(
+            List.of(new QueryColumn("n", ColumnType.ENUM, true, "event_state")),
+            catalogueColumns("SELECT coalesce(state, state) AS n FROM events")
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("n", ColumnType.VARCHAR, true, null, true)),
+            catalogueColumns("SELECT greatest(labels, labels) AS n FROM events")
+        );
+    }
+
+    /**
+     * A placeholder argument takes the type its position states and reads no
+     * {@code NULL} unless the query tests its logical parameter for null,
+     * wherever that test is written, because such a parameter is non-null and
+     * so fails before the statement runs. The call's own type never types the
+     * placeholder in this subset, so an uncast placeholder is still rejected
+     * unless another occurrence types it.
+     */
+    @Test
+    void shouldReadACatalogueCallOfAPlaceholderArgument() {
+        assertEquals(
+            List.of(new QueryColumn("locked", ColumnType.BOOLEAN, false)),
+            catalogueColumns("SELECT pg_try_advisory_xact_lock($1::bigint) AS locked")
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("n", ColumnType.TEXT, false)),
+            catalogueColumns("SELECT lower(:name::text) AS n")
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("n", ColumnType.TEXT, true)),
+            catalogueColumns(
+                "SELECT lower(:name::text) AS n FROM events"
+                    + " WHERE :name IS NULL OR label = :name"
+            ),
+            "a parameter the query tests for null leaves the call nullable"
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("n", ColumnType.TEXT, false)),
+            catalogueColumns("SELECT lower($1) AS n FROM events WHERE label = $1"),
+            "an uncast placeholder another occurrence types is read at its position"
+        );
+
+        assertEquals(
+            "Cannot infer the type of $1 in lower($1); state it with a cast,"
+                + " such as $1::<type>",
+            catalogueRejection("SELECT lower($1) AS n"),
+            "no catalogue position types a placeholder of its own in this subset"
+        );
+    }
+
+    /**
+     * A call the catalogue types no result of keeps the computed-projection
+     * rejection exactly as it had it: a typed argument the position does not
+     * accept, an argument of no type where the result depends on it, arguments
+     * that resolve to no single type, a call of another arity, a qualified name,
+     * a function outside the catalogue, and every spelling the catalogue does
+     * not read — {@code DISTINCT}, an {@code ORDER BY} inside the call, a named
+     * argument, {@code IGNORE NULLS}, a window call of a plain name, and a plain
+     * call of a window name.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        quoteCharacter = '"',
+        value = {
+            "SELECT lower(visits) AS n FROM events"
+                + "|Cannot infer the type of lower(visits) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as lower(visits)::<type> AS n",
+            "SELECT lower(now()) AS n"
+                + "|Cannot infer the type of lower(now()) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as lower(now())::<type> AS n",
+            "SELECT lower(labels) AS n FROM events"
+                + "|Cannot infer the type of lower(labels) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as lower(labels)::<type> AS n",
+            "SELECT lower(label, label) AS n FROM events"
+                + "|Cannot infer the type of lower(label, label) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as lower(label, label)::<type> AS n",
+            "SELECT coalesce(nickname, note) AS n FROM events"
+                + "|Cannot infer the type of coalesce(nickname, note) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as coalesce(nickname, note)::<type> AS n",
+            "SELECT coalesce(labels, label) AS n FROM events"
+                + "|Cannot infer the type of coalesce(labels, label) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as coalesce(labels, label)::<type> AS n",
+            "SELECT coalesce(tags, label) AS n FROM events"
+                + "|Cannot infer the type of coalesce(tags, label) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as coalesce(tags, label)::<type> AS n",
+            "SELECT coalesce(:name, label) AS n FROM events"
+                + "|Cannot infer the type of coalesce(:name, label) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as coalesce(:name, label)::<type> AS n",
+            "SELECT greatest(payload, payload) AS n FROM events"
+                + "|Cannot infer the type of greatest(payload, payload) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as greatest(payload, payload)::<type> AS n",
+            "SELECT date_trunc('day', '2026-01-01') AS n"
+                + "|Cannot infer the type of date_trunc('day', '2026-01-01') in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as date_trunc('day', '2026-01-01')::<type> AS n",
+            "SELECT date_trunc('day', at_zoned, 1) AS n FROM events"
+                + "|Cannot infer the type of date_trunc('day', at_zoned, 1) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as date_trunc('day', at_zoned, 1)::<type> AS n",
+            "SELECT date_trunc('hour', span, 'UTC') AS n FROM events"
+                + "|Cannot infer the type of date_trunc('hour', span, 'UTC') in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as date_trunc('hour', span, 'UTC')::<type> AS n",
+            "SELECT nextval(id) AS n FROM events"
+                + "|Cannot infer the type of nextval(id) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as nextval(id)::<type> AS n",
+            "SELECT now(id) AS n FROM events"
+                + "|Cannot infer the type of now(id) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as now(id)::<type> AS n",
+            "SELECT pg_try_advisory_xact_lock(visits, id) AS n FROM events"
+                + "|Cannot infer the type of pg_try_advisory_xact_lock(visits, id) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as pg_try_advisory_xact_lock(visits, id)::<type> AS n",
+            "SELECT pg_catalog.lower(label) AS n FROM events"
+                + "|Cannot infer the type of pg_catalog.lower(label) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as pg_catalog.lower(label)::<type> AS n",
+            "SELECT initcap(label) AS n FROM events"
+                + "|Cannot infer the type of initcap(label) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as initcap(label)::<type> AS n",
+            "SELECT initcap(missing) AS n FROM events"
+                + "|Cannot infer the type of initcap(missing) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as initcap(missing)::<type> AS n",
+            "SELECT lower(DISTINCT label) AS n FROM events"
+                + "|Cannot infer the type of lower(DISTINCT label) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as lower(DISTINCT label)::<type> AS n",
+            "SELECT lower(label ORDER BY id) AS n FROM events"
+                + "|Cannot infer the type of lower(label ORDER BY id) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as lower(label ORDER BY id)::<type> AS n",
+            "SELECT lower(s => label) AS n FROM events"
+                + "|Cannot infer the type of lower(s => label) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as lower(s => label)::<type> AS n",
+            "SELECT lag('x') OVER (ORDER BY id) AS n FROM events"
+                + "|Cannot infer the type of lag('x') OVER (ORDER BY id) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (lag('x') OVER (ORDER BY id))::<type> AS n",
+            "SELECT lag(score, id) OVER (ORDER BY id) AS n FROM events"
+                + "|Cannot infer the type of lag(score, id) OVER (ORDER BY id) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (lag(score, id) OVER (ORDER BY id))::<type> AS n",
+            "SELECT lag(label) IGNORE NULLS OVER (ORDER BY id) AS n FROM events"
+                + "|Cannot infer the type of lag(label) IGNORE NULLS OVER (ORDER BY id)"
+                + " in SELECT; state it with a cast and an alias,"
+                + " such as (lag(label) IGNORE NULLS OVER (ORDER BY id))::<type> AS n",
+            "SELECT first_value('x') OVER (ORDER BY id) AS n FROM events"
+                + "|Cannot infer the type of first_value('x') OVER (ORDER BY id) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (first_value('x') OVER (ORDER BY id))::<type> AS n",
+            "SELECT first_value(label, 1) OVER (ORDER BY id) AS n FROM events"
+                + "|Cannot infer the type of first_value(label, 1) OVER (ORDER BY id) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (first_value(label, 1) OVER (ORDER BY id))::<type> AS n",
+            "SELECT lower(label) OVER () AS n FROM events"
+                + "|Cannot infer the type of lower(label) OVER () in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (lower(label) OVER ())::<type> AS n",
+            "SELECT row_number() AS n FROM events"
+                + "|Cannot infer the type of row_number() in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as row_number()::<type> AS n",
+            "SELECT row_number(id) OVER (ORDER BY id) AS n FROM events"
+                + "|Cannot infer the type of row_number(id) OVER (ORDER BY id) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (row_number(id) OVER (ORDER BY id))::<type> AS n"
+        }
+    )
+    void shouldKeepTheComputedProjectionRejectionForAnUntypedCall(String sql, String message) {
+        assertEquals(message, catalogueRejection(sql));
+    }
+
+    /**
+     * A typed catalogue call requires a result alias wherever an aggregate's is
+     * required, because it names one result component, and is rejected without
+     * one naming the call as the query writes it. The type is resolved first, so
+     * a call the catalogue types no result of says why rather than that it is
+     * unnamed.
+     */
+    @Test
+    void shouldRequireAResultAliasForATypedCatalogueCall() {
+        assertEquals(
+            "now() requires a result alias, such as now() AS <alias>.",
+            catalogueRejection("SELECT now()")
+        );
+
+        assertEquals(
+            "lower(label) requires a result alias, such as lower(label) AS <alias>.",
+            catalogueRejection("SELECT lower(label) FROM events")
+        );
+
+        assertEquals(
+            "row_number() OVER (ORDER BY id) requires a result alias,"
+                + " such as row_number() OVER (ORDER BY id) AS <alias>.",
+            catalogueRejection("SELECT row_number() OVER (ORDER BY id) FROM events")
+        );
+
+        assertEquals(
+            "Cannot infer the type of lower(visits) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as lower(visits)::<type> AS <alias>",
+            catalogueRejection("SELECT lower(visits) FROM events"),
+            "the type is checked before the alias"
+        );
+    }
+
+    /**
+     * A catalogue call is typed wherever a projection item is resolved: at the
+     * top level, in a {@code WITH} body, in a subquery source, and in a branch
+     * of a set operation. A projection that names no result column — a branch
+     * other than the leftmost and a position a column list on a {@code WITH}
+     * name renames — may write the call without an alias, as an aggregate may.
+     */
+    @Test
+    void shouldTypeACatalogueCallWhereverAProjectionIsResolved() {
+        assertEquals(
+            List.of(new QueryColumn("lowered", ColumnType.TEXT, false)),
+            catalogueColumns(
+                "WITH recent AS (SELECT lower(label) AS lowered FROM events)"
+                    + " SELECT lowered FROM recent"
+            )
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("lowered", ColumnType.TEXT, false)),
+            catalogueColumns(
+                "SELECT s.lowered FROM (SELECT lower(label) AS lowered FROM events) s"
+            )
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("lowered", ColumnType.TEXT, false)),
+            catalogueColumns(
+                "SELECT lower(label) AS lowered FROM events"
+                    + " UNION ALL SELECT upper(label) FROM events"
+            )
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("lowered", ColumnType.TEXT, false)),
+            catalogueColumns(
+                "WITH recent (lowered) AS (SELECT lower(label) FROM events)"
+                    + " SELECT lowered FROM recent"
+            )
+        );
+    }
+
+    /**
+     * A cast over a catalogue call keeps the cast's own type and the cast
+     * rule's own nullness, so every cast projection that compiles today keeps
+     * its result column, and writing the call without the cast gives the
+     * catalogue's type and nullness instead.
+     */
+    @Test
+    void shouldKeepTheCastTypeAndNullnessOverACatalogueCall() {
+        assertEquals(
+            List.of(new QueryColumn("next", ColumnType.BIGINT, true)),
+            catalogueColumns("SELECT nextval('event_id_seq')::bigint AS next")
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("n", ColumnType.VARCHAR, true)),
+            catalogueColumns("SELECT lower(label)::varchar AS n FROM events")
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("day", ColumnType.TIMESTAMP, true)),
+            catalogueColumns("SELECT date_trunc('day', at_zoned)::timestamp AS day FROM events")
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("rn", ColumnType.INTEGER, true)),
+            catalogueColumns(
+                "SELECT (row_number() OVER (ORDER BY id))::int AS rn FROM events"
+            )
+        );
+    }
+
+    /**
+     * A catalogue call reaches the database exactly as the query writes it, so
+     * the executable statement is unchanged and the column it selects is read
+     * by its alias.
+     */
+    @Test
+    void shouldWriteACatalogueCallIntoTheExecutableStatementAsWritten() {
+        String sql = "SELECT lower(label) AS lowered, now() AS read_at FROM events WHERE id = $1";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListEvents", QueryType.MANY, sql),
+            parser.parse(sql),
+            catalogueSchema
+        );
+
+        assertEquals(
+            "SELECT lower(label) AS lowered, now() AS read_at FROM events WHERE id = ?",
+            model.executableSql()
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("lowered", ColumnType.TEXT, false),
+                new QueryColumn("read_at", ColumnType.TIMESTAMP_WITH_TIME_ZONE, false)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A column argument of a catalogue call resolves against the levels in
+     * scope exactly as a selected column does, so an unknown reference is
+     * rejected there rather than left to the database.
+     */
+    @Test
+    void shouldRejectAnUnknownColumnArgumentOfACatalogueCall() {
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> catalogueColumns("SELECT lower(missing) AS n FROM events")
+        );
+
+        assertEquals("Column not found in sources events: missing", exception.getMessage());
+    }
+
+    /**
+     * The operand of a cast argument reaches the database as written, as a cast
+     * projection's operand does, so it is read for its nullness alone and
+     * nothing in it is required to resolve: a reference no source has, such as
+     * a row reference or a system column, leaves the cast nullable rather than
+     * rejecting the query, while the cast keeps the type it states.
+     */
+    @Test
+    void shouldReadACastArgumentWithoutResolvingItsOperand() {
+        assertEquals(
+            List.of(new QueryColumn("x", ColumnType.TEXT, true)),
+            catalogueColumns("SELECT lower(e::text) AS x FROM events e")
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("x", ColumnType.TEXT, true)),
+            catalogueColumns("SELECT lower(xmin::text) AS x FROM events")
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("x", ColumnType.TEXT, false)),
+            catalogueColumns("SELECT lower(label::text) AS x FROM events"),
+            "an operand that resolves still states its own nullness"
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("x", ColumnType.TEXT, false)),
+            catalogueColumns("SELECT lower(upper(label)::text) AS x FROM events"),
+            "a catalogue call under a cast keeps the nullness the catalogue states"
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("x", ColumnType.TEXT, false)),
+            catalogueColumns("SELECT lower(count(missing)::text) AS x FROM events"),
+            "a COUNT under a cast is non-null and resolves nothing"
+        );
+    }
+
+    /**
+     * An aggregate of a column the schema recorded without a mapped type states
+     * no type as a catalogue argument rather than rejecting the query, so the
+     * call around it is typed where its result does not depend on the argument
+     * and keeps the computed-projection rejection where it does.
+     */
+    @Test
+    void shouldReadAnAggregateArgumentOfAnUnmappedColumnAsUntyped() {
+        assertEquals(
+            List.of(new QueryColumn("x", ColumnType.TEXT, false)),
+            catalogueColumns("SELECT coalesce(max(tags)::text, label) AS x FROM events")
+        );
+
+        assertEquals(
+            "Cannot infer the type of coalesce(max(tags), tags) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as coalesce(max(tags), tags)::<type> AS x",
+            catalogueRejection("SELECT coalesce(max(tags), tags) AS x FROM events")
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("x", ColumnType.TEXT, true)),
+            catalogueColumns("SELECT lower(max(tags)::text) AS x FROM events"),
+            "such an aggregate under a cast leaves the cast nullable"
+        );
+
+        assertEquals(
+            "Column 'tags' has unsupported type JSONB[]",
+            assertThrows(
+                UnsupportedOperationException.class,
+                () -> catalogueColumns("SELECT max(tags) AS x FROM events")
+            )
+                .getMessage(),
+            "the aggregate projection itself keeps its own rejection"
+        );
+    }
+
+    /** The result columns one read of the catalogue schema analyzes. */
+    private List<QueryColumn> catalogueColumns(String sql) {
+        return analyzer.analyze(
+            new Query("ListEvents", QueryType.MANY, sql),
+            parser.parse(sql),
+            catalogueSchema
+        )
+            .columns();
+    }
+
+    /** The rejection one read of the catalogue schema reports. */
+    private String catalogueRejection(String sql) {
+        Query query = new Query("ListEvents", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        return assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, catalogueSchema)
         )
             .getMessage();
     }

@@ -4,14 +4,22 @@ import net.sf.jsqlparser.expression.Alias;
 import net.sf.jsqlparser.expression.AnalyticExpression;
 import net.sf.jsqlparser.expression.AnalyticType;
 import net.sf.jsqlparser.expression.BinaryExpression;
+import net.sf.jsqlparser.expression.BooleanValue;
 import net.sf.jsqlparser.expression.CastExpression;
+import net.sf.jsqlparser.expression.DoubleValue;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.ExpressionVisitorAdapter;
 import net.sf.jsqlparser.expression.Function;
 import net.sf.jsqlparser.expression.JdbcNamedParameter;
 import net.sf.jsqlparser.expression.JdbcParameter;
 import net.sf.jsqlparser.expression.JsonExpression;
+import net.sf.jsqlparser.expression.LongValue;
 import net.sf.jsqlparser.expression.NotExpression;
+import net.sf.jsqlparser.expression.NullValue;
+import net.sf.jsqlparser.expression.OracleNamedFunctionParameter;
+import net.sf.jsqlparser.expression.SignedExpression;
+import net.sf.jsqlparser.expression.StringValue;
+import net.sf.jsqlparser.expression.TrimFunction;
 import net.sf.jsqlparser.expression.operators.arithmetic.Addition;
 import net.sf.jsqlparser.expression.operators.arithmetic.Division;
 import net.sf.jsqlparser.expression.operators.arithmetic.Multiplication;
@@ -83,6 +91,7 @@ import org.sqlcj.sql.ParsedSql;
 import org.sqlcj.sql.PlaceholderOccurrence;
 import org.sqlcj.sql.WildcardOccurrence;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -186,6 +195,15 @@ public final class QueryAnalyzer {
      */
     private static final String AGGREGATE_ALIAS_REJECTION = """
         %s requires a result alias, such as %s AS total.""";
+
+    /**
+     * The rejection of a catalogue function projection without a result alias,
+     * which names one result component as an aggregate's does. Both the rejected
+     * item and the example are the call as the query writes it, so the named fix
+     * is the query's own call followed by an alias the user writes.
+     */
+    private static final String FUNCTION_ALIAS_REJECTION = """
+        %s requires a result alias, such as %s AS <alias>.""";
 
     /**
      * The rejection of an {@code EXISTS} projection without a result alias,
@@ -629,6 +647,9 @@ public final class QueryAnalyzer {
     /** Resolves the type a cast states, as a schema column declares its own. */
     private final ColumnTypeMapping columnTypeMapping = new ColumnTypeMapping();
 
+    /** The built-in functions whose projected result needs no cast. */
+    private final FunctionCatalogue functionCatalogue = new FunctionCatalogue();
+
     /**
      * One query source and the name it exposes to column references, which is
      * its alias when present and otherwise its table name. A null-extended
@@ -907,6 +928,18 @@ public final class QueryAnalyzer {
 
     /** One column reference resolved against the ordered query sources. */
     private record ResolvedColumn(Source source, org.sqlcj.schema.Column column) {
+    }
+
+    /**
+     * One call the function catalogue may type, read from the parse tree: the
+     * called name as the query writes it, the form the query writes it in, and
+     * the arguments in that order.
+     */
+    private record CatalogueCall(
+        String name,
+        FunctionCatalogue.Form form,
+        List<Expression> arguments
+    ) {
     }
 
     /**
@@ -6609,8 +6642,14 @@ public final class QueryAnalyzer {
     /**
      * Resolves one projection item that is not a wildcard into its single
      * column: a direct column, an aliased aggregate this subset types, an
-     * aliased cast, or an aliased {@code EXISTS} of a subquery. Every other
-     * item is a computed projection, which a cast states the type of.
+     * aliased call the function catalogue types, an aliased cast, or an aliased
+     * {@code EXISTS} of a subquery. Every other item is a computed projection,
+     * which a cast states the type of.
+     *
+     * <p>A call of the function catalogue is typed by the catalogue from the
+     * facts its arguments state, so a cast is not needed; a call the catalogue
+     * types no result of stays a computed projection, and a cast over such a
+     * call keeps the cast's own type and nullness.
      *
      * <p>An {@code EXISTS} of a subquery is a non-null {@code BOOLEAN} column,
      * because PostgreSQL defines the predicate as {@code true} or
@@ -6668,6 +6707,18 @@ public final class QueryAnalyzer {
             if (aggregate != null) {
                 return aggregate;
             }
+        }
+
+        org.sqlcj.schema.Column catalogued = catalogueColumn(
+            expression,
+            selectItem.getAlias(),
+            analysis,
+            scope,
+            namesResultColumns
+        );
+
+        if (catalogued != null) {
+            return catalogued;
         }
 
         if (expression instanceof CastExpression cast && cast.getColDataType() != null) {
@@ -6927,6 +6978,555 @@ public final class QueryAnalyzer {
         }
 
         return written(function);
+    }
+
+    /**
+     * Resolves one projected call of the function catalogue into its single
+     * result column, and reports {@code null} for every expression the
+     * catalogue types no result of, which the computed-projection rejection then
+     * names as the query writes it.
+     *
+     * <p>The call's own shape decides whether the catalogue reads it at all: a
+     * plain call must be written unqualified, without {@code DISTINCT},
+     * {@code ALL}, an {@code ORDER BY} inside the call, a named argument, or a
+     * {@code *}, and a window call must be written with {@code OVER} and
+     * without {@code FILTER} or {@code IGNORE NULLS}, so every other spelling
+     * stays a computed projection. The arguments are the ones the query writes,
+     * in order, which for {@code trim} are the characters and the string the
+     * parser reports and for a window call are the read value, the offset, and
+     * the default value.
+     *
+     * <p>The type is resolved before the alias is required, so a call this
+     * catalogue types no result of says why rather than that it is unnamed, and
+     * the alias itself is required exactly where an aggregate's is.
+     */
+    private org.sqlcj.schema.Column catalogueColumn(
+        Expression expression,
+        Alias alias,
+        Analysis analysis,
+        Scope scope,
+        boolean namesResultColumns
+    ) {
+        FunctionCatalogue.Result result = catalogueResult(expression, analysis, scope);
+
+        if (result == null) {
+            return null;
+        }
+
+        String written = written(expression);
+
+        if (alias == null && namesResultColumns) {
+            throw new UnsupportedOperationException(
+                FUNCTION_ALIAS_REJECTION.formatted(written, written)
+            );
+        }
+
+        FunctionCatalogue.ResultType type = result.type();
+
+        return new org.sqlcj.schema.Column(
+            alias == null
+                ? written
+                : alias.getUnquotedName(),
+            type.type(),
+            !result.nonNull(),
+            null,
+            type.enumType(),
+            type.array(),
+            type.blankPadded(),
+            aliasSqlName(alias, written)
+        );
+    }
+
+    /**
+     * The result the catalogue states for one expression, and {@code null} for
+     * an expression that writes no catalogue call and for a call the catalogue
+     * types no result of.
+     *
+     * <p>The called name is read before any argument is, so the arguments of a
+     * call the catalogue does not hold are never resolved and such a call keeps
+     * the rejection it has without this catalogue.
+     */
+    private FunctionCatalogue.Result catalogueResult(
+        Expression expression,
+        Analysis analysis,
+        Scope scope
+    ) {
+        return catalogueResult(expression, analysis, scope, true);
+    }
+
+    /**
+     * The result the catalogue states for one expression, resolving its
+     * arguments' references as {@code resolving} requires.
+     */
+    private FunctionCatalogue.Result catalogueResult(
+        Expression expression,
+        Analysis analysis,
+        Scope scope,
+        boolean resolving
+    ) {
+        CatalogueCall call = catalogueCall(expression);
+
+        if (call == null || !functionCatalogue.holds(call.name(), call.form())) {
+            return null;
+        }
+
+        List<FunctionCatalogue.Argument> arguments = new ArrayList<>();
+
+        for (Expression argument : call.arguments()) {
+            arguments.add(argumentFact(argument, analysis, scope, resolving));
+        }
+
+        return functionCatalogue.result(call.name(), call.form(), arguments);
+    }
+
+    /**
+     * The call one expression writes for the catalogue to read, and
+     * {@code null} for every expression that writes none.
+     */
+    private CatalogueCall catalogueCall(Expression expression) {
+        if (expression instanceof TrimFunction trim) {
+            return writtenCall(
+                "trim",
+                FunctionCatalogue.Form.PLAIN,
+                trimArguments(trim)
+            );
+        }
+
+        if (expression instanceof Function function) {
+            List<String> name = function.getMultipartName();
+
+            if (
+                name == null
+                    || name.size() != 1
+                    || function.isDistinct()
+                    || function.isAllColumns()
+                    || function.getOrderByElements() != null
+            ) {
+                return null;
+            }
+
+            return writtenCall(
+                name.get(0),
+                FunctionCatalogue.Form.PLAIN,
+                arguments(function.getParameters())
+            );
+        }
+
+        if (expression instanceof AnalyticExpression analytic) {
+            String name = analytic.getName();
+
+            if (
+                analytic.getType() != AnalyticType.OVER
+                    || analytic.isIgnoreNulls()
+                    || analytic.isDistinct()
+                    || analytic.isAllColumns()
+                    || analytic.getFilterExpression() != null
+                    || name == null
+                    || name.indexOf('.') >= 0
+            ) {
+                return null;
+            }
+
+            return writtenCall(
+                name,
+                FunctionCatalogue.Form.WINDOW,
+                windowArguments(analytic)
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * One call of the given arguments, and {@code null} where an argument is
+     * one no catalogue call writes: a {@code *}, which PostgreSQL admits for no
+     * function of the catalogue, and a named argument, which states no position.
+     */
+    private CatalogueCall writtenCall(
+        String name,
+        FunctionCatalogue.Form form,
+        List<Expression> arguments
+    ) {
+        boolean positional = arguments.stream()
+            .noneMatch(
+                argument -> argument instanceof AllColumns
+                    || argument instanceof OracleNamedFunctionParameter
+            );
+
+        return positional
+            ? new CatalogueCall(name, form, arguments)
+            : null;
+    }
+
+    /** The arguments of one plain call, in the order the query writes them. */
+    private List<Expression> arguments(ExpressionList<?> parameters) {
+        return parameters == null
+            ? List.of()
+            : new ArrayList<>(parameters);
+    }
+
+    /**
+     * The arguments of one {@code trim}, which the parser reports as the trimmed
+     * characters and, where the call writes {@code FROM} or a second argument,
+     * the trimmed string. A call that writes only a trim specification, such as
+     * {@code trim(BOTH FROM s)}, states the string alone.
+     */
+    private List<Expression> trimArguments(TrimFunction trim) {
+        List<Expression> arguments = new ArrayList<>();
+
+        if (trim.getExpression() != null) {
+            arguments.add(trim.getExpression());
+        }
+
+        if (trim.getFromExpression() != null) {
+            arguments.add(trim.getFromExpression());
+        }
+
+        return arguments;
+    }
+
+    /**
+     * The arguments of one window call, which the parser reports as the read
+     * value and, for {@code lag} and {@code lead}, the offset and the default
+     * value beside it.
+     */
+    private List<Expression> windowArguments(AnalyticExpression analytic) {
+        List<Expression> arguments = new ArrayList<>();
+
+        if (analytic.getExpression() != null) {
+            arguments.add(analytic.getExpression());
+        }
+
+        if (analytic.getOffset() != null) {
+            arguments.add(analytic.getOffset());
+        }
+
+        if (analytic.getDefaultValue() != null) {
+            arguments.add(analytic.getDefaultValue());
+        }
+
+        return arguments;
+    }
+
+    /**
+     * The facts one argument of a catalogue call states: the type it has, where
+     * this analysis knows one, and whether it reads no {@code NULL}.
+     *
+     * <p>A direct column resolves against the levels in scope exactly as a
+     * selected column does, so an unknown or an ambiguous reference is rejected
+     * there, and it carries its mapped type, its enum type, and its array and
+     * blank-padded spellings, or no type where the schema recorded none. It
+     * reads no {@code NULL} under the rule a cast operand follows: a
+     * {@code NOT NULL} column of a source no join null-extends.
+     *
+     * <p>A cast carries the type it states, mapped as a schema column's
+     * declared type is, and reads no {@code NULL} exactly where its operand
+     * does by these same rules and by the rule a cast projection's operand
+     * follows. The operand itself reaches the database as written, as a cast
+     * projection's operand does, so it is read for its nullness alone and
+     * nothing in it is required to resolve: a reference no source has, such as
+     * {@code xmin}, and an aggregate of such a reference leave the cast
+     * nullable rather than reject the query. A nested catalogue call and a
+     * projected aggregate carry their own result and nullness, and an aggregate
+     * of a column the schema recorded without a mapped type has no type here
+     * rather than rejecting the query, because PostgreSQL rather than sqlcj
+     * states what it returns.
+     *
+     * <p>A placeholder takes the type its position states, and reads no
+     * {@code NULL} unless the query tests its logical parameter for null, at
+     * this or at any other occurrence, because such a parameter is non-null and
+     * so fails before the statement runs. An integer literal is the narrowest
+     * integer type that holds it, a literal written with a decimal point or an
+     * exponent is {@code numeric}, {@code TRUE} and {@code FALSE} are
+     * {@code boolean}, and a string literal and {@code NULL} are untyped
+     * literals, which take the type their position or the other arguments
+     * state. Every other argument has no type and is read as nullable.
+     */
+    private FunctionCatalogue.Argument argumentFact(
+        Expression argument,
+        Analysis analysis,
+        Scope scope
+    ) {
+        return argumentFact(argument, analysis, scope, true);
+    }
+
+    /**
+     * The facts one argument states, resolving its references as
+     * {@code resolving} requires: a directly written argument resolves them, as
+     * a selected column does, and a cast operand resolves none, because the
+     * cast states the type and the operand is read for its nullness alone.
+     */
+    private FunctionCatalogue.Argument argumentFact(
+        Expression argument,
+        Analysis analysis,
+        Scope scope,
+        boolean resolving
+    ) {
+        net.sf.jsqlparser.schema.Column column = directColumn(argument);
+
+        if (column != null) {
+            return columnFact(column, scope, resolving);
+        }
+
+        if (argument instanceof CastExpression cast && cast.getColDataType() != null) {
+            Schema schema = analysis.schema();
+
+            ColumnTypeMapping.MappedType type = columnTypeMapping.map(
+                cast.getColDataType(),
+                schema.enums(),
+                schema.domains(),
+                new SchemaNamespace(schema.namespace())
+            );
+
+            return typedFact(
+                type.type(),
+                type.enumType(),
+                type.array(),
+                type.blankPadded(),
+                operandReadsNoNull(cast.getLeftExpression(), analysis, scope)
+            );
+        }
+
+        FunctionCatalogue.Result nested = catalogueResult(argument, analysis, scope, resolving);
+
+        if (nested != null) {
+            return FunctionCatalogue.Argument.typed(nested.type(), nested.nonNull());
+        }
+
+        if (
+            argument instanceof Function function
+                && !leavesAggregateUntyped(function, scope, resolving)
+        ) {
+            org.sqlcj.schema.Column aggregate = aggregateColumn(function, null, scope, false);
+
+            if (aggregate != null) {
+                return typedFact(
+                    aggregate.type(),
+                    aggregate.enumType(),
+                    aggregate.array(),
+                    aggregate.blankPadded(),
+                    !aggregate.nullable()
+                );
+            }
+        }
+
+        if (argument instanceof JdbcParameter || argument instanceof JdbcNamedParameter) {
+            return FunctionCatalogue.Argument.placeholder(!testsNull(argument, analysis));
+        }
+
+        return literalFact(argument);
+    }
+
+    /**
+     * Reports whether the operand of one cast argument reads no {@code NULL},
+     * which is the only fact that operand states, because the cast states the
+     * type.
+     *
+     * <p>The operand reads none where these argument rules state it — a
+     * placeholder whose parameter the query does not test for null, a literal
+     * other than {@code NULL}, a catalogue call that reads none, and a
+     * {@code NOT NULL} column of a source no join null-extends — and where the
+     * rule a cast projection's operand follows states it, which adds a
+     * {@code COUNT} however its own argument is written. Nothing here is
+     * required to resolve, so an operand this analysis cannot read is nullable
+     * rather than rejected.
+     */
+    private boolean operandReadsNoNull(Expression operand, Analysis analysis, Scope scope) {
+        return argumentFact(operand, analysis, scope, false).nonNull()
+            || readsNoNull(operand, scope);
+    }
+
+    /**
+     * The facts one column reference states as an argument of a catalogue call:
+     * its mapped type, its enum type, and its array and blank-padded spellings,
+     * or no type where the schema recorded none, and no {@code NULL} where it is
+     * a {@code NOT NULL} column of a source no join null-extends.
+     *
+     * <p>A directly written argument resolves as a selected column does, so an
+     * unknown or an ambiguous reference is rejected there. A reference of a cast
+     * operand resolves against the levels in scope where it can and states no
+     * type where it cannot, because such an operand reaches the database as
+     * written.
+     */
+    private FunctionCatalogue.Argument columnFact(
+        net.sf.jsqlparser.schema.Column column,
+        Scope scope,
+        boolean resolving
+    ) {
+        Optional<ResolvedColumn> resolved = resolving
+            ? Optional.of(resolveColumn(column, scope))
+            : lookupColumn(column, scope);
+
+        return resolved
+            .map(
+                found -> typedFact(
+                    found.column().type(),
+                    found.column().enumType(),
+                    found.column().array(),
+                    found.column().blankPadded(),
+                    !found.column().nullable() && !found.source().nullable()
+                )
+            )
+            .orElseGet(FunctionCatalogue.Argument::untyped);
+    }
+
+    /**
+     * Reports whether the aggregate rule states no type for one function
+     * argument that it would reject instead of typing.
+     *
+     * <p>An aggregate of a column the schema recorded without a mapped type
+     * states no type here, because the result of the call around it is either
+     * independent of the argument or left untyped, which the projection itself
+     * reports; a {@code COUNT} never reads its argument's type, so it is typed
+     * over such a column as it is anywhere.
+     *
+     * <p>Where nothing is required to resolve, which is the operand of a cast,
+     * an aggregate of a reference that resolves against no source and a
+     * {@code COUNT} of a qualifier no source exposes state no type either,
+     * because such an operand is read for its nullness alone and is never
+     * rejected. A directly written aggregate still rejects them, as it does
+     * when the projection writes it on its own.
+     */
+    private boolean leavesAggregateUntyped(Function function, Scope scope, boolean resolving) {
+        List<String> name = function.getMultipartName();
+        ExpressionList<?> arguments = function.getParameters();
+
+        if (name == null || name.size() != 1 || arguments == null || arguments.size() != 1) {
+            return false;
+        }
+
+        Expression argument = arguments.get(0);
+        boolean counted = name.get(0).equalsIgnoreCase("count");
+
+        if (argument instanceof AllTableColumns qualified) {
+            return !resolving
+                && lookupSource(scope, qualified.getTable().getUnquotedName()).isEmpty();
+        }
+
+        net.sf.jsqlparser.schema.Column column = directColumn(argument);
+
+        if (column == null) {
+            return false;
+        }
+
+        Optional<ResolvedColumn> resolved = lookupColumn(column, scope);
+
+        return resolved.isEmpty()
+            ? !resolving
+            : !counted && resolved.get().column().type() == null;
+    }
+
+    /**
+     * One argument of the given type and nullness, and one of no type where the
+     * type is unmapped, which is read as nullable wherever the result does not
+     * depend on it.
+     */
+    private FunctionCatalogue.Argument typedFact(
+        ColumnType type,
+        String enumType,
+        boolean array,
+        boolean blankPadded,
+        boolean nonNull
+    ) {
+        return type == null
+            ? FunctionCatalogue.Argument.untyped()
+            : FunctionCatalogue.Argument.typed(
+                new FunctionCatalogue.ResultType(type, enumType, array, blankPadded),
+                nonNull
+            );
+    }
+
+    /**
+     * The facts one literal argument states, and no type for every other
+     * expression. An integer literal written with a leading sign states the
+     * signed value's own type, so {@code -1} is an {@code integer} as {@code 1}
+     * is.
+     */
+    private FunctionCatalogue.Argument literalFact(Expression argument) {
+        if (argument instanceof SignedExpression signed) {
+            return signedFact(signed);
+        }
+
+        if (argument instanceof LongValue integer) {
+            return integerFact(integer.getBigIntegerValue());
+        }
+
+        if (argument instanceof DoubleValue) {
+            return typedFact(ColumnType.DECIMAL, null, false, false, true);
+        }
+
+        if (argument instanceof BooleanValue) {
+            return typedFact(ColumnType.BOOLEAN, null, false, false, true);
+        }
+
+        if (argument instanceof StringValue) {
+            return FunctionCatalogue.Argument.literal(true);
+        }
+
+        return argument instanceof NullValue
+            ? FunctionCatalogue.Argument.literal(false)
+            : FunctionCatalogue.Argument.untyped();
+    }
+
+    /** The facts one signed literal states, and no type for any other operand. */
+    private FunctionCatalogue.Argument signedFact(SignedExpression signed) {
+        Expression value = signed.getExpression();
+        char sign = signed.getSign();
+
+        if (sign != '-' && sign != '+') {
+            return FunctionCatalogue.Argument.untyped();
+        }
+
+        if (value instanceof LongValue integer) {
+            BigInteger written = integer.getBigIntegerValue();
+
+            return integerFact(
+                sign == '-'
+                    ? written.negate()
+                    : written
+            );
+        }
+
+        return value instanceof DoubleValue
+            ? typedFact(ColumnType.DECIMAL, null, false, false, true)
+            : FunctionCatalogue.Argument.untyped();
+    }
+
+    /**
+     * The facts one integer literal states, which is the narrowest integer type
+     * PostgreSQL 16 reads it as: an {@code integer} within {@code int4}, a
+     * {@code bigint} within {@code int8}, and a {@code numeric} beyond.
+     */
+    private FunctionCatalogue.Argument integerFact(BigInteger value) {
+        ColumnType type;
+
+        if (value.bitLength() < Integer.SIZE) {
+            type = ColumnType.INTEGER;
+        } else if (value.bitLength() < Long.SIZE) {
+            type = ColumnType.BIGINT;
+        } else {
+            type = ColumnType.DECIMAL;
+        }
+
+        return typedFact(type, null, false, false, true);
+    }
+
+    /**
+     * Reports whether the query tests the logical parameter of one placeholder
+     * for null, at this or at any other occurrence of that parameter, which
+     * gives a {@code null} bound at it a meaning and so leaves an argument
+     * written as the placeholder nullable.
+     */
+    private boolean testsNull(Expression placeholder, Analysis analysis) {
+        int index = analysis.placeholders().of(placeholder).index();
+
+        return analysis.parsedSql().placeholders().stream()
+            .filter(PlaceholderOccurrence::nullTested)
+            .anyMatch(
+                occurrence -> analysis.placeholders()
+                    .of(occurrence.placeholder())
+                    .index() == index
+            );
     }
 
     /**
