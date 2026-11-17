@@ -392,6 +392,97 @@ class SqlParameterCompilerTest {
     }
 
     /**
+     * A placeholder one call writes as a direct argument is reported with that
+     * call, written as the source writes it, and with the zero-based position
+     * it takes among the arguments the call writes. A nested call reports the
+     * call that writes the placeholder itself, and a {@code trim} reports the
+     * position its own spelling writes, whether or not it writes characters.
+     */
+    @Test
+    void shouldReportTheCallAPlaceholderIsAnArgumentOf() {
+        assertEquals(
+            List.of("lower(:name) 0"),
+            calls("SELECT id FROM users WHERE name = lower(:name)")
+        );
+
+        assertEquals(
+            List.of("lower(:name) 0", "date_trunc(:unit, :at) 0", "date_trunc(:unit, :at) 1"),
+            calls("SELECT lower(:name) AS n, date_trunc(:unit, :at) AS d")
+        );
+
+        assertEquals(
+            List.of("upper(:name) 0"),
+            calls("SELECT id FROM users WHERE name = lower(upper(:name))"),
+            "a nested call reports the call that writes the placeholder"
+        );
+
+        assertEquals(
+            List.of("Trim( :chars FROM name ) 0"),
+            calls("SELECT id FROM users WHERE name = trim(:chars FROM name)")
+        );
+
+        assertEquals(
+            List.of("Trim( BOTH ' ' FROM :name ) 1"),
+            calls("SELECT id FROM users WHERE name = trim(BOTH ' ' FROM :name)")
+        );
+
+        assertEquals(
+            List.of("Trim( BOTH FROM :name ) 0"),
+            calls("SELECT id FROM users WHERE name = trim(BOTH FROM :name)"),
+            "a trim written without characters writes its string first"
+        );
+    }
+
+    /**
+     * A window call's arguments stand twice in the parse tree, under the window
+     * call and under a plain call of the same name below it, and the window
+     * call is the one reported, because it is the call the source writes.
+     */
+    @Test
+    void shouldReportTheWindowCallOfAnOffsetPlaceholder() {
+        assertEquals(
+            List.of("lag(score, :offset) OVER (ORDER BY id) 1"),
+            calls("SELECT lag(score, :offset) OVER (ORDER BY id) AS previous FROM users")
+        );
+
+        assertEquals(
+            List.of(
+                "lead(score, :offset, :fallback) OVER (ORDER BY id) 1",
+                "lead(score, :offset, :fallback) OVER (ORDER BY id) 2"
+            ),
+            calls(
+                "SELECT lead(score, :offset, :fallback) OVER (ORDER BY id) AS next FROM users"
+            )
+        );
+    }
+
+    /**
+     * A placeholder no call writes as a direct argument reports no call: an
+     * argument a cast or further parentheses wrap states that expression rather
+     * than the placeholder, a window's own {@code PARTITION BY} and
+     * {@code ORDER BY} expressions are no arguments of its call, and a
+     * placeholder outside every call is the argument of none.
+     */
+    @Test
+    void shouldReportNoCallForAPlaceholderThatIsNoDirectArgument() {
+        assertEquals(List.of("none"), calls("SELECT lower(:name::text) AS n"));
+        assertEquals(List.of("none"), calls("SELECT lower(CAST(:name AS text)) AS n"));
+        assertEquals(List.of("none"), calls("SELECT lower(((:name))) AS n"));
+
+        assertEquals(
+            List.of("none"),
+            calls("SELECT lag(score) OVER (PARTITION BY :part ORDER BY id) AS p FROM users")
+        );
+
+        assertEquals(
+            List.of("none"),
+            calls("SELECT lag(score) OVER (ORDER BY :sort) AS p FROM users")
+        );
+
+        assertEquals(List.of("none"), calls("SELECT id FROM users WHERE name = :name"));
+    }
+
+    /**
      * The JSONB key-existence operators are written doubled, which is the
      * escape the JDBC driver reads as the operator itself, and the offset
      * reported for a placeholder written after one accounts for the character
@@ -481,6 +572,22 @@ class SqlParameterCompilerTest {
         assertEquals(sql, parameters.executableSql());
         assertTrue(parameters.offsets().isEmpty());
         assertFalse(parameters.hasAnonymousParameter());
+    }
+
+    /**
+     * The call and the argument position of each placeholder occurrence of one
+     * source, each written as the call the parse tree reports followed by the
+     * position, and {@code none} for an occurrence that is the direct argument
+     * of no call.
+     */
+    private List<String> calls(String sql) {
+        return new SqlParser().parse(sql).placeholders().stream()
+            .map(
+                occurrence -> occurrence.call() == null
+                    ? "none"
+                    : occurrence.call() + " " + occurrence.argument()
+            )
+            .toList();
     }
 
     /** Whether the query tests each of its placeholder occurrences for null. */

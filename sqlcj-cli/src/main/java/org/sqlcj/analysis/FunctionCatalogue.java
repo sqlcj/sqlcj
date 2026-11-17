@@ -155,6 +155,60 @@ final class FunctionCatalogue {
             : rule.result(arguments);
     }
 
+    /**
+     * The type one uncast placeholder has at one argument position of a
+     * catalogue call, and {@code null} at every position that states none: a
+     * position of another call, of another number of arguments, or whose type
+     * PostgreSQL 16 takes from the arguments rather than from the position
+     * itself, such as a {@code coalesce} argument or the value {@code lag}
+     * reads.
+     *
+     * <p>These are the types {@link #accepted} reads such a placeholder as, so
+     * a call of a placeholder typed here states the result it states for a
+     * typed argument of the same type.
+     *
+     * @param name     the called name, which is matched case-insensitively
+     * @param form     the form the query writes the call in
+     * @param arity    the number of arguments the call writes
+     * @param position the zero-based position of the argument among them
+     */
+    ColumnType placeholderType(String name, Form form, int arity, int position) {
+        if (position < 0 || position >= arity) {
+            return null;
+        }
+
+        String called = name.toLowerCase(Locale.ROOT);
+
+        if (form == Form.WINDOW) {
+            return isShifting(called) && arity <= 3 && position == 1
+                ? ColumnType.INTEGER
+                : null;
+        }
+
+        return switch (called) {
+            case "lower", "upper" -> arity == 1
+                ? ColumnType.TEXT
+                : null;
+            case "trim" -> arity <= 2
+                ? ColumnType.TEXT
+                : null;
+            case "date_trunc" -> arity >= 2 && arity <= 3 && position != 1
+                ? ColumnType.TEXT
+                : null;
+            case "pg_try_advisory_xact_lock" -> switch (arity) {
+                case 1 -> ColumnType.BIGINT;
+                case 2 -> ColumnType.INTEGER;
+                default -> null;
+            };
+            default -> null;
+        };
+    }
+
+    /** Reports whether one name is a window call that reads a shifted row. */
+    private boolean isShifting(String name) {
+        return "lag".equals(name) || "lead".equals(name);
+    }
+
     private Map<String, Rule> rules(Form form) {
         return form == Form.WINDOW
             ? windowCalls

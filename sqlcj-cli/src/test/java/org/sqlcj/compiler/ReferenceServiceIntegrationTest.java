@@ -112,7 +112,7 @@ class ReferenceServiceIntegrationTest {
         new UnsupportedQuery(
             "uncast_lower.sql",
             "FindUserByEmail",
-            "Cannot infer the type of :email in lower(:email); "
+            "Cannot infer the type of :email in lower(email::text) = :email; "
                 + "state it with a cast, such as :email::<type>"
         ),
         new UnsupportedQuery(

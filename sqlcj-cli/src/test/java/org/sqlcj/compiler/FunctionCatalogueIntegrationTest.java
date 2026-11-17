@@ -90,6 +90,12 @@ class FunctionCatalogueIntegrationTest {
      */
     private static final Map<String, List<ExpectedColumn>> EXPECTED_RESULTS = expectedResults();
 
+    /**
+     * The parameters each query of the fixture binds, in logical order, with
+     * the value every test binds at each of them.
+     */
+    private static final Map<String, List<ExpectedParameter>> EXPECTED_PARAMETERS = expectedParameters();
+
     private static PostgreSQLContainer<?> postgres;
 
     private static DataSource dataSource;
@@ -245,7 +251,11 @@ class FunctionCatalogueIntegrationTest {
                     columns.stream()
                         .map(column -> column.alias() + " " + column.postgresType())
                         .toList(),
-                    postgresColumns(connection, statement.getValue()),
+                    postgresColumns(
+                        connection,
+                        statement.getValue(),
+                        EXPECTED_PARAMETERS.getOrDefault(queryName, List.of())
+                    ),
                     queryName + " result columns as PostgreSQL returns them"
                 );
             }
@@ -277,8 +287,52 @@ class FunctionCatalogueIntegrationTest {
                 "a second sequence read advances the sequence by one"
             );
 
-            assertEquals(true, invoke(repository, "tryLockEvent", 7L));
-            assertEquals(true, invoke(repository, "tryLockEventPair", 7, 8));
+            assertEquals(true, invoke(repository, "tryLockEvent", 11L));
+            assertEquals(true, invoke(repository, "tryLockEventPair", 12, 13));
+
+            assertEquals(
+                true,
+                invoke(repository, "tryLockEventKey", 14L),
+                "an uncast one-argument lock key binds a bigint"
+            );
+
+            assertEquals(
+                true,
+                invoke(repository, "tryLockEventKeyPair", 15, 16),
+                "two uncast lock keys bind integers"
+            );
+
+            assertEquals(
+                List.of(1L),
+                invoke(repository, "findEventByLabel", "ALPHA"),
+                "an uncast lower() argument binds the text it is compared through"
+            );
+
+            assertEquals(
+                List.of(
+                    "Alpha padded",
+                    "Beta padded",
+                    "Gamma padded"
+                ),
+                rows(repository, "trimEventLabels", List.of("  padded  "), "trimmed", "trimmedInput"),
+                "a trim written without characters trims a column and an uncast placeholder"
+            );
+
+            List<?> spans = (List<?>) invoke(repository, "listEventSpans", "hour");
+
+            assertEquals(
+                Duration.ofHours(25),
+                ((SqlInterval) component(spans.get(0), "truncatedSpan")).toDuration(),
+                "an uncast date_trunc unit truncates the interval it is written beside"
+            );
+
+            assertNull(component(spans.get(1), "truncatedSpan"));
+
+            assertEquals(
+                List.of("1 null", "2 null", "3 1"),
+                rows(repository, "listEventOffsets", List.of(2), "id", "previousScore"),
+                "an uncast lag offset shifts the window by the integer bound at it"
+            );
 
             assertEquals(List.of(1L, 2L, 3L), invoke(repository, "numberEvents"));
 
@@ -363,6 +417,32 @@ class FunctionCatalogueIntegrationTest {
     }
 
     /**
+     * Every parameter of the fixture carries the Java type the catalogue states
+     * for the position it is written at, which an uncast placeholder takes from
+     * that position alone.
+     */
+    @Test
+    void shouldGenerateTheAnalyzedJavaTypeOfEachParameter() throws Exception {
+        try (URLClassLoader classLoader = classLoader()) {
+            Object repository = newRepository(classLoader);
+
+            for (String queryName : EXPECTED_RESULTS.keySet()) {
+                Method method = method(repository, methodName(queryName));
+
+                assertEquals(
+                    EXPECTED_PARAMETERS.getOrDefault(queryName, List.of()).stream()
+                        .map(ExpectedParameter::javaType)
+                        .toList(),
+                    Arrays.stream(method.getParameterTypes())
+                        .map(Class::getSimpleName)
+                        .toList(),
+                    queryName + " method parameters"
+                );
+            }
+        }
+    }
+
+    /**
      * The result each query of the fixture returns, in the order the fixture
      * writes its queries and its columns.
      */
@@ -395,6 +475,16 @@ class FunctionCatalogueIntegrationTest {
         );
 
         results.put(
+            "TryLockEventKey",
+            List.of(new ExpectedColumn("locked", "Boolean", false, "locked", "bool"))
+        );
+
+        results.put(
+            "TryLockEventKeyPair",
+            List.of(new ExpectedColumn("locked", "Boolean", false, "locked", "bool"))
+        );
+
+        results.put(
             "NumberEvents",
             List.of(new ExpectedColumn("rn", "Long", false, "rn", "int8"))
         );
@@ -415,6 +505,41 @@ class FunctionCatalogueIntegrationTest {
                 new ExpectedColumn("loweredNickname", "String", true, "lowered_nickname", "text"),
                 new ExpectedColumn("trimmed", "String", false, "trimmed", "text"),
                 new ExpectedColumn("trimmedCode", "String", true, "trimmed_code", "text")
+            )
+        );
+
+        results.put(
+            "FindEventByLabel",
+            List.of(new ExpectedColumn("id", "Long", false, "id", "int8"))
+        );
+
+        results.put(
+            "TrimEventLabels",
+            List.of(
+                new ExpectedColumn("trimmed", "String", false, "trimmed", "text"),
+                new ExpectedColumn("trimmedInput", "String", false, "trimmed_input", "text")
+            )
+        );
+
+        results.put(
+            "ListEventSpans",
+            List.of(
+                new ExpectedColumn("id", "Long", false, "id", "int8"),
+                new ExpectedColumn(
+                    "truncatedSpan",
+                    "SqlInterval",
+                    true,
+                    "truncated_span",
+                    "interval"
+                )
+            )
+        );
+
+        results.put(
+            "ListEventOffsets",
+            List.of(
+                new ExpectedColumn("id", "Long", false, "id", "int8"),
+                new ExpectedColumn("previousScore", "Short", true, "previous_score", "int2")
             )
         );
 
@@ -466,6 +591,39 @@ class FunctionCatalogueIntegrationTest {
     }
 
     /**
+     * The parameters of each query of the fixture that binds one, in logical
+     * order: the Java type the generated method declares and the value every
+     * test binds there, which is a value the position accepts.
+     */
+    private static Map<String, List<ExpectedParameter>> expectedParameters() {
+        Map<String, List<ExpectedParameter>> parameters = new LinkedHashMap<>();
+
+        parameters.put("TryLockEvent", List.of(new ExpectedParameter("Long", 11L)));
+
+        parameters.put(
+            "TryLockEventPair",
+            List.of(new ExpectedParameter("Integer", 12), new ExpectedParameter("Integer", 13))
+        );
+
+        parameters.put("TryLockEventKey", List.of(new ExpectedParameter("Long", 14L)));
+
+        parameters.put(
+            "TryLockEventKeyPair",
+            List.of(new ExpectedParameter("Integer", 15), new ExpectedParameter("Integer", 16))
+        );
+
+        parameters.put("FindEventByLabel", List.of(new ExpectedParameter("String", "ALPHA")));
+
+        parameters.put("TrimEventLabels", List.of(new ExpectedParameter("String", "  padded  ")));
+
+        parameters.put("ListEventSpans", List.of(new ExpectedParameter("String", "hour")));
+
+        parameters.put("ListEventOffsets", List.of(new ExpectedParameter("Integer", 2)));
+
+        return parameters;
+    }
+
+    /**
      * The statement of each query of the fixture, in query order, written with
      * the {@code ?} the executed statement binds in place of each placeholder.
      */
@@ -487,12 +645,20 @@ class FunctionCatalogueIntegrationTest {
     /**
      * The result columns PostgreSQL returns for one statement, each as its
      * label and the type name the driver reports, read by executing the
-     * statement with a key of {@code 1} bound at every placeholder.
+     * statement with the analyzed value of each of its parameters bound as the
+     * runtime binds it, so that PostgreSQL reads each uncast marker exactly as
+     * the generated repository leaves it.
      */
-    private List<String> postgresColumns(Connection connection, String sql) throws Exception {
+    private List<String> postgresColumns(
+        Connection connection,
+        String sql,
+        List<ExpectedParameter> parameters
+    ) throws Exception {
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            for (int parameter = 1; parameter <= placeholders(sql); parameter++) {
-                statement.setInt(parameter, 1);
+            assertEquals(parameters.size(), placeholders(sql), sql);
+
+            for (int parameter = 1; parameter <= parameters.size(); parameter++) {
+                statement.setObject(parameter, parameters.get(parameter - 1).value());
             }
 
             try (ResultSet rows = statement.executeQuery()) {
@@ -568,9 +734,19 @@ class FunctionCatalogueIntegrationTest {
         String methodName,
         String... componentNames
     ) throws Exception {
+        return rows(repository, methodName, List.of(), componentNames);
+    }
+
+    /** The named components of every row one generated read of arguments returns. */
+    private List<String> rows(
+        Object repository,
+        String methodName,
+        List<Object> arguments,
+        String... componentNames
+    ) throws Exception {
         List<String> rows = new ArrayList<>();
 
-        for (Object row : (List<?>) invoke(repository, methodName)) {
+        for (Object row : (List<?>) invoke(repository, methodName, arguments.toArray())) {
             List<String> values = new ArrayList<>();
 
             for (String componentName : componentNames) {
@@ -737,5 +913,12 @@ class FunctionCatalogueIntegrationTest {
         String alias,
         String postgresType
     ) {
+    }
+
+    /**
+     * One expected parameter: the Java type the generated method declares for
+     * it, and the value every test of this fixture binds at it.
+     */
+    private record ExpectedParameter(String javaType, Object value) {
     }
 }

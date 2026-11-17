@@ -96,6 +96,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -3581,12 +3582,16 @@ public final class QueryAnalyzer {
      * <p>An occurrence a clause of the query typed is that clause's parameter.
      * An occurrence no clause typed is typed by the cast it is the direct
      * operand of, wherever in the statement it stands, and is named after its
-     * own placeholder. Every remaining occurrence takes the parameter of the
-     * first occurrence of its own logical parameter, in textual order, that a
-     * clause or a cast typed, wherever both stand, and sqlcj writes that
-     * parameter's type at it. A logical parameter no occurrence types has no
-     * type to write, so the first occurrence of such a parameter, in textual
-     * order, is rejected naming where the query writes it.
+     * own placeholder. An occurrence neither of them typed, of a parameter
+     * neither of them typed anywhere in the query, is typed by the catalogue
+     * call it is a direct argument of, where that position states a placeholder
+     * type, and is named after its own placeholder as a cast-typed one is.
+     * Every remaining occurrence takes the parameter of the first occurrence of
+     * its own logical parameter, in textual order, that one of the three typed,
+     * wherever both stand, and sqlcj writes that parameter's type at it. A
+     * logical parameter no occurrence types has no type to write, so the first
+     * occurrence of such a parameter, in textual order, is rejected naming
+     * where the query writes it.
      *
      * <p>An occurrence the query tests for null is nullable wherever its
      * parameter's type comes from, because the test gives a {@code null} bound
@@ -3618,6 +3623,8 @@ public final class QueryAnalyzer {
 
         placeholders.requireReportedOccurrences();
 
+        typeCallArguments(reported, placeholders, occurrences, firstTyped);
+
         List<Integer> writtenTypes = new ArrayList<>();
 
         for (int position = 0; position < reported.size(); position++) {
@@ -3645,6 +3652,84 @@ public final class QueryAnalyzer {
         }
 
         return new ResolvedOccurrences(occurrences, writtenTypes);
+    }
+
+    /**
+     * Types each remaining occurrence that is a direct argument of a catalogue
+     * call at a position that states a placeholder type, which PostgreSQL 16
+     * infers there, so such an occurrence executes as a bare {@code ?}.
+     *
+     * <p>A call types a parameter only where no clause and no cast typed any
+     * occurrence of it, so a query that compiles without this rule keeps the
+     * parameter it has: the occurrence of such a parameter takes that
+     * parameter, as it does today, with its type written at it. The first
+     * occurrence typed here is the one a later uncast occurrence elsewhere
+     * takes, and two positions of one parameter that state different types are
+     * rejected as conflicting, as two clause-typed occurrences are.
+     */
+    private void typeCallArguments(
+        List<PlaceholderOccurrence> reported,
+        Placeholders placeholders,
+        List<QueryParameter> occurrences,
+        Map<Integer, QueryParameter> firstTyped
+    ) {
+        Set<Integer> stated = new HashSet<>(firstTyped.keySet());
+
+        for (int position = 0; position < reported.size(); position++) {
+            if (occurrences.get(position) != null) {
+                continue;
+            }
+
+            PlaceholderOccurrence occurrence = reported.get(position);
+            Placeholder placeholder = placeholders.of(occurrence.placeholder());
+
+            if (stated.contains(placeholder.index())) {
+                continue;
+            }
+
+            ColumnType type = argumentPlaceholderType(occurrence);
+
+            if (type == null) {
+                continue;
+            }
+
+            QueryParameter typed = toParameter(
+                placeholder,
+                indexedParameterName(placeholder),
+                type,
+                null,
+                false,
+                false,
+                false
+            );
+
+            occurrences.set(position, typed);
+            firstTyped.putIfAbsent(placeholder.index(), typed);
+        }
+    }
+
+    /**
+     * The type the catalogue states for one occurrence at its own argument
+     * position, and {@code null} for an occurrence that is the direct argument
+     * of no call, of a call the catalogue does not hold or does not read, such
+     * as a qualified or a {@code DISTINCT} one, and of a position that states
+     * no placeholder type.
+     */
+    private ColumnType argumentPlaceholderType(PlaceholderOccurrence occurrence) {
+        if (occurrence.call() == null) {
+            return null;
+        }
+
+        CatalogueCall call = catalogueCall(occurrence.call());
+
+        return call == null
+            ? null
+            : functionCatalogue.placeholderType(
+                call.name(),
+                call.form(),
+                call.arguments().size(),
+                occurrence.argument()
+            );
     }
 
     /**
@@ -5125,6 +5210,11 @@ public final class QueryAnalyzer {
      * here, which the visitor's
      * default traversal already leaves unentered, so a subquery of the
      * condition is analyzed by the predicate rules alone.
+     *
+     * <p>A {@code trim} written without characters, such as
+     * {@code trim(BOTH FROM name)}, has no characters expression, which the
+     * adapter's own traversal dereferences, so the walk stops at such a call
+     * rather than descending into it.
      */
     private void resolveJoinConditionColumns(Expression condition, Scope scope) {
         condition.accept(
@@ -5135,6 +5225,13 @@ public final class QueryAnalyzer {
                     resolveColumn(column, scope);
 
                     return null;
+                }
+
+                @Override
+                public <S> Void visit(TrimFunction trim, S context) {
+                    return trim.getExpression() == null
+                        ? null
+                        : super.visit(trim, context);
                 }
             }
         );
