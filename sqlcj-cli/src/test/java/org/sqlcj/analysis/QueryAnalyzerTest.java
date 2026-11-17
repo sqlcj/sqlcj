@@ -3149,9 +3149,9 @@ class QueryAnalyzerTest {
      * A placeholder argument takes the type its position states and reads no
      * {@code NULL} unless the query tests its logical parameter for null,
      * wherever that test is written, because such a parameter is non-null and
-     * so fails before the statement runs. The call's own type never types the
-     * placeholder in this subset, so an uncast placeholder is still rejected
-     * unless another occurrence types it.
+     * so fails before the statement runs. An uncast placeholder at such a
+     * position is typed by it, and one at a position that states no type is
+     * still rejected unless another occurrence types it.
      */
     @Test
     void shouldReadACatalogueCallOfAPlaceholderArgument() {
@@ -3181,10 +3181,208 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "Cannot infer the type of $1 in lower($1); state it with a cast,"
-                + " such as $1::<type>",
-            catalogueRejection("SELECT lower($1) AS n"),
-            "no catalogue position types a placeholder of its own in this subset"
+            List.of(new QueryColumn("n", ColumnType.TEXT, false)),
+            catalogueColumns("SELECT lower($1) AS n"),
+            "the position itself types an uncast placeholder of its own"
+        );
+
+        assertEquals(
+            "Cannot infer the type of :name in coalesce(:name, label);"
+                + " state it with a cast, such as :name::<type>",
+            catalogueRejection("SELECT id FROM events WHERE label = coalesce(:name, label)"),
+            "a position that states no placeholder type keeps the rejection"
+        );
+    }
+
+    /**
+     * An uncast placeholder that is a direct argument of a catalogue call, at a
+     * position the catalogue states a placeholder type for, is typed by that
+     * position wherever the call stands, because PostgreSQL 16 infers that type
+     * there. It is named after its own placeholder, which for an indexed one is
+     * its index, and is non-null, because nothing in the query tests it for
+     * null.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        quoteCharacter = '"',
+        value = {
+            "SELECT id FROM events WHERE label = lower(:name)|name TEXT non-null",
+            "SELECT id FROM events WHERE label = upper(:name)|name TEXT non-null",
+            "SELECT id FROM events WHERE label = trim(:name)|name TEXT non-null",
+            "SELECT id FROM events WHERE label = trim(:chars FROM label)"
+                + "|chars TEXT non-null",
+            "SELECT id FROM events WHERE label = trim(BOTH ' ' FROM :name)"
+                + "|name TEXT non-null",
+            "SELECT id FROM events WHERE label = trim(BOTH FROM :name)|name TEXT non-null",
+            "SELECT id FROM events WHERE at_zoned = date_trunc(:unit, at_zoned)"
+                + "|unit TEXT non-null",
+            "SELECT id FROM events WHERE at_zoned = date_trunc(:unit, at_local, :zone)"
+                + "|unit TEXT non-null, zone TEXT non-null",
+            "SELECT pg_try_advisory_xact_lock(:key) AS locked|key BIGINT non-null",
+            "SELECT pg_try_advisory_xact_lock($1) AS locked|param1 BIGINT non-null",
+            "SELECT pg_try_advisory_xact_lock(:first, :second) AS locked"
+                + "|first INTEGER non-null, second INTEGER non-null",
+            "SELECT lag(score, :step) OVER (ORDER BY id) AS p FROM events"
+                + "|step INTEGER non-null",
+            "SELECT lead(score, :step, score) OVER (ORDER BY id) AS p FROM events"
+                + "|step INTEGER non-null",
+            "SELECT lower(:name) AS n|name TEXT non-null",
+            "SELECT e.id FROM events e JOIN events f ON f.label = lower(:name)"
+                + "|name TEXT non-null",
+            "UPDATE events SET label = lower(:name)|name TEXT non-null",
+            "INSERT INTO events (id, label) VALUES (1, lower(:name))|name TEXT non-null"
+        }
+    )
+    void shouldTypeAnUncastPlaceholderFromItsCataloguePosition(String sql, String parameters) {
+        assertEquals(parameters, catalogueParameters(sql));
+    }
+
+    /**
+     * A call-typed occurrence states its type itself, so it stays a bare
+     * {@code ?}, and the parameter it types is the one an uncast occurrence
+     * elsewhere takes, with that type written at it.
+     */
+    @Test
+    void shouldExecuteACallArgumentWithoutAWrittenType() {
+        assertEquals(
+            "SELECT id FROM events WHERE label = lower(?)",
+            catalogueSql("SELECT id FROM events WHERE label = lower(:name)")
+        );
+
+        assertEquals(
+            "name TEXT non-null",
+            catalogueParameters("SELECT lower(:name) AS n FROM events ORDER BY :name")
+        );
+
+        assertEquals(
+            "SELECT lower(?) AS n FROM events ORDER BY ?::text",
+            catalogueSql("SELECT lower(:name) AS n FROM events ORDER BY :name"),
+            "an uncast occurrence elsewhere takes the parameter the call typed"
+        );
+    }
+
+    /**
+     * A clause and a cast type a parameter before its call does, and they type
+     * it wherever the query states them, so every query that compiles without
+     * this rule keeps the parameter and the executable statement it has.
+     */
+    @Test
+    void shouldTypeACallArgumentOnlyWhereNoClauseOrCastTypesItsParameter() {
+        assertEquals(
+            "label TEXT non-null",
+            catalogueParameters("SELECT lower($1) AS n FROM events WHERE label = $1")
+        );
+
+        assertEquals(
+            "SELECT lower(?::text) AS n FROM events WHERE label = ?",
+            catalogueSql("SELECT lower($1) AS n FROM events WHERE label = $1")
+        );
+
+        assertEquals(
+            "nickname VARCHAR non-null",
+            catalogueParameters(
+                "SELECT id FROM events WHERE nickname = $1 AND label = lower($1)"
+            ),
+            "a clause types and names the parameter its call would type otherwise"
+        );
+
+        assertEquals(
+            "label VARCHAR non-null",
+            catalogueParameters(
+                "SELECT lower($1) AS n FROM events WHERE label = $1::varchar"
+            ),
+            "a cast types the parameter its call would type otherwise"
+        );
+
+        assertEquals(
+            "name VARCHAR non-null",
+            catalogueParameters("SELECT lower(:name::varchar) AS n"),
+            "the cast of the argument itself types it"
+        );
+    }
+
+    /**
+     * Two occurrences of one parameter that two catalogue positions type
+     * differently are rejected as conflicting, as two clause-typed occurrences
+     * are.
+     */
+    @Test
+    void shouldRejectTwoCataloguePositionsOfConflictingTypes() {
+        assertEquals(
+            "Placeholder :key has conflicting types: String and Long",
+            catalogueRejection(
+                "SELECT trim(:key) AS t, pg_try_advisory_xact_lock(:key) AS locked"
+            )
+        );
+    }
+
+    /**
+     * A placeholder at a catalogue position that states no type of its own —
+     * every position whose type PostgreSQL 16 takes from the arguments rather
+     * than from the position — keeps the rejection it has, naming where the
+     * query writes it.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        quoteCharacter = '"',
+        value = {
+            "SELECT id FROM events WHERE label = coalesce(:x, label)"
+                + "|:x|coalesce(:x, label)",
+            "SELECT id FROM events WHERE label = greatest(:x, label)"
+                + "|:x|greatest(:x, label)",
+            "SELECT id FROM events WHERE label = least(:x, label)|:x|least(:x, label)",
+            "SELECT id FROM events WHERE id = nextval(:x)|:x|nextval(:x)",
+            "SELECT id FROM events WHERE at_zoned = date_trunc('day', :x)"
+                + "|:x|date_trunc('day', :x)",
+            "SELECT id FROM events ORDER BY lag(:x) OVER (ORDER BY id)|:x|lag(:x)",
+            "SELECT id FROM events ORDER BY lag(score, 1, :x) OVER (ORDER BY id)"
+                + "|:x|lag(score, 1, :x)",
+            "SELECT id FROM events ORDER BY first_value(:x) OVER (ORDER BY id)"
+                + "|:x|first_value(:x)",
+            "SELECT id FROM events ORDER BY last_value(:x) OVER (ORDER BY id)"
+                + "|:x|last_value(:x)"
+        }
+    )
+    void shouldRejectAPlaceholderAtACataloguePositionThatStatesNoType(
+        String sql,
+        String placeholder,
+        String enclosing
+    ) {
+        assertEquals(
+            "Cannot infer the type of %s in %s; state it with a cast, such as %s::<type>"
+                .formatted(placeholder, enclosing, placeholder),
+            catalogueRejection(sql)
+        );
+    }
+
+    /**
+     * A {@code trim} written without characters is read as the spelling it is,
+     * which is the trimmed string alone, wherever the query writes it: the
+     * parse tree reports no characters expression there, and the walks that
+     * read one stop at such a call instead of failing.
+     */
+    @Test
+    void shouldReadATrimWrittenWithoutCharacters() {
+        assertEquals(
+            List.of(new QueryColumn("t", ColumnType.TEXT, false)),
+            catalogueColumns("SELECT trim(BOTH FROM label) AS t FROM events")
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            catalogueColumns(
+                "SELECT e.id FROM events e JOIN events f ON trim(BOTH FROM e.label) = f.label"
+            )
+        );
+
+        assertEquals(
+            "name TEXT non-null",
+            catalogueParameters(
+                "SELECT e.id FROM events e JOIN events f"
+                    + " ON f.label = trim(BOTH FROM :name)"
+            )
         );
     }
 
@@ -3552,24 +3750,61 @@ class QueryAnalyzerTest {
 
     /** The result columns one read of the catalogue schema analyzes. */
     private List<QueryColumn> catalogueColumns(String sql) {
-        return analyzer.analyze(
-            new Query("ListEvents", QueryType.MANY, sql),
-            parser.parse(sql),
-            catalogueSchema
-        )
-            .columns();
+        return catalogueModel(sql).columns();
     }
 
-    /** The rejection one read of the catalogue schema reports. */
-    private String catalogueRejection(String sql) {
-        Query query = new Query("ListEvents", QueryType.MANY, sql);
-        ParsedSql parsedSql = parser.parse(sql);
+    /**
+     * The parameters one query of the catalogue schema analyzes, in logical
+     * order, each written as its name, its type, and its nullness.
+     */
+    private String catalogueParameters(String sql) {
+        List<String> parameters = new ArrayList<>();
 
+        for (QueryParameter parameter : catalogueModel(sql).parameters()) {
+            parameters.add(
+                "%s %s %s".formatted(
+                    parameter.name(),
+                    parameter.type(),
+                    parameter.nullable()
+                        ? "nullable"
+                        : "non-null"
+                )
+            );
+        }
+
+        return String.join(", ", parameters);
+    }
+
+    /** The statement one query of the catalogue schema executes. */
+    private String catalogueSql(String sql) {
+        return catalogueModel(sql).executableSql();
+    }
+
+    /** The rejection one query of the catalogue schema reports. */
+    private String catalogueRejection(String sql) {
         return assertThrows(
             UnsupportedOperationException.class,
-            () -> analyzer.analyze(query, parsedSql, catalogueSchema)
+            () -> catalogueModel(sql)
         )
             .getMessage();
+    }
+
+    /**
+     * The model one query of the catalogue schema analyzes, read as the query
+     * kind its own statement writes.
+     */
+    private QueryModel catalogueModel(String sql) {
+        QueryType type = sql.startsWith("INSERT")
+            || sql.startsWith("UPDATE")
+            || sql.startsWith("DELETE")
+                ? QueryType.EXEC
+                : QueryType.MANY;
+
+        return analyzer.analyze(
+            new Query("ReadEvents", type, sql),
+            parser.parse(sql),
+            catalogueSchema
+        );
     }
 
     @Test
@@ -9380,8 +9615,8 @@ class QueryAnalyzerTest {
         delimiter = '|',
         quoteCharacter = '"',
         value = {
-            "SELECT id FROM users WHERE email = lower(:email)|:email|lower(:email)",
-            "SELECT id FROM users WHERE email = lower($1)|$1|lower($1)",
+            "SELECT id FROM users WHERE email = initcap(:email)|:email|initcap(:email)",
+            "SELECT id FROM users WHERE email = initcap($1)|$1|initcap($1)",
             "SELECT id FROM users WHERE metadata->'k' = :v|:v|metadata->'k' = :v",
             "SELECT id FROM users ORDER BY :sort|:sort|ORDER BY",
             "SELECT id FROM users ORDER BY name, $1|$1|ORDER BY",

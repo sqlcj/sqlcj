@@ -3,4 +3,4 @@
 SELECT id,
        display_name
 FROM users
-WHERE lower(email::text) = lower(:email);
+WHERE lower(email::text) = :email;

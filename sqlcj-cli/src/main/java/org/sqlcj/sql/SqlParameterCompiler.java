@@ -1,11 +1,13 @@
 package org.sqlcj.sql;
 
+import net.sf.jsqlparser.expression.AnalyticExpression;
 import net.sf.jsqlparser.expression.CastExpression;
 import net.sf.jsqlparser.expression.Expression;
 import net.sf.jsqlparser.expression.ExpressionVisitorAdapter;
 import net.sf.jsqlparser.expression.Function;
 import net.sf.jsqlparser.expression.JdbcNamedParameter;
 import net.sf.jsqlparser.expression.JdbcParameter;
+import net.sf.jsqlparser.expression.TrimFunction;
 import net.sf.jsqlparser.expression.operators.relational.ExpressionList;
 import net.sf.jsqlparser.expression.operators.relational.IsDistinctExpression;
 import net.sf.jsqlparser.expression.operators.relational.IsNullExpression;
@@ -266,7 +268,7 @@ final class SqlParameterCompiler {
 
         List<String> uncompiled = new ArrayList<>();
 
-        collectPlaceholders(astRoot, names, uncompiled, placeholders, nullTestedPlaceholders(astRoot));
+        collectPlaceholders(astRoot, names, uncompiled, placeholders, placeholderUses(astRoot));
 
         return new SqlParameters(
             executableSql.toString(),
@@ -457,7 +459,7 @@ final class SqlParameterCompiler {
         List<String> names,
         List<String> uncompiled,
         List<PlaceholderOccurrence> placeholders,
-        Set<Expression> nullTested
+        PlaceholderUses uses
     ) {
         Object value = node.jjtGetValue();
 
@@ -468,11 +470,11 @@ final class SqlParameterCompiler {
             Expression operand = innermost.getLeftExpression();
 
             collectUncompiledPlaceholder(operand, names, uncompiled);
-            collectPlaceholder(operand, innermost, node, placeholders, nullTested);
+            collectPlaceholder(operand, innermost, node, placeholders, uses);
         }
 
         if (value instanceof Expression expression) {
-            collectPlaceholder(expression, null, node, placeholders, nullTested);
+            collectPlaceholder(expression, null, node, placeholders, uses);
         }
 
         for (int child = 0; child < node.jjtGetNumChildren(); child++) {
@@ -481,56 +483,86 @@ final class SqlParameterCompiler {
                 names,
                 uncompiled,
                 placeholders,
-                nullTested
+                uses
             );
         }
     }
 
     /**
-     * The placeholders of one parse tree the source tests for null, identified
-     * by the expression object of the occurrence itself, so that two
-     * occurrences of one placeholder name are told apart.
+     * How the source uses each placeholder of one parse tree, identified by the
+     * expression object of the occurrence itself, so that two occurrences of one
+     * placeholder name are told apart: the placeholders the source tests for
+     * null, and the call each placeholder is a direct argument of.
      *
-     * <p>A null-testing operator or function is an expression rather than a
-     * clause, and the parser gives an {@code IS NULL} no parse-tree node of its
+     * <p>A null-testing operator and a call are expressions rather than
+     * clauses, and the parser gives an {@code IS NULL} no parse-tree node of its
      * own when another expression encloses it, as the {@code OR} of a criteria
-     * guard does, so the operators are searched for inside the expression each
-     * node reports rather than among the nodes themselves. The search does not
+     * guard does, so both are searched for inside the expression each node
+     * reports rather than among the nodes themselves. The search does not
      * descend into a subquery, whose own expressions the node walk reaches.
+     *
+     * <p>The node walk reads the nodes in pre-order and the first report of one
+     * placeholder wins, so a window call, whose arguments the parse tree also
+     * holds under a plain call node below it, is the call reported for its own
+     * arguments.
      */
-    private Set<Expression> nullTestedPlaceholders(Node astRoot) {
-        Set<Expression> nullTested = Collections.newSetFromMap(new IdentityHashMap<>());
+    private PlaceholderUses placeholderUses(Node astRoot) {
+        PlaceholderUses uses = new PlaceholderUses(
+            Collections.newSetFromMap(new IdentityHashMap<>()),
+            new IdentityHashMap<>()
+        );
 
-        collectNullTestedPlaceholders(astRoot, new NullTestVisitor(nullTested));
+        collectPlaceholderUses(astRoot, new PlaceholderUseVisitor(uses));
 
-        return nullTested;
+        return uses;
     }
 
-    private void collectNullTestedPlaceholders(Node node, NullTestVisitor visitor) {
+    private void collectPlaceholderUses(Node node, PlaceholderUseVisitor visitor) {
         if (node.jjtGetValue() instanceof Expression expression) {
             expression.accept(visitor, null);
         }
 
         for (int child = 0; child < node.jjtGetNumChildren(); child++) {
-            collectNullTestedPlaceholders(node.jjtGetChild(child), visitor);
+            collectPlaceholderUses(node.jjtGetChild(child), visitor);
         }
     }
 
     /**
-     * Collects the placeholders one expression tests for null, which are the
-     * operands of {@code IS [NOT] NULL}, including its {@code ISNULL} and
-     * {@code NOTNULL} spellings, both sides of {@code IS [NOT] DISTINCT FROM},
-     * and the arguments of an unqualified {@code COALESCE} or {@code NULLIF}.
+     * How one source uses its placeholders: the ones it tests for null, and the
+     * call and argument position of each one a call writes as a direct
+     * argument.
+     */
+    private record PlaceholderUses(
+        Set<Expression> nullTested,
+        Map<Expression, CallArgument> arguments
+    ) {
+    }
+
+    /**
+     * One call and the zero-based position one placeholder takes among the
+     * arguments that call writes.
+     */
+    private record CallArgument(Expression call, int position) {
+    }
+
+    /**
+     * Collects how one expression uses its placeholders: the ones it tests for
+     * null, which are the operands of {@code IS [NOT] NULL}, including its
+     * {@code ISNULL} and {@code NOTNULL} spellings, both sides of
+     * {@code IS [NOT] DISTINCT FROM}, and the arguments of an unqualified
+     * {@code COALESCE} or {@code NULLIF}, and the ones a call writes as a direct
+     * argument, with the position each takes among the arguments the call
+     * writes.
      *
      * <p>The visitor is given no select visitor, so it reports the expressions
      * of one query level and stops at a subquery.
      */
-    private static final class NullTestVisitor extends ExpressionVisitorAdapter<Void> {
+    private static final class PlaceholderUseVisitor extends ExpressionVisitorAdapter<Void> {
 
-        private final Set<Expression> nullTested;
+        private final PlaceholderUses uses;
 
-        private NullTestVisitor(Set<Expression> nullTested) {
-            this.nullTested = nullTested;
+        private PlaceholderUseVisitor(PlaceholderUses uses) {
+            this.uses = uses;
         }
 
         @Override
@@ -556,7 +588,33 @@ final class SqlParameterCompiler {
                 }
             }
 
+            collectArguments(function, plainArguments(function));
+
             return super.visit(function, context);
+        }
+
+        /**
+         * Collects the arguments of one {@code trim}, which the parser reports
+         * as the trimmed characters, where the call writes them, and the
+         * trimmed string. A call written without characters, such as
+         * {@code trim(BOTH FROM s)}, has no characters expression, which the
+         * adapter's own traversal dereferences, so this walk stops at such a
+         * call rather than descending into it.
+         */
+        @Override
+        public <S> Void visit(TrimFunction trim, S context) {
+            collectArguments(trim, trimArguments(trim));
+
+            return trim.getExpression() == null
+                ? null
+                : super.visit(trim, context);
+        }
+
+        @Override
+        public <S> Void visit(AnalyticExpression analytic, S context) {
+            collectArguments(analytic, windowArguments(analytic));
+
+            return super.visit(analytic, context);
         }
 
         /**
@@ -571,6 +629,73 @@ final class SqlParameterCompiler {
         }
 
         /**
+         * Collects each argument of one call that is a placeholder itself, at
+         * the position the call writes it. An argument another expression wraps,
+         * a cast and a parenthesized one included, is not the placeholder, so
+         * such a position reports no call for it.
+         */
+        private void collectArguments(Expression call, List<Expression> arguments) {
+            for (int position = 0; position < arguments.size(); position++) {
+                Expression argument = arguments.get(position);
+
+                if (argument instanceof JdbcParameter || argument instanceof JdbcNamedParameter) {
+                    uses.arguments().putIfAbsent(argument, new CallArgument(call, position));
+                }
+            }
+        }
+
+        /** The arguments one plain call writes, in the order it writes them. */
+        private List<Expression> plainArguments(Function function) {
+            ExpressionList<?> parameters = function.getParameters();
+
+            return parameters == null
+                ? List.of()
+                : new ArrayList<>(parameters);
+        }
+
+        /**
+         * The arguments one {@code trim} writes, which are the trimmed
+         * characters, where the call writes them, and the trimmed string.
+         */
+        private List<Expression> trimArguments(TrimFunction trim) {
+            List<Expression> arguments = new ArrayList<>();
+
+            if (trim.getExpression() != null) {
+                arguments.add(trim.getExpression());
+            }
+
+            if (trim.getFromExpression() != null) {
+                arguments.add(trim.getFromExpression());
+            }
+
+            return arguments;
+        }
+
+        /**
+         * The arguments one window call writes, which are the read value and,
+         * for {@code lag} and {@code lead}, the offset and the default value
+         * beside it. A {@code PARTITION BY} or {@code ORDER BY} expression of
+         * the window is no argument of the call.
+         */
+        private List<Expression> windowArguments(AnalyticExpression analytic) {
+            List<Expression> arguments = new ArrayList<>();
+
+            if (analytic.getExpression() != null) {
+                arguments.add(analytic.getExpression());
+            }
+
+            if (analytic.getOffset() != null) {
+                arguments.add(analytic.getOffset());
+            }
+
+            if (analytic.getDefaultValue() != null) {
+                arguments.add(analytic.getDefaultValue());
+            }
+
+            return arguments;
+        }
+
+        /**
          * Collects one tested expression when it is a placeholder itself, a
          * cast chain of one, or a parenthesized one, and otherwise nothing: a
          * placeholder another expression computes with, as in
@@ -580,7 +705,7 @@ final class SqlParameterCompiler {
             Expression operand = operand(tested);
 
             if (operand instanceof JdbcParameter || operand instanceof JdbcNamedParameter) {
-                nullTested.add(operand);
+                uses.nullTested().add(operand);
             }
         }
 
@@ -625,7 +750,7 @@ final class SqlParameterCompiler {
         CastExpression cast,
         Node node,
         List<PlaceholderOccurrence> placeholders,
-        Set<Expression> nullTested
+        PlaceholderUses uses
     ) {
         if (!(value instanceof JdbcParameter) && !(value instanceof JdbcNamedParameter)) {
             return;
@@ -644,7 +769,9 @@ final class SqlParameterCompiler {
                             placeholder,
                             cast,
                             collected.enclosing(),
-                            collected.nullTested()
+                            collected.nullTested(),
+                            collected.call(),
+                            collected.argument()
                         )
                     );
                 }
@@ -653,12 +780,20 @@ final class SqlParameterCompiler {
             }
         }
 
+        CallArgument argument = uses.arguments().get(placeholder);
+
         placeholders.add(
             new PlaceholderOccurrence(
                 placeholder,
                 cast,
                 enclosing(node, placeholder),
-                nullTested.contains(placeholder)
+                uses.nullTested().contains(placeholder),
+                argument == null
+                    ? null
+                    : argument.call(),
+                argument == null
+                    ? PlaceholderOccurrence.NO_ARGUMENT
+                    : argument.position()
             )
         );
     }
