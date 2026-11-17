@@ -566,7 +566,7 @@ returns:
 | `pg_try_advisory_xact_lock(k1, k2)` | each a `SMALLINT` or `INTEGER`, or a string literal | `BOOLEAN`, a `Boolean` | both are non-null |
 | `row_number()`, `rank()`, `dense_rank()` `OVER (...)` | none | `BIGINT`, a `Long` | always |
 | `lower(s)`, `upper(s)` | `s` a `TEXT`, `VARCHAR`, `CHAR(n)`, or `CITEXT` column, a string literal, or `NULL` | `TEXT`, a `String` | `s` is non-null |
-| `trim(s)`, `trim(s, c)`, `trim(c FROM s)`, `trim([LEADING \| TRAILING \| BOTH] c FROM s)` | each as `lower`'s | `TEXT`, a `String` | every argument is non-null |
+| `trim(s)`, `trim(s, c)`, `trim(c FROM s)`, `trim([LEADING \| TRAILING \| BOTH] c FROM s)`, `trim([LEADING \| TRAILING \| BOTH] FROM s)` | each as `lower`'s | `TEXT`, a `String` | every argument is non-null |
 | `date_trunc(u, v)`, `date_trunc(u, v, z)` | `u` and `z` as `lower`'s; `v` a `TIMESTAMP`, `TIMESTAMPTZ`, `DATE`, or `INTERVAL`, and not an `INTERVAL` beside `z` | `TIMESTAMP`, a `LocalDateTime`, for a `TIMESTAMP` `v` written without `z`; `INTERVAL`, an `SqlInterval`, for an `INTERVAL` `v`; `TIMESTAMPTZ`, an `OffsetDateTime`, otherwise | every argument is non-null |
 | `coalesce(v, ...)` | arguments of a common type | the common type | one argument is non-null |
 | `greatest(v, ...)`, `least(v, ...)` | as `coalesce`'s, but no `JSON` | the common type | one argument is non-null |
@@ -603,11 +603,13 @@ returns:
   - a placeholder takes the type its position states in the table above, has
     none at a position that states one for no placeholder, and reads no `NULL`
     unless the query tests its parameter for null, wherever that test is
-    written, because a parameter no test makes nullable is non-null. The
-    call itself types no placeholder, so an uncast placeholder argument is still
-    rejected as [Parameters](#parameters) states unless another occurrence of
-    its parameter types it, while a cast one, as in
-    `pg_try_advisory_xact_lock($1::bigint)`, is typed by its own cast;
+    written, because a parameter no test makes nullable is non-null. An uncast
+    placeholder at a position that states a type is typed by it, as
+    [Parameters](#parameters) states, so `SELECT lower(:x) AS y` is a non-null
+    `TEXT` of a `String` parameter, while one at a position that states none is
+    still rejected unless another occurrence of its parameter types it. A cast
+    argument, as in `pg_try_advisory_xact_lock($1::bigint)`, is typed by its own
+    cast;
   - every other argument, a column of a type sqlcj does not map and a cast to
     such a type included, has no type. At a position whose result does not
     depend on it — the arguments of `lower`, `upper`, and `trim`,
@@ -1859,6 +1861,35 @@ reads as the operator itself rather than as a placeholder.
   indexed cast placeholder, including one in a clause or a nested query sqlcj
   does not analyze, is named `param<N>` after its own index, as in `param1` for
   `$1`, and colliding names take the usual numeric suffix.
+- A placeholder written as a direct argument of a call of the function
+  catalogue that [Reads](#reads) states, at a position that states a
+  placeholder type — the string of `lower` and `upper`, every argument `trim`
+  writes, the
+  unit and the time zone of `date_trunc`, the key or keys of
+  `pg_try_advisory_xact_lock`, and the offset of `lag` and `lead` — is typed by
+  that position without a cast, in whatever clause the call stands, because
+  PostgreSQL 16 infers the same type there. So `email = lower(:email)`,
+  `SET name = lower(:name)`, `VALUES (..., lower(:email))`, and
+  `SELECT lower(:x) AS y` each bind a `String`, and
+  `pg_try_advisory_xact_lock($1)` a `Long`. Such an occurrence keeps its own
+  name, which for an indexed placeholder is `param<N>`, is non-null unless the
+  query tests its parameter for null, and stays a bare `?`. A position that
+  states no placeholder type — the arguments of `coalesce`, `greatest`, and
+  `least`, the argument of `nextval`, the value and the default of `lag` and
+  `lead`, the argument of `first_value` and `last_value`, and the truncated
+  value of `date_trunc` — still needs a cast or another occurrence, so
+  `coalesce(:x, name)` is rejected as it was. A cast around the argument states
+  the argument itself, so `lower(:x::text)` is typed by that cast rather than by
+  the position.
+- A clause and a cast type a parameter before its call does, at every
+  occurrence of that parameter, so a query that compiles without the call rule
+  keeps the parameter and the statement it has:
+  `SELECT lower($1) AS n FROM events WHERE label = $1` binds the parameter
+  `label` its `WHERE` clause names, of the type that `text` column states, and
+  executes `lower(?::text)`. A call-typed
+  parameter types an uncast occurrence elsewhere as a clause-typed one does,
+  and two positions of one parameter that state different Java types are
+  rejected as conflicting, as two clause-typed occurrences are.
 - A column written with an array subscript or slice names no parameter, because
   the parameter beside it is one element rather than the column's value, so an
   indexed cast placeholder there is `param<N>` and a named one keeps its own
@@ -1901,7 +1932,8 @@ reads as the operator itself rather than as a placeholder.
   key-existence operator is that operator rather than an anonymous
   placeholder, as [Predicates](#predicates) states, so only a `?` written where
   a value belongs is rejected: `meta ? $1` is accepted and `meta ? ?` is not.
-- A placeholder neither a clause nor a cast types, at any occurrence of its
+- A placeholder neither a clause, a cast, nor a catalogue position types, at
+  any occurrence of its
   parameter — for example
   `ORDER BY $1`, `lower(name) = :name`, or `(:x)::int`, whose placeholder is not
   the direct operand of its cast — is rejected rather than left unbound, as
@@ -2873,12 +2905,15 @@ header-line order, before the run exits with status `1` having written nothing.
 - A column reference of a predicate subquery that no level in scope exposes, or
   that two sources of its own level expose, each with the diagnostic
   [Predicates](#predicates) states.
-- A placeholder in a location sqlcj does not analyze, where neither a cast nor
+- A placeholder in a location sqlcj does not analyze, where neither a cast, a
+  catalogue position, nor
   another occurrence of the same parameter states its type, including
   `ORDER BY $1`, a projection such as `SELECT $1 AS x`, a grouping list, a
   `HAVING` predicate, a subquery outside the analyzed predicate forms, such as
   the query of an `= ANY`, a
-  named placeholder under a function such as `lower(name) = :name`, a computed
+  named placeholder under a function such as `lower(name) = :name` or
+  `initcap(:name)`, where the placeholder is no argument of a catalogue call or
+  stands at a position that states no type, a computed
   `LIKE` pattern such as
   `'%' || $1 || '%'`, a placeholder as the
   tested value of a range such as `$1 BETWEEN id AND id`, a computed range
@@ -2901,7 +2936,10 @@ header-line order, before the run exits with status `1` having written nothing.
   same parameter that a clause or a cast types states it as well, in every one
   of those locations except a projection, which states a result column of its
   own: `SELECT :x AS y FROM users WHERE name = :x::text` stays rejected at the
-  projection.
+  projection. A direct argument of a catalogue call at a position that states a
+  placeholder type is typed there instead, as [Parameters](#parameters) states,
+  so `lower(:name)` binds a `String` while `initcap(:name)` and
+  `COALESCE($2, bio)` still need a cast.
 - A column reference written with an array subscript or slice wherever a direct
   column is required, because it reads one element or one range rather than the
   column: `SELECT labels[1] AS first` and `SELECT labels[1:2] AS pair` are
@@ -3405,6 +3443,33 @@ Reads:
   per column, for each of which PostgreSQL 16 reports the analyzed type, and
   every query of which runs against PostgreSQL 16 with each nullable form
   reading `null` for the row whose columns are `NULL`.
+- `SqlParameterCompilerTest.shouldReportTheCallAPlaceholderIsAnArgumentOf`,
+  `SqlParameterCompilerTest.shouldReportTheWindowCallOfAnOffsetPlaceholder`,
+  `SqlParameterCompilerTest.shouldReportNoCallForAPlaceholderThatIsNoDirectArgument`,
+  `QueryAnalyzerTest.shouldTypeAnUncastPlaceholderFromItsCataloguePosition`,
+  `QueryAnalyzerTest.shouldExecuteACallArgumentWithoutAWrittenType`,
+  `QueryAnalyzerTest.shouldTypeACallArgumentOnlyWhereNoClauseOrCastTypesItsParameter`,
+  `QueryAnalyzerTest.shouldRejectTwoCataloguePositionsOfConflictingTypes`,
+  `QueryAnalyzerTest.shouldRejectAPlaceholderAtACataloguePositionThatStatesNoType`,
+  and `QueryAnalyzerTest.shouldReadATrimWrittenWithoutCharacters` cover the
+  call and the argument position the SQL layer reports for a plain call, a
+  nested call, a `trim` written with and without characters, and a `lag`
+  offset, which reports the window call rather than the plain call the parse
+  tree also holds, and no call for a cast, a parenthesized, and a
+  `PARTITION BY` or `ORDER BY` placeholder; every position that types an uncast
+  placeholder, in `WHERE`, a join `ON` condition, `SET`, `VALUES`, and a
+  projection, with the indexed placeholder's own name; the bare `?` such an
+  occurrence executes and the type written at an uncast occurrence elsewhere;
+  the clause and the cast that type a parameter before its call does; two
+  positions of one parameter rejected as conflicting; every position that
+  states no placeholder type keeping its diagnostic; and a `trim` written
+  without characters read as a column, in a join `ON` condition, and as a typed
+  placeholder, while
+  `FunctionCatalogueIntegrationTest.shouldGenerateTheAnalyzedJavaTypeOfEachParameter`
+  asserts the generated Java type of every parameter of the fixture, whose
+  uncast one- and two-argument lock keys, `lower(label) = lower($1)` filter,
+  `date_trunc` unit, `lag` offset, and `trim(BOTH FROM ...)` arguments
+  PostgreSQL 16 reads and runs with the other catalogue queries.
 - `QueryAnalyzerTest.shouldResolveCastProjectionColumnFromItsAlias`,
   `QueryAnalyzerTest.shouldResolveEnumCastProjectionColumn`,
   `QueryAnalyzerTest.shouldResolveArrayCastProjectionColumn`,
@@ -4446,8 +4511,9 @@ Reference service:
 - `ReferenceServiceIntegrationTest.shouldRejectEachUnsupportedCatalogueQuery`
   covers the whole located diagnostic line, and the absence of generated
   output, of every entry of the reference service's unsupported query
-  catalogue: a data-modifying CTE, an uncast
-  `lower(:email)`, a placeholder beside a subscripted column, a read of the
+  catalogue: a data-modifying CTE, the uncast `:email` of
+  `lower(email::text) = :email`, which no catalogue position types, a
+  placeholder beside a subscripted column, a read of the
   `unfinished_tasks` view, a read of the `project_task_counts` materialized
   view, an `unnest(:ids::bigint[])` function source, and a `SELECT *` over
   `organizations`, whose `billing_address` column no Java type maps, and
