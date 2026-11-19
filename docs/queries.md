@@ -282,18 +282,69 @@ configuration entry.
   that reaches the modeled schema is the application's own setting, such as
   pgJDBC's `currentSchema`; see
   [`sql[].namespace`](configuration.md#sqlnamespace).
-- A source that names a view the schema source creates is rejected as
-  `<v> is a view, which sqlcj does not model; write its query in a WITH clause
-  instead.`, and a materialized view as
-  `<v> is a materialized view, which sqlcj does not model; write its query in a
-  WITH clause instead.`, in the same positions, because a view's columns stand
-  in its own query, which sqlcj analyzes only where the query itself writes it.
-  A modeled table is resolved before a view of its name, and a source that
-  names neither is rejected as `Table not found in schema: <t>`, which suggests
-  the closest modeled table, as in
-  `Table not found in schema: author. Did you mean 'authors'?`. The views
-  sqlcj records are those of the modeled namespace; see
-  [Ignored Statements](postgresql.md#ignored-statements).
+- A source that names a view or a materialized view the schema source creates
+  reads that view, in every position a source is resolved: a `FROM`, a `JOIN`
+  of any kind, a subquery source, a `WITH` body, the `SELECT` of an `INSERT`,
+  an `UPDATE ... FROM`, and a `DELETE ... USING`, qualified with the modeled
+  schema or not and with an alias or not. Its columns are the result columns
+  of its own defining query, analyzed against the schema as it stood when the
+  view was created, so a column a later statement adds to an underlying table
+  is no column of the view, as PostgreSQL fixes a view's columns at creation;
+  a view dropped and recreated, or replaced with `CREATE OR REPLACE`, has the
+  columns of its newest definition. A view's query is analyzed in its own
+  scope, so none of its wildcards or placeholders belongs to the query that
+  names it, and a view over a view resolves the inner view the same way. The
+  views sqlcj records are those of the modeled namespace; see
+  [Views](postgresql.md#views).
+- A view is a derived source, so `SELECT * FROM <v>` and `<v>.*` expand into
+  this query's own result columns and a read of a view returns a
+  `<QueryName>Result` record, or the value of its one non-null column, as a
+  read of a `WITH` clause does. No `<ViewName>Row` record is generated, because
+  a shared row record belongs to a table.
+- A column list written after a view's name, as in
+  `CREATE VIEW v (a, b) AS ...`, renames its leading columns exactly as a
+  column list on a `WITH` name does.
+- A common table expression in scope is resolved before a view of its name,
+  and a modeled table before a view of its name, so a source that resolves to
+  either keeps resolving to it. A source that names none of the three is
+  rejected as `Table not found in schema: <t>`, which suggests the closest
+  modeled table, as in
+  `Table not found in schema: author. Did you mean 'authors'?`.
+- A view whose defining query sqlcj cannot analyze stays unreadable, and a
+  source that names it is rejected as
+  `<v> is a view whose query sqlcj cannot analyze: <reason>`, or
+  `<v> is a materialized view whose query sqlcj cannot analyze: <reason>`,
+  where the reason is the failure's own text: the parse failure of a query the
+  SQL parser cannot read, the diagnostic of a clause its own analysis rejects,
+  `The column list of <v> names <m> columns, but its SELECT returns only <n>.`,
+  `sqlcj does not analyze a view whose query writes a placeholder.`, which
+  PostgreSQL does not accept in a view either, and
+  `sqlcj does not analyze a recursive view.` for a `CREATE RECURSIVE VIEW`. No
+  column is ever guessed, and a view is analyzed only where a query names it,
+  so a schema that holds such a view keeps loading.
+- An `INSERT`, `UPDATE`, or `DELETE` whose target names a view or a
+  materialized view is rejected as
+  `<v> is a view, which sqlcj reads but does not write through; write to the
+  table it reads instead.`, or `<v> is a materialized view, ...`. A view read
+  by a write — an `INSERT ... SELECT` source, an `UPDATE ... FROM`, or a
+  `DELETE ... USING` — is a source like any other.
+- `ALTER VIEW` and `ALTER MATERIALIZED VIEW`, their `RENAME TO` and
+  `RENAME COLUMN` forms included, stay ignored, so a query naming the new name
+  of a renamed view, or a renamed column, is rejected rather than read with a
+  guessed column, while one naming the old name compiles against a relation the
+  database no longer has. A view PostgreSQL drops only through the `CASCADE` of
+  another statement stays recorded as well, so a query that names it also
+  compiles against a relation the database no longer has. A `pg_dump` snapshot
+  writes every view as the database holds it, so a snapshot input models the
+  rename and the cascaded drop alike.
+- A parenthesized join group that opens a `FROM` or `USING` list, such as
+  `FROM (a JOIN b ON ...) JOIN c ON ...`, is read as the same joins
+  unparenthesized, at any depth of leading groups, because a join is
+  left-associative; `pg_dump` writes every join of a view that way. A
+  parenthesized group that writes an alias, that a join joins, or that stands
+  after the first item of its list keeps the
+  `Only table sources are supported.` or
+  `Only table join sources are supported.` its clause states.
 - A table or a derived source may be joined with `JOIN` or `INNER JOIN`, with
   `LEFT`, `RIGHT`, or `FULL JOIN` in its bare or `OUTER` spelling, each of them
   written with an `ON` condition, a `USING` list, or `NATURAL`, or with
@@ -4513,9 +4564,51 @@ Reference service:
   output, of every entry of the reference service's unsupported query
   catalogue: a data-modifying CTE, the uncast `:email` of
   `lower(email::text) = :email`, which no catalogue position types, a
-  placeholder beside a subscripted column, a read of the
-  `unfinished_tasks` view, a read of the `project_task_counts` materialized
-  view, an `unnest(:ids::bigint[])` function source, and a `SELECT *` over
-  `organizations`, whose `billing_address` column no Java type maps, and
+  placeholder beside a subscripted column, an `unnest(:ids::bigint[])`
+  function source, and a `SELECT *` over `organizations`, whose
+  `billing_address` column no Java type maps, and
   `ReferenceServiceIntegrationTest.shouldCatalogueExactlyTheUnsupportedQueryFiles`
   covers that the catalogue directory holds exactly those queries.
+- `QueryAnalyzerTest.shouldResolveAViewSource`,
+  `shouldResolveAMaterializedViewSource`, `shouldReadALeftJoinedViewAsNullable`,
+  `shouldReadAViewSourceOfAWrite`, `shouldResolveOneNonNullViewColumn`,
+  `shouldExpandAWildcardOfAViewWithoutAColumnAddedLater`,
+  `shouldRenameTheColumnsAViewListsAfterItsName`,
+  `shouldResolveACommonTableExpressionBeforeAViewOfItsName`, and
+  `shouldResolveAModeledTableBeforeAViewOfItsName` cover a view and a
+  materialized view read in every source position, qualified and aliased, the
+  nullability of a left-joined view, the flattened wildcard of a view without
+  the column a later statement added, the renaming column list, a view over a
+  view, the one non-null column of a view, and the resolution order of a
+  `WITH` clause, a table, and a view of one name;
+  `shouldRejectAWriteIntoAView` and `shouldRejectAViewSqlcjCannotAnalyze`
+  cover the two view diagnostics; and
+  `shouldReadAParenthesizedJoinThatOpensAFromList`,
+  `shouldReadAParenthesizedJoinOfAUsingClause`, and
+  `shouldRejectAParenthesizedJoinElsewhere` cover the parenthesized join group
+  and the positions that keep rejecting one.
+- `SqlcjCompilerIntegrationTest.shouldReadAViewOfTheMigrationHistory`,
+  `shouldRejectAWriteIntoAViewOfTheMigrationHistory`, and
+  `shouldRejectAQueryOnAViewItCannotAnalyze` cover a view of a migration
+  history read through the generated repository, without the column a later
+  migration added, and the located diagnostic line of each view rejection.
+- `ReferenceServiceIntegrationTest.shouldExecuteTheGeneratedViewQueries`
+  executes the reference service's `ListUnfinishedTasks`, which reads the view
+  the history dropped and recreated with its `priority` column and leaves out
+  the done task, and its `ListProjectTaskCounts`, which reads the refreshed
+  materialized view and counts `0` for a project with no task, against
+  PostgreSQL 16 through the generated repository, and
+  `shouldGenerateIdenticalRepositoriesFromHistorySnapshotAndDump` covers that
+  the history, the hand-written snapshot, and the `pg_dump` snapshot, which
+  writes the materialized view's join in parentheses, generate one
+  byte-identical tree with both view queries in the catalogue.
+- `ViewSourcesIntegrationTest` covers a sqlcj-owned history of views alone: a
+  `SELECT *` view created before a column was added to its table, a view with a
+  column list, a view `CREATE OR REPLACE` appended a column to, a view dropped
+  and recreated with a new definition, a view over a view, and a materialized
+  view created `WITH NO DATA` and refreshed. Its
+  `shouldGenerateIdenticalRepositoriesFromHistoryAndDump` covers that the
+  history and its `pg_dump --schema-only` snapshot generate one byte-identical
+  tree that compiles, and `shouldExecuteTheGeneratedViewQueries` covers every
+  one of those views read against PostgreSQL 16 through the generated
+  repository.

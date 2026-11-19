@@ -538,8 +538,8 @@ rather than rejecting it:
   which sqlcj's parser cannot read but which cannot change a column either, and
   its sequences and `SET DEFAULT nextval(...)` statements,
 - its constraint and index statements, its `OWNER TO` statements, and its
-  grants, policies, comments, extensions, composite types, functions,
-  triggers, views, and materialized views, and
+  grants, policies, comments, extensions, composite types, functions, and
+  triggers, and
 - the tables, types, and statements of every schema other than the one the
   group models, so a dump of a whole database holds the schemas of other
   services without modeling them.
@@ -1163,7 +1163,7 @@ statements and files before them left; the enum-type statements are listed in
 | `ALTER TABLE ... SET SCHEMA <schema>`, as the statement's sole action, which is the only form PostgreSQL accepts | Removes the table, keeping the order of the remaining ones, because it moves out of the one namespace the group models. `SET SCHEMA` naming the modeled schema does nothing: the table already stands there. A table with modeled partitions is rejected as `Unsupported ALTER TABLE action: SET SCHEMA <schema>`, because its partitions would stay in the modeled namespace following a parent sqlcj no longer models. |
 | A `CREATE TABLE` or an `ALTER TABLE` whose own table is qualified with a schema other than the modeled one | Ignored before anything it names is resolved, so neither its rejected clauses, its rejected actions, nor its `LIKE` and `PARTITION OF` sources are resolved and a modeled table of the same unqualified name is left alone. |
 | Any other `ALTER TABLE` action outside the ignored actions listed in [Ignored Statements](#ignored-statements) | Rejected as `Unsupported ALTER TABLE action: <action>`, quoting the action's own SQL. |
-| `DROP` of any object other than a table, such as `DROP VIEW` or `DROP INDEX` | Ignored; see [Ignored Statements](#ignored-statements). A `DROP VIEW` or `DROP MATERIALIZED VIEW` changes no modeled table either, and only removes the names it states from the recorded views. |
+| `DROP` of any object other than a table, such as `DROP VIEW` or `DROP INDEX` | Ignored; see [Ignored Statements](#ignored-statements). A `DROP VIEW` or `DROP MATERIALIZED VIEW` changes no modeled table either, and only removes the names it states from the recorded views; see [Views](#views). |
 
 One `ALTER TABLE` may state several actions; they are applied in the written
 order. Table and column names are matched case-insensitively, as query analysis
@@ -1197,6 +1197,54 @@ are those modeled where the statement stands, in declaration order, and a name
 qualified with a schema other than the modeled one states no suggestion,
 because what fails is its schema and not its spelling.
 
+## Views
+
+A view and a materialized view of the modeled namespace are recorded with the
+definition their statement states, and a query that names one reads it as a
+query source; see [Queries](queries.md#sources). The statement itself changes
+no modeled table, so a schema that creates a view loads exactly as it did
+before.
+
+The recorded definition is read from the words of
+`CREATE [OR REPLACE] [RECURSIVE] VIEW`,
+`CREATE MATERIALIZED VIEW [IF NOT EXISTS]`, and
+`DROP [MATERIALIZED] VIEW [IF EXISTS]`, compared case-insensitively, and holds:
+
+- the view's name, without its SQL identifier delimiters and without the
+  modeled schema qualifier, and whether it is a materialized view,
+- the text of its defining query, which is the text after the `AS` that follows
+  the name, the optional column list, and the optional clauses PostgreSQL
+  places between them — a view's `WITH (...)` and a materialized view's
+  `USING`, `WITH (...)`, and `TABLESPACE` — without a trailing
+  `WITH [CASCADED | LOCAL] CHECK OPTION` or `WITH [NO] DATA`, which states
+  nothing about the query's columns,
+- the column list written after the name, as in `CREATE VIEW v (a, b) AS ...`,
+  which renames the query's leading columns,
+- the schema as it stood just before the statement, which is the schema the
+  defining query is analyzed against, because PostgreSQL fixes a view's output
+  columns when it is created, and
+- whether the statement states `RECURSIVE`, which makes a view sqlcj does not
+  analyze.
+
+Nothing of the definition is analyzed while the schema is read, so a view whose
+query sqlcj cannot analyze never stops a schema from loading; it fails only a
+query that names it, with the reason that analysis states.
+
+`CREATE OR REPLACE VIEW` and every other `CREATE` of a recorded name replace
+the recorded view in its position, as PostgreSQL holds one relation of a name at
+a time, while `CREATE MATERIALIZED VIEW IF NOT EXISTS` of a recorded name keeps
+the view that stands there. `DROP VIEW` and `DROP MATERIALIZED VIEW` remove
+every recorded name they state, of either kind, and a `DROP` of a name no view
+is recorded of does nothing. A view PostgreSQL drops only through the `CASCADE`
+of another statement stays recorded.
+
+A temporary view and a view of a schema the group does not model are recorded
+nowhere, so a query that names one fails as a missing table.
+`REFRESH MATERIALIZED VIEW`, `ALTER VIEW`, and `ALTER MATERIALIZED VIEW`,
+`RENAME TO` and `RENAME COLUMN` included, are ignored and leave every recorded
+view as it stands; a `pg_dump` snapshot writes a renamed view under its new
+names, so a snapshot input models the rename.
+
 ## Ignored Statements
 
 A schema file records the whole history of a database, not only its tables, so
@@ -1223,19 +1271,9 @@ Everything else a migration history holds is ignored, including
 - `DO` blocks, with an untagged or a tagged body and with or without a stated
   `LANGUAGE`,
 - `INSERT`, `UPDATE`, `DELETE`, and `TRUNCATE`, a migration's data statements,
-- `CREATE VIEW`, `DROP VIEW`, and the `CREATE`, `REFRESH`, and `DROP` forms of
-  `MATERIALIZED VIEW`, which change no schema model, because a view's columns
-  stand in its own query; the views and materialized views of the modeled
-  namespace are recorded by their name and their kind nonetheless, from the
-  words of `CREATE [OR REPLACE] [RECURSIVE] VIEW`,
-  `CREATE MATERIALIZED VIEW [IF NOT EXISTS]`, and
-  `DROP [MATERIALIZED] VIEW [IF EXISTS]`, so that a query that names one is
-  rejected as
-  `<v> is a view, which sqlcj does not model; write its query in a WITH clause
-  instead.`, and a materialized view as
-  `<v> is a materialized view, which sqlcj does not model; write its query in a
-  WITH clause instead.`; a view of another schema and a temporary view are
-  recorded nowhere, and a `DROP` of a name no view is recorded of does nothing,
+- `REFRESH MATERIALIZED VIEW`, `ALTER VIEW`, and `ALTER MATERIALIZED VIEW`,
+  their `RENAME TO` and `RENAME COLUMN` forms included, which leave every
+  recorded view as it stands,
 - `CREATE SCHEMA` and `DROP SCHEMA`,
 - `SET`, including `SET search_path TO a, b`, `RESET`, `ANALYZE`, `VACUUM`,
   `LOCK TABLE`, `BEGIN`, `COMMIT`, `COPY`, and a plain `SELECT`, such as the
@@ -1257,8 +1295,9 @@ Everything else a migration history holds is ignored, including
   `ALTER SCHEMA`, `CREATE AGGREGATE`, or `CREATE CAST`.
 
 An ignored statement is not resolved against the schema at all, so it may name a
-table or a column the snapshot does not model: a view over an unmodeled table
-and a `TRUNCATE` of one are both accepted.
+table or a column the snapshot does not model: a `TRUNCATE` of one is accepted,
+and so is a view over one, which is recorded with its own query and fails only
+a query that reads it; see [Views](#views).
 
 These statements are rejected rather than ignored, because sqlcj cannot tell
 what they would do to the schema model. Each diagnostic below is reported at the
@@ -2074,12 +2113,44 @@ Ordered table DDL:
   covers the file-naming diagnostic of a missing reference and that no file is
   written.
 
+Views:
+
+- `DefaultSchemaParserTest.shouldRecordTheViewsOfTheModeledNamespace` covers the
+  name and kind recorded for one spelling per `CREATE` form, including the
+  lower-case, quoted, and `public`-qualified ones, and that the statement
+  changes no table and no enum type;
+  `DefaultSchemaParserTest.shouldRecordTheDefiningQueryOfAView` covers the
+  recorded query text of a column list, a view's `WITH (...)`, a materialized
+  view's `USING`, `WITH (...)`, and `TABLESPACE`, each trailing
+  `CHECK OPTION` and `WITH [NO] DATA` spelling, a trailing comment, and a
+  `'with no data'` literal inside the query;
+  `DefaultSchemaParserTest.shouldRecordTheColumnListOfAView` covers the
+  recorded list, quoted names included, and its absence; and
+  `DefaultSchemaParserTest.shouldRecordWhetherAViewIsRecursive` covers the
+  recursive marker.
+- `DefaultSchemaParserTest.shouldRecordTheSchemaAViewWasCreatedAgainst` covers
+  that a view holds the tables and the views recorded before its own
+  statement and not the column a later statement adds;
+  `DefaultSchemaParserTest.shouldRecordOneViewPerName` and
+  `DefaultSchemaParserTest.shouldKeepTheRecordedViewOfACreateIfNotExists` cover
+  the replaced definition of every other `CREATE` and the view
+  `CREATE MATERIALIZED VIEW IF NOT EXISTS` keeps;
+  `DefaultSchemaParserTest.shouldRemoveTheDroppedViews` covers `DROP` of either
+  kind and of a name no view is recorded of; and
+  `DefaultSchemaParserTest.shouldRecordNoViewOutsideTheModeledNamespace` covers
+  the temporary view and the view of another schema that are recorded nowhere.
+- The queries that read a recorded view, the two view diagnostics, and the
+  PostgreSQL 16 runs of `ReferenceServiceIntegrationTest` and
+  `ViewSourcesIntegrationTest` are listed in
+  [Queries](queries.md#verified-by).
+
 Ignored statements:
 
 - `DefaultSchemaParserTest.shouldIgnoreEveryStatementItDoesNotModel` covers one
   spelling per statement kind JSqlParser parses, including the lower-case
   `ALTER INDEX` form, a dollar-quoted `CREATE OR REPLACE FUNCTION` and a
-  dollar-quoted `CREATE PROCEDURE`, the views, schemas, session, privilege,
+  dollar-quoted `CREATE PROCEDURE`, the view statements, which leave every
+  table and enum type as they stand, the schemas, session, privilege,
   role, policy, non-rename `ALTER DOMAIN`, and non-enum `CREATE TYPE`
   statements, and the opaque
   `ALTER FUNCTION`, `ALTER SCHEMA`, `CREATE AGGREGATE`, and `CREATE CAST`; and
