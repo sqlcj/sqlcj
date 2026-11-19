@@ -470,10 +470,11 @@ class QueryAnalyzerTest {
     );
 
     /**
-     * A schema that records a view, a materialized view, and a view of the name
-     * of its one modeled table.
+     * The schema the recorded views of {@link #viewSchema} were created
+     * against: one {@code users} table, before the column a later statement
+     * added to it.
      */
-    private static final Schema viewSchema = new Schema(
+    private static final Schema viewBaseSchema = new Schema(
         List.of(
             new Table(
                 "users",
@@ -483,15 +484,86 @@ class QueryAnalyzerTest {
                 ),
                 List.of()
             )
+        )
+    );
+
+    /**
+     * The schema a view over a view was created against, which records the
+     * view that one reads.
+     */
+    private static final Schema viewOverViewSchema = new Schema(
+        viewBaseSchema.tables(),
+        List.of(),
+        List.of(),
+        List.of(view("listed", "SELECT id, name FROM users", List.of("ident", "label")))
+    );
+
+    /**
+     * A schema whose {@code users} table carries a column added after its
+     * views were created, and that records a view of each shape the analyzer
+     * resolves: a plain view, a materialized view, a view of the name of the
+     * modeled table, a {@code SELECT *} view, a view with a column list, a
+     * view over a view, and the views whose queries sqlcj cannot analyze.
+     */
+    private static final Schema viewSchema = new Schema(
+        List.of(
+            new Table(
+                "users",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("name", ColumnType.VARCHAR, true),
+                    new Column("email", ColumnType.TEXT, true)
+                ),
+                List.of()
+            )
         ),
         List.of(),
         List.of(),
         List.of(
-            new View("active_users", false),
-            new View("user_totals", true),
-            new View("users", false)
+            view("active_users", "SELECT id, name FROM users"),
+            new View(
+                "user_totals",
+                true,
+                "SELECT count(id) AS total FROM users",
+                List.of(),
+                viewBaseSchema,
+                false
+            ),
+            view("users", "SELECT id FROM users"),
+            view("star_users", "SELECT * FROM users"),
+            view("listed", "SELECT id, name FROM users", List.of("ident", "label")),
+            new View(
+                "over_view",
+                false,
+                "SELECT ident, label FROM listed",
+                List.of(),
+                viewOverViewSchema,
+                false
+            ),
+            view("unreadable_view", "SELEC id FROM users"),
+            view("missing_column_view", "SELECT nickname FROM users"),
+            view("placeholder_view", "SELECT id FROM users WHERE id = $1"),
+            view("long_list_view", "SELECT id, name FROM users", List.of("a", "b", "c")),
+            new View(
+                "recursive_view",
+                false,
+                "SELECT id FROM users",
+                List.of("id"),
+                viewBaseSchema,
+                true
+            )
         )
     );
+
+    /** One recorded view of {@link #viewBaseSchema} without a column list. */
+    private static View view(String name, String query) {
+        return view(name, query, List.of());
+    }
+
+    /** One recorded view of {@link #viewBaseSchema}. */
+    private static View view(String name, String query, List<String> columnNames) {
+        return new View(name, false, query, columnNames, viewBaseSchema, false);
+    }
 
     /**
      * A schema whose tables share join column names of several types and
@@ -12982,62 +13054,31 @@ class QueryAnalyzerTest {
 
     /**
      * A source that names a view or a materialized view the schema records
-     * states its kind, that sqlcj does not model it, and the {@code WITH}
-     * clause that replaces it, in every position a table is resolved: a
-     * {@code FROM}, a {@code JOIN}, a {@code public}-qualified source, and a
-     * write target. The name is the query's own, without its SQL identifier
-     * delimiters and without the modeled schema qualifier.
+     * reads that view, in every position a source is resolved: a {@code FROM},
+     * a {@code JOIN}, a {@code LEFT JOIN}, a subquery source, a {@code WITH}
+     * body, the {@code SELECT} of an {@code INSERT}, an {@code UPDATE ... FROM}
+     * and a {@code DELETE ... USING}. A view's columns are those of its own
+     * defining query, analyzed against the schema recorded with it.
      */
     @ParameterizedTest
     @CsvSource(
         delimiter = '|',
         value = {
-            "MANY|SELECT id FROM active_users|active_users|view",
-            "MANY|SELECT id FROM public.active_users|active_users|view",
-            "MANY|SELECT id FROM \"ACTIVE_USERS\"|ACTIVE_USERS|view",
-            "MANY|SELECT u.id FROM users u JOIN active_users a ON a.id = u.id|active_users|view",
-            "MANY|SELECT u.id FROM users u LEFT JOIN active_users a ON a.id = u.id"
-                + "|active_users|view",
-            "EXEC|INSERT INTO active_users (name) VALUES ($1)|active_users|view",
-            "EXEC|UPDATE active_users SET name = $1 WHERE id = $2|active_users|view",
-            "EXEC|DELETE FROM active_users WHERE id = $1|active_users|view",
-            "MANY|SELECT id FROM user_totals|user_totals|materialized view",
-            "MANY|SELECT u.id FROM users u JOIN user_totals t ON t.id = u.id"
-                + "|user_totals|materialized view",
-            "EXEC|INSERT INTO user_totals (name) VALUES ($1)|user_totals|materialized view"
+            "SELECT id, name FROM active_users",
+            "SELECT id, name FROM public.active_users",
+            "SELECT a.id, a.name FROM active_users a",
+            "SELECT a.id, a.name FROM public.active_users AS a",
+            "SELECT u.id, a.name FROM users u JOIN active_users a ON a.id = u.id",
+            "SELECT s.id, s.name FROM (SELECT id, name FROM active_users) s",
+            "WITH recent AS (SELECT id, name FROM active_users) SELECT id, name FROM recent"
         }
     )
-    void shouldRejectAViewSource(QueryType type, String sql, String name, String kind) {
-        Query query = new Query("TouchActiveUsers", type, sql);
-        ParsedSql parsedSql = parser.parse(sql);
-
-        IllegalArgumentException exception = assertThrows(
-            IllegalArgumentException.class,
-            () -> analyzer.analyze(query, parsedSql, viewSchema)
-        );
-
-        assertEquals(
-            "%s is a %s, which sqlcj does not model; write its query in a WITH clause instead."
-                .formatted(name, kind),
-            exception.getMessage()
-        );
-    }
-
-    /**
-     * A modeled table is found before a recorded view of its name, and a source
-     * that names neither keeps failing as a missing table.
-     */
-    @Test
-    void shouldResolveAModeledTableBeforeAViewOfItsName() {
-        String sql = "SELECT id, name FROM users";
-
+    void shouldResolveAViewSource(String sql) {
         QueryModel model = analyzer.analyze(
-            new Query("ListUsers", QueryType.MANY, sql),
+            new Query("ListActiveUsers", QueryType.MANY, sql),
             parser.parse(sql),
             viewSchema
         );
-
-        assertEquals("users", model.table());
 
         assertEquals(
             List.of(
@@ -13047,6 +13088,284 @@ class QueryAnalyzerTest {
             model.columns()
         );
 
+        assertNull(model.rowTable(), "a view contributes no shared row record");
+    }
+
+    /**
+     * A {@code LEFT JOIN} of a view reads every column it exposes as a column
+     * that may be absent, as it reads a null-extended table.
+     */
+    @Test
+    void shouldReadALeftJoinedViewAsNullable() {
+        String sql = "SELECT u.id, a.id AS active_id, a.name FROM users u"
+            + " LEFT JOIN active_users a ON a.id = u.id";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsersWithActive", QueryType.MANY, sql),
+            parser.parse(sql),
+            viewSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("active_id", ColumnType.BIGINT, true),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /** A materialized view is read exactly as a view is. */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "SELECT total FROM user_totals",
+            "SELECT t.total FROM user_totals t",
+            "SELECT t.total FROM users u JOIN user_totals t ON t.total = u.id"
+        }
+    )
+    void shouldResolveAMaterializedViewSource(String sql) {
+        QueryModel model = analyzer.analyze(
+            new Query("CountUsers", QueryType.ONE, sql),
+            parser.parse(sql),
+            viewSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("total", ColumnType.BIGINT, false)),
+            model.columns()
+        );
+
+        assertNull(model.rowTable());
+    }
+
+    /**
+     * A read of one non-null column of a view resolves that one column, which
+     * a generated query returns the value of (D-P), and no row record (D-I).
+     */
+    @Test
+    void shouldResolveOneNonNullViewColumn() {
+        String sql = "SELECT id FROM active_users WHERE id = $1";
+
+        QueryModel model = analyzer.analyze(
+            new Query("GetActiveUserId", QueryType.OPTIONAL, sql),
+            parser.parse(sql),
+            viewSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("id", ColumnType.BIGINT, false)),
+            model.columns()
+        );
+
+        assertNull(model.rowTable());
+    }
+
+    /**
+     * A wildcard of a view, bare or qualified, expands into this query's own
+     * result columns, as it does for a common table expression, and a column
+     * added to an underlying table after the view was created is none of them,
+     * because PostgreSQL fixed the view's columns when it was created.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = { "SELECT * FROM star_users", "SELECT s.* FROM star_users s" })
+    void shouldExpandAWildcardOfAViewWithoutAColumnAddedLater(String sql) {
+        QueryModel model = analyzer.analyze(
+            new Query("ListStarUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            viewSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
+            ),
+            model.columns(),
+            "the email column added after the view was created is no column of it"
+        );
+
+        assertNull(model.rowTable());
+    }
+
+    /**
+     * A column list written after a view's name renames its leading columns,
+     * as a column list on a {@code WITH} name does, and a view over such a view
+     * reads the renamed columns from its own recorded schema.
+     */
+    @Test
+    void shouldRenameTheColumnsAViewListsAfterItsName() {
+        String sql = "SELECT ident, label FROM listed";
+
+        assertEquals(
+            List.of(
+                new QueryColumn("ident", ColumnType.BIGINT, false),
+                new QueryColumn("label", ColumnType.VARCHAR, true)
+            ),
+            analyzer.analyze(
+                new Query("ListListed", QueryType.MANY, sql),
+                parser.parse(sql),
+                viewSchema
+            )
+                .columns()
+        );
+
+        String overView = "SELECT ident, label FROM over_view";
+
+        assertEquals(
+            List.of(
+                new QueryColumn("ident", ColumnType.BIGINT, false),
+                new QueryColumn("label", ColumnType.VARCHAR, true)
+            ),
+            analyzer.analyze(
+                new Query("ListOverView", QueryType.MANY, overView),
+                parser.parse(overView),
+                viewSchema
+            )
+                .columns()
+        );
+    }
+
+    /**
+     * A write reads a view like any other source: an {@code INSERT ... SELECT},
+     * an {@code UPDATE ... FROM}, and a {@code DELETE ... USING} each resolve
+     * their columns and type their placeholders through it.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "INSERT INTO users (id, name) SELECT id, name FROM active_users",
+            "UPDATE users SET name = $1 FROM active_users a WHERE a.id = users.id",
+            "DELETE FROM users USING active_users a WHERE a.id = users.id"
+        }
+    )
+    void shouldReadAViewSourceOfAWrite(String sql) {
+        QueryModel model = analyzer.analyze(
+            new Query("TouchUsers", QueryType.EXEC, sql),
+            parser.parse(sql),
+            viewSchema
+        );
+
+        assertEquals("users", model.table());
+    }
+
+    /**
+     * A write whose target names a view or a materialized view states its kind
+     * and the table to write to instead, on an {@code INSERT}, an
+     * {@code UPDATE}, and a {@code DELETE} alike. The name is the query's own,
+     * without its SQL identifier delimiters and without the modeled schema
+     * qualifier.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "INSERT INTO active_users (name) VALUES ($1)|active_users|view",
+            "INSERT INTO public.active_users (name) VALUES ($1)|active_users|view",
+            "INSERT INTO \"ACTIVE_USERS\" (name) VALUES ($1)|ACTIVE_USERS|view",
+            "UPDATE active_users SET name = $1 WHERE id = $2|active_users|view",
+            "DELETE FROM active_users WHERE id = $1|active_users|view",
+            "INSERT INTO user_totals (total) VALUES ($1)|user_totals|materialized view",
+            "UPDATE user_totals SET total = $1|user_totals|materialized view",
+            "DELETE FROM user_totals WHERE total = $1|user_totals|materialized view"
+        }
+    )
+    void shouldRejectAWriteIntoAView(String sql, String name, String kind) {
+        Query query = new Query("TouchActiveUsers", QueryType.EXEC, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, viewSchema)
+        );
+
+        assertEquals(
+            "%s is a %s, which sqlcj reads but does not write through; "
+                .formatted(name, kind)
+                + "write to the table it reads instead.",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A source that names a view whose defining query sqlcj cannot analyze
+     * states its kind and the reason, which is the failure's own text: a query
+     * the SQL parser cannot read, a query whose own analysis fails, a query
+     * that writes a placeholder, a column list longer than the query's columns,
+     * and a recursive view.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT id FROM unreadable_view|unreadable_view|view"
+                + "|Encountered unexpected token: \"SELEC\"",
+            "SELECT nickname FROM missing_column_view|missing_column_view|view"
+                + "|Column not found in sources users: nickname",
+            "SELECT id FROM placeholder_view|placeholder_view|view"
+                + "|sqlcj does not analyze a view whose query writes a placeholder.",
+            "SELECT a FROM long_list_view|long_list_view|view"
+                + "|The column list of long_list_view names 3 columns,"
+                + " but its SELECT returns only 2.",
+            "SELECT id FROM recursive_view|recursive_view|view"
+                + "|sqlcj does not analyze a recursive view.",
+            "SELECT u.id FROM users u JOIN recursive_view r ON r.id = u.id|recursive_view|view"
+                + "|sqlcj does not analyze a recursive view."
+        }
+    )
+    void shouldRejectAViewSqlcjCannotAnalyze(String sql, String name, String kind, String reason) {
+        Query query = new Query("ReadView", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, viewSchema)
+        );
+
+        assertEquals(
+            "%s is a %s whose query sqlcj cannot analyze: %s".formatted(name, kind, reason),
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A common table expression in scope is resolved before a view of its name,
+     * as it is before a table of its name.
+     */
+    @Test
+    void shouldResolveACommonTableExpressionBeforeAViewOfItsName() {
+        String sql = "WITH active_users AS (SELECT name FROM users) SELECT * FROM active_users";
+
+        assertEquals(
+            List.of(new QueryColumn("name", ColumnType.VARCHAR, true)),
+            analyzer.analyze(
+                new Query("ListActiveUsers", QueryType.MANY, sql),
+                parser.parse(sql),
+                viewSchema
+            )
+                .columns()
+        );
+    }
+
+    /**
+     * A modeled table is found before a recorded view of its name, so such a
+     * source keeps returning the table's shared row record, and a source that
+     * names neither keeps failing as a missing table.
+     */
+    @Test
+    void shouldResolveAModeledTableBeforeAViewOfItsName() {
+        String sql = "SELECT * FROM users";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            viewSchema
+        );
+
+        assertEquals("users", model.table());
+        assertEquals("users", model.rowTable());
+
         String missing = "SELECT id FROM missing";
         Query query = new Query("ListMissing", QueryType.MANY, missing);
         ParsedSql parsedSql = parser.parse(missing);
@@ -13055,6 +13374,89 @@ class QueryAnalyzerTest {
             "Table not found in schema: missing",
             assertThrows(
                 IllegalArgumentException.class,
+                () -> analyzer.analyze(query, parsedSql, viewSchema)
+            )
+                .getMessage()
+        );
+    }
+
+    /**
+     * A parenthesized join group that opens a {@code FROM} list is read as the
+     * same joins unparenthesized, at any depth of leading groups and in a
+     * write's own clause, which is the shape {@code pg_dump} writes every join
+     * of a view in.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "SELECT u.id, a.name FROM (users u JOIN active_users a ON a.id = u.id)",
+            "SELECT u.id, a.name FROM (users u LEFT JOIN active_users a ON a.id = u.id)",
+            "SELECT u.id, a.name FROM ((users u JOIN active_users a ON a.id = u.id)"
+                + " JOIN listed l ON l.ident = u.id)",
+            "SELECT u.id, a.name FROM (users u JOIN active_users a ON a.id = u.id)"
+                + " JOIN listed l ON l.ident = u.id"
+        }
+    )
+    void shouldReadAParenthesizedJoinThatOpensAFromList(String sql) {
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsersWithActive", QueryType.MANY, sql),
+            parser.parse(sql),
+            viewSchema
+        );
+
+        assertEquals("users", model.table());
+
+        assertEquals(
+            List.of("id", "name"),
+            model.columns().stream()
+                .map(QueryColumn::name)
+                .toList()
+        );
+    }
+
+    /** A parenthesized join of a {@code DELETE ... USING} clause is read too. */
+    @Test
+    void shouldReadAParenthesizedJoinOfAUsingClause() {
+        String sql = "DELETE FROM users"
+            + " USING (active_users a JOIN listed l ON l.ident = a.id)"
+            + " WHERE a.id = users.id";
+
+        assertEquals(
+            "users",
+            analyzer.analyze(
+                new Query("DeleteListedUsers", QueryType.EXEC, sql),
+                parser.parse(sql),
+                viewSchema
+            )
+                .table()
+        );
+    }
+
+    /**
+     * A parenthesized join keeps today's rejection everywhere else: where it
+     * writes an alias, which exposes a name of its own, where a join joins it,
+     * and where it stands after the first item of its clause.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT x.id FROM (users u JOIN active_users a ON a.id = u.id) x"
+                + "|Only table sources are supported.",
+            "SELECT u.id FROM users u, (users b JOIN active_users a ON a.id = b.id)"
+                + "|Only table sources are supported.",
+            "SELECT u.id FROM users u JOIN (users b JOIN active_users a ON a.id = b.id) ON TRUE"
+                + "|Only table join sources are supported."
+        }
+    )
+    void shouldRejectAParenthesizedJoinElsewhere(String sql, String message) {
+        Query query = new Query("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        assertEquals(
+            message,
+            assertThrows(
+                UnsupportedOperationException.class,
                 () -> analyzer.analyze(query, parsedSql, viewSchema)
             )
                 .getMessage()

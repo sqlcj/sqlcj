@@ -2,7 +2,12 @@ package org.sqlcj.schema.parser;
 
 import net.sf.jsqlparser.JSQLParserException;
 import net.sf.jsqlparser.expression.StringValue;
+import net.sf.jsqlparser.parser.CCJSqlParserConstants;
+import net.sf.jsqlparser.parser.CCJSqlParserTokenManager;
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.parser.SimpleCharStream;
+import net.sf.jsqlparser.parser.StringProvider;
+import net.sf.jsqlparser.parser.Token;
 import net.sf.jsqlparser.schema.MultiPartName;
 import net.sf.jsqlparser.statement.LikeClause;
 import net.sf.jsqlparser.statement.Statement;
@@ -68,6 +73,19 @@ public class DefaultSchemaParser implements SchemaParser {
         Pattern.UNICODE_CHARACTER_CLASS
     );
 
+    /**
+     * The clauses PostgreSQL writes after the defining query of a view or a
+     * materialized view, which state nothing about the query's columns and are
+     * no part of the recorded query text.
+     */
+    private static final List<String[]> TRAILING_VIEW_CLAUSES = List.of(
+        new String[] { "WITH", "CHECK", "OPTION" },
+        new String[] { "WITH", "CASCADED", "CHECK", "OPTION" },
+        new String[] { "WITH", "LOCAL", "CHECK", "OPTION" },
+        new String[] { "WITH", "DATA" },
+        new String[] { "WITH", "NO", "DATA" }
+    );
+
     /** Resolves the type a column declaration states. */
     private final ColumnTypeMapping columnTypeMapping = new ColumnTypeMapping();
 
@@ -116,7 +134,9 @@ public class DefaultSchemaParser implements SchemaParser {
      *
      * <p>A view statement is classified by its words before it is parsed as
      * well, because the parser reads only some of them and none of them states
-     * a column sqlcj models; see {@link #appliesViewStatement(List, List)}.
+     * a column sqlcj models; see
+     * {@link #appliesViewStatement(SchemaSourceSplitter.SourceStatement, List,
+     * List, List, List, SchemaNamespace)}.
      */
     private void apply(
         SchemaSourceSplitter.SourceStatement statement,
@@ -130,7 +150,7 @@ public class DefaultSchemaParser implements SchemaParser {
             return;
         }
 
-        if (appliesViewStatement(statement.tokens(), views, namespace)) {
+        if (appliesViewStatement(statement, tables, enums, domains, views, namespace)) {
             return;
         }
 
@@ -447,17 +467,17 @@ public class DefaultSchemaParser implements SchemaParser {
     /**
      * Records or removes the views one statement states, and reports whether
      * its words state such a statement at all. The views sqlcj records are the
-     * views and materialized views of the modeled namespace, by name and kind
-     * alone, from the words of
+     * views and materialized views of the modeled namespace, from the words of
      * {@code CREATE [OR REPLACE] [RECURSIVE] VIEW},
      * {@code CREATE MATERIALIZED VIEW [IF NOT EXISTS]}, and
      * {@code DROP [MATERIALIZED] VIEW [IF EXISTS]}. The words are compared
      * case-insensitively, as PostgreSQL reads them.
      *
      * <p>They are classified from the statement's words alone, because the
-     * parser reads only some view statements and none of them is applied to the
-     * schema model: a view's columns stand in its query, which sqlcj does not
-     * analyze there, so a query that names a view states so instead.
+     * parser reads only some view statements and none of them states a column
+     * sqlcj models in the schema: a view's columns stand in its own query,
+     * which the analyzer resolves when a query names the view, against the
+     * schema recorded with it.
      *
      * <p>Words outside these forms state no view statement and are left to the
      * statement rules that follow, so a temporary view, a view of a schema
@@ -466,12 +486,17 @@ public class DefaultSchemaParser implements SchemaParser {
      * loading: a {@code DROP} of an unrecorded name changes nothing.
      */
     private boolean appliesViewStatement(
-        List<String> tokens,
+        SchemaSourceSplitter.SourceStatement statement,
+        List<Table> tables,
+        List<EnumType> enums,
+        List<DomainType> domains,
         List<View> views,
         SchemaNamespace namespace
     ) {
+        List<String> tokens = statement.tokens();
+
         if (statesWords(tokens, 0, "CREATE")) {
-            return appliesCreateView(tokens, views, namespace);
+            return appliesCreateView(statement, tables, enums, domains, views, namespace);
         }
 
         if (!statesWords(tokens, 0, "DROP")) {
@@ -507,14 +532,24 @@ public class DefaultSchemaParser implements SchemaParser {
      * Records the view one {@code CREATE} states, and reports whether its words
      * state such a statement at all. Words that state no name after the view
      * words record nothing and are left to the statement rules that follow.
+     *
+     * <p>The recorded definition is the view's kind, the text of its defining
+     * query, the column list written after its name, and the schema as it stood
+     * just before this statement, which is the schema PostgreSQL fixes the
+     * view's columns against.
      */
     private boolean appliesCreateView(
-        List<String> tokens,
+        SchemaSourceSplitter.SourceStatement statement,
+        List<Table> tables,
+        List<EnumType> enums,
+        List<DomainType> domains,
         List<View> views,
         SchemaNamespace namespace
     ) {
+        List<String> tokens = statement.tokens();
         int index = 1;
         boolean materialized = statesWords(tokens, index, "MATERIALIZED");
+        boolean recursive = false;
 
         if (materialized) {
             index++;
@@ -524,6 +559,7 @@ public class DefaultSchemaParser implements SchemaParser {
             }
 
             if (statesWords(tokens, index, "RECURSIVE")) {
+                recursive = true;
                 index++;
             }
         }
@@ -534,7 +570,9 @@ public class DefaultSchemaParser implements SchemaParser {
 
         index++;
 
-        if (materialized && statesWords(tokens, index, "IF", "NOT", "EXISTS")) {
+        boolean ifNotExists = materialized && statesWords(tokens, index, "IF", "NOT", "EXISTS");
+
+        if (ifNotExists) {
             index += 3;
         }
 
@@ -547,22 +585,176 @@ public class DefaultSchemaParser implements SchemaParser {
         String viewName = namespace.modeledTypeName(declaredName(tokens, index, nameEnd));
 
         if (viewName != null) {
-            addView(new View(viewName, materialized), views);
+            addView(
+                new View(
+                    viewName,
+                    materialized,
+                    definingQuery(statement.sql()),
+                    columnListNames(tokens, nameEnd),
+                    new Schema(tables, enums, domains, views, namespace.name()),
+                    recursive
+                ),
+                views,
+                ifNotExists
+            );
         }
 
         return true;
     }
 
     /**
-     * Appends one view, and replaces a recorded view of the same name in its
-     * position, because PostgreSQL holds one relation of a name at a time.
+     * The text of the defining query one {@code CREATE} of a view states: the
+     * text after the {@code AS} that follows the view's name, its optional
+     * column list, and the optional clauses PostgreSQL places between them —
+     * a view's {@code WITH (...)} and a materialized view's {@code USING},
+     * {@code WITH (...)}, and {@code TABLESPACE} — without the trailing
+     * {@code WITH [CASCADED | LOCAL] CHECK OPTION} or {@code WITH [NO] DATA}
+     * clause, which states nothing about the query's columns, and without the
+     * statement separator.
+     *
+     * <p>The {@code AS} is the first one written outside parentheses, because
+     * every clause before it writes its own values inside them. A statement
+     * that writes no such {@code AS} states no query at all, which makes the
+     * view one sqlcj cannot analyze where a query names it.
      */
-    private void addView(View view, List<View> views) {
+    private String definingQuery(String sql) {
+        List<int[]> spans = tokenSpans(sql);
+        int depth = 0;
+        int queryStart = -1;
+
+        for (int index = 0; index < spans.size(); index++) {
+            String image = image(sql, spans.get(index));
+
+            if ("(".equals(image)) {
+                depth++;
+            } else if (")".equals(image)) {
+                depth--;
+            } else if (depth == 0 && "AS".equalsIgnoreCase(image)) {
+                queryStart = spans.get(index)[1];
+
+                break;
+            }
+        }
+
+        if (queryStart < 0) {
+            return "";
+        }
+
+        return sql.substring(queryStart, queryEnd(sql, spans)).strip();
+    }
+
+    /**
+     * The offset the defining query of a view ends at: the beginning of its
+     * trailing {@code WITH CHECK OPTION} or {@code WITH [NO] DATA} clause, and
+     * the end of the statement's last token otherwise, so that the separator
+     * and any comment after it are no part of the query.
+     */
+    private int queryEnd(String sql, List<int[]> spans) {
+        List<String> images = new ArrayList<>();
+
+        for (int[] span : spans) {
+            images.add(image(sql, span));
+        }
+
+        int end = images.size();
+
+        if (end > 0 && ";".equals(images.get(end - 1))) {
+            end--;
+        }
+
+        for (String[] clause : TRAILING_VIEW_CLAUSES) {
+            int from = end - clause.length;
+
+            if (from >= 0 && statesWords(images.subList(0, end), from, clause)) {
+                return spans.get(from)[0];
+            }
+        }
+
+        return end == 0
+            ? 0
+            : spans.get(end - 1)[1];
+    }
+
+    /**
+     * The begin and end offset of each token of one statement, lexed with the
+     * SQL parser's own token manager, so the text between two tokens is the
+     * text the statement writes there, comments and whitespace included. The
+     * statement separator is a token of its own here, which
+     * {@link #queryEnd(String, List)} excludes from the query.
+     */
+    private List<int[]> tokenSpans(String sql) {
+        SimpleCharStream stream = new SimpleCharStream(new StringProvider(sql), 1, 1);
+        CCJSqlParserTokenManager tokenManager = new CCJSqlParserTokenManager(stream);
+        List<int[]> spans = new ArrayList<>();
+
+        while (true) {
+            Token token = tokenManager.getNextToken();
+
+            if (token.kind == CCJSqlParserConstants.EOF) {
+                return spans;
+            }
+
+            int begin = stream.getAbsoluteTokenBegin() - 1;
+
+            spans.add(new int[] { begin, begin + token.image.length() });
+        }
+    }
+
+    private String image(String sql, int[] span) {
+        return sql.substring(span[0], span[1]);
+    }
+
+    /**
+     * The declared names of the column list one {@code CREATE} of a view
+     * writes after the view's name, as the statement writes them, and no name
+     * at all where it writes no list or writes one PostgreSQL does not accept,
+     * which is a list of plain column names.
+     */
+    private List<String> columnListNames(List<String> tokens, int nameEnd) {
+        if (!statesWords(tokens, nameEnd, "(")) {
+            return List.of();
+        }
+
+        List<String> names = new ArrayList<>();
+        int index = nameEnd + 1;
+
+        while (true) {
+            if (index >= tokens.size() || !IDENTIFIER.matcher(tokens.get(index)).matches()) {
+                return List.of();
+            }
+
+            names.add(tokens.get(index));
+
+            index++;
+
+            if (statesWords(tokens, index, ")")) {
+                return List.copyOf(names);
+            }
+
+            if (!statesWords(tokens, index, ",")) {
+                return List.of();
+            }
+
+            index++;
+        }
+    }
+
+    /**
+     * Appends one view, and replaces a recorded view of the same name in its
+     * position, because PostgreSQL holds one relation of a name at a time. A
+     * {@code CREATE MATERIALIZED VIEW IF NOT EXISTS} of a recorded name keeps
+     * the recorded view, as PostgreSQL keeps the relation it has.
+     */
+    private void addView(View view, List<View> views, boolean ifNotExists) {
         int index = indexOfView(views, view.name());
 
         if (index < 0) {
             views.add(view);
 
+            return;
+        }
+
+        if (ifNotExists) {
             return;
         }
 

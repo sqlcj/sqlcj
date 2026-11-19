@@ -122,12 +122,6 @@ class ReferenceServiceIntegrationTest {
                 + "a wildcard selects it, so list the columns the query needs instead."
         ),
         new UnsupportedQuery(
-            "materialized_view_source.sql",
-            "ListProjectTaskCounts",
-            "project_task_counts is a materialized view, which sqlcj does not model; "
-                + "write its query in a WITH clause instead."
-        ),
-        new UnsupportedQuery(
             "subscripted_column.sql",
             "ListTasksByFirstLabel",
             "Cannot infer the type of :label in labels[1] = :label; "
@@ -139,12 +133,6 @@ class ReferenceServiceIntegrationTest {
             "unnest(...) is a function source, which sqlcj does not model; "
                 + "insert many rows with a :batchexec INSERT ... VALUES query, "
                 + "or match a list with id = ANY(:ids)."
-        ),
-        new UnsupportedQuery(
-            "view_source.sql",
-            "ListUnfinishedTasks",
-            "unfinished_tasks is a view, which sqlcj does not model; "
-                + "write its query in a WITH clause instead."
         )
     );
 
@@ -2302,6 +2290,93 @@ class ReferenceServiceIntegrationTest {
                 Optional.of((short) 5),
                 invoke(repository, "deprioritizeTask", (short) 2, taskId),
                 "the arithmetic update raises the priority to the bound it admits"
+            );
+        }
+    }
+
+    /**
+     * The generated repository reads the two views of the history: the view
+     * the history dropped and recreated with a {@code priority} column lists
+     * the unfinished tasks with that column and leaves out the done one, and
+     * the materialized view, refreshed after the rows were written, counts the
+     * tasks of each project, {@code 0} for a project that has none.
+     */
+    @Test
+    void shouldExecuteTheGeneratedViewQueries() throws Exception {
+        Path generatedDirectory = tempDir.resolve("generated-views");
+
+        generate(List.of(migrations().toString()), generatedDirectory);
+
+        Path classesDirectory = compile(generatedDirectory, tempDir.resolve("classes-views"));
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Long organizationId = (Long) component(
+                invoke(repository, "createOrganization", "View Test", "{}"),
+                "id"
+            );
+
+            Long trackedId = (Long) component(
+                invoke(repository, "createProject", organizationId, "VIEW", "Viewed"),
+                "id"
+            );
+
+            Long emptyId = (Long) component(
+                invoke(repository, "createProject", organizationId, "VOID", "Empty"),
+                "id"
+            );
+
+            Object open = enumConstant(classLoader, "TaskStatus", "OPEN");
+            Object done = enumConstant(classLoader, "TaskStatus", "DONE");
+
+            Object pending = createShapeTask(repository, trackedId, "Pending", (short) 4, open);
+            Object finished = createShapeTask(repository, trackedId, "Finished", (short) 2, done);
+
+            Long pendingId = (Long) component(pending, "id");
+            Long finishedId = (Long) component(finished, "id");
+
+            List<?> unfinished = (List<?>) invoke(repository, "listUnfinishedTasks");
+
+            List<Object> readIds = componentsOf(unfinished, "id");
+
+            assertTrue(readIds.contains(pendingId), "the view lists the unfinished task");
+
+            assertFalse(readIds.contains(finishedId), "the view leaves out the done task");
+
+            Object pendingRow = unfinished.get(readIds.indexOf(pendingId));
+
+            assertEquals("Pending", component(pendingRow, "title"));
+
+            assertEquals(
+                (short) 4,
+                component(pendingRow, "priority"),
+                "the view reads the column the recreated definition added"
+            );
+
+            try (
+                Connection connection = dataSource.getConnection();
+                PreparedStatement refresh = connection.prepareStatement(
+                    "REFRESH MATERIALIZED VIEW project_task_counts"
+                )
+            ) {
+                refresh.execute();
+            }
+
+            List<?> counts = (List<?>) invoke(repository, "listProjectTaskCounts");
+
+            List<Object> countedProjects = componentsOf(counts, "projectId");
+
+            assertEquals(
+                2L,
+                component(counts.get(countedProjects.indexOf(trackedId)), "taskCount"),
+                "the materialized view counts the tasks of the project"
+            );
+
+            assertEquals(
+                0L,
+                component(counts.get(countedProjects.indexOf(emptyId)), "taskCount"),
+                "the left join counts no task of a project that has none"
             );
         }
     }
