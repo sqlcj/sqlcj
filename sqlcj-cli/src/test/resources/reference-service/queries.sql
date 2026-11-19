@@ -436,3 +436,16 @@ SET priority = priority + :steps
 WHERE id = :id
   AND priority + :steps <= 5
 RETURNING priority;
+
+-- name: ListUnfinishedTasks :many
+SELECT id,
+       title,
+       priority
+FROM unfinished_tasks
+ORDER BY id;
+
+-- name: ListProjectTaskCounts :many
+SELECT project_id,
+       task_count
+FROM project_task_counts
+ORDER BY project_id;

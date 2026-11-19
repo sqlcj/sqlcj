@@ -5129,12 +5129,14 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
-     * A migration history that creates a view records its name, so a query that
-     * names it states that sqlcj does not model a view rather than reporting a
-     * missing table, and nothing is generated.
+     * A migration history that creates a view records its definition, so a
+     * query that names it reads the view: its columns are those of the
+     * defining query analyzed against the schema of that migration, the column
+     * a later migration adds to the underlying table is none of them, and the
+     * generated repository returns this query's own result record.
      */
     @Test
-    void shouldRejectAQueryOnAViewOfTheMigrationHistory() throws IOException {
+    void shouldReadAViewOfTheMigrationHistory() throws IOException {
         Path migrations = Files.createDirectories(tempDir.resolve("migrations"));
 
         Files.writeString(
@@ -5152,6 +5154,135 @@ class SqlcjCompilerIntegrationTest {
             migrations.resolve("V2__active_users.sql"),
             """
                 CREATE VIEW active_users AS
+                SELECT *
+                FROM users
+                WHERE active;
+                """
+        );
+
+        Files.writeString(
+            migrations.resolve("V3__user_email.sql"),
+            """
+                ALTER TABLE users ADD COLUMN email TEXT;
+                """
+        );
+
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: ListActiveUsers :many
+                SELECT *
+                FROM active_users;
+                """
+        );
+
+        Path generatedDirectory = tempDir.resolve("generated");
+
+        Path generatedFile = generateUsersRepository(
+            List.of(migrations.toString()),
+            queriesFile,
+            generatedDirectory
+        );
+
+        String source = Files.readString(generatedFile);
+
+        assertEquals(
+            List.of("Long id", "Boolean active"),
+            recordComponents(source, "ListActiveUsersResult"),
+            "the email column added after the view was created is no column of it"
+        );
+
+        assertCompiles(generatedDirectory, tempDir.resolve("classes"));
+    }
+
+    /**
+     * A write into a view of the migration history states the table to write
+     * to instead, and nothing is generated.
+     */
+    @Test
+    void shouldRejectAWriteIntoAViewOfTheMigrationHistory() throws IOException {
+        Path migrations = Files.createDirectories(tempDir.resolve("migrations"));
+
+        Files.writeString(
+            migrations.resolve("V1__users.sql"),
+            """
+                CREATE TABLE users
+                (
+                    id     BIGINT NOT NULL,
+                    active BOOLEAN NOT NULL
+                );
+                """
+        );
+
+        Files.writeString(
+            migrations.resolve("V2__active_users.sql"),
+            """
+                CREATE VIEW active_users AS
+                SELECT id
+                FROM users
+                WHERE active;
+                """
+        );
+
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: DeactivateUser :exec
+                DELETE
+                FROM active_users
+                WHERE id = :id;
+                """
+        );
+
+        Path generatedDirectory = tempDir.resolve("generated");
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> generateUsersRepository(
+                List.of(migrations.toString()),
+                queriesFile,
+                generatedDirectory
+            )
+        );
+
+        assertEquals(
+            "%s:1: Invalid query 'DeactivateUser': ".formatted(queriesFile)
+                + "active_users is a view, which sqlcj reads but does not write through; "
+                + "write to the table it reads instead.",
+            exception.getMessage()
+        );
+
+        assertFalse(Files.exists(generatedDirectory));
+    }
+
+    /**
+     * A query that names a view whose defining query sqlcj cannot analyze
+     * states the reason, which is the failure of that query's own analysis,
+     * and nothing is generated.
+     */
+    @Test
+    void shouldRejectAQueryOnAViewItCannotAnalyze() throws IOException {
+        Path migrations = Files.createDirectories(tempDir.resolve("migrations"));
+
+        Files.writeString(
+            migrations.resolve("V1__users.sql"),
+            """
+                CREATE TABLE users
+                (
+                    id     BIGINT NOT NULL,
+                    active BOOLEAN NOT NULL
+                );
+                """
+        );
+
+        Files.writeString(
+            migrations.resolve("V2__active_users.sql"),
+            """
+                CREATE RECURSIVE VIEW active_users (id) AS
                 SELECT id
                 FROM users
                 WHERE active;
@@ -5182,8 +5313,8 @@ class SqlcjCompilerIntegrationTest {
 
         assertEquals(
             "%s:1: Invalid query 'ListActiveUsers': ".formatted(queriesFile)
-                + "active_users is a view, which sqlcj does not model; "
-                + "write its query in a WITH clause instead.",
+                + "active_users is a view whose query sqlcj cannot analyze: "
+                + "sqlcj does not analyze a recursive view.",
             exception.getMessage()
         );
 

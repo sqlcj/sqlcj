@@ -67,6 +67,7 @@ import net.sf.jsqlparser.statement.select.Limit;
 import net.sf.jsqlparser.statement.select.MinusOp;
 import net.sf.jsqlparser.statement.select.Offset;
 import net.sf.jsqlparser.statement.select.OrderByElement;
+import net.sf.jsqlparser.statement.select.ParenthesedFromItem;
 import net.sf.jsqlparser.statement.select.ParenthesedSelect;
 import net.sf.jsqlparser.statement.select.PlainSelect;
 import net.sf.jsqlparser.statement.select.Select;
@@ -85,10 +86,12 @@ import org.sqlcj.parser.Query;
 import org.sqlcj.parser.QueryType;
 import org.sqlcj.schema.ColumnType;
 import org.sqlcj.schema.Schema;
+import org.sqlcj.schema.View;
 import org.sqlcj.schema.parser.ColumnTypeMapping;
 import org.sqlcj.schema.parser.SchemaNamespace;
 import org.sqlcj.sql.ParsedSql;
 import org.sqlcj.sql.PlaceholderOccurrence;
+import org.sqlcj.sql.SqlParser;
 import org.sqlcj.sql.WildcardOccurrence;
 
 import java.math.BigInteger;
@@ -365,15 +368,39 @@ public final class QueryAnalyzer {
         instead.""";
 
     /**
-     * The rejection of a source that names a view or a materialized view the
-     * schema records, which names the view as the query writes it, without its
-     * SQL identifier delimiters and without the modeled schema qualifier, and
-     * its kind as PostgreSQL spells it. A view's columns stand in its own
-     * query, which sqlcj analyzes only where the query itself writes it, so the
-     * named fix is a {@code WITH} clause.
+     * The rejection of a source that names a view or a materialized view whose
+     * defining query sqlcj cannot analyze, which names the view as the query
+     * writes it, without its SQL identifier delimiters and without the modeled
+     * schema qualifier, its kind as PostgreSQL spells it, and the reason the
+     * query cannot be analyzed, which is the failure's own text.
      */
-    private static final String VIEW_SOURCE_REJECTION = """
-        %s is a %s, which sqlcj does not model; write its query in a WITH clause instead.""";
+    private static final String UNANALYZABLE_VIEW_REJECTION = """
+        %s is a %s whose query sqlcj cannot analyze: %s""";
+
+    /**
+     * The reason a recursive view's query is one sqlcj cannot analyze, which is
+     * the whole of its defining query rather than a failure of one clause.
+     */
+    private static final String RECURSIVE_VIEW_REASON = """
+        sqlcj does not analyze a recursive view.""";
+
+    /**
+     * The reason the query of a view that writes a placeholder is one sqlcj
+     * cannot analyze, which PostgreSQL does not accept in a view at all.
+     */
+    private static final String VIEW_PLACEHOLDER_REASON = """
+        sqlcj does not analyze a view whose query writes a placeholder.""";
+
+    /**
+     * The rejection of a write whose target names a view or a materialized view
+     * the schema records, which names the view as the query writes it, without
+     * its SQL identifier delimiters and without the modeled schema qualifier,
+     * and its kind as PostgreSQL spells it. sqlcj reads a view as a source, so
+     * the named fix is the table the view reads.
+     */
+    private static final String VIEW_WRITE_REJECTION = """
+        %s is a %s, which sqlcj reads but does not write through; write to the table it reads \
+        instead.""";
 
     /**
      * The rejection of a source that calls a function, which names the function
@@ -650,6 +677,12 @@ public final class QueryAnalyzer {
 
     /** The built-in functions whose projected result needs no cast. */
     private final FunctionCatalogue functionCatalogue = new FunctionCatalogue();
+
+    /**
+     * Parses the defining query of a recorded view, so that a view's query and
+     * a user's query are read by one SQL parser.
+     */
+    private final SqlParser sqlParser = new SqlParser();
 
     /**
      * One query source and the name it exposes to column references, which is
@@ -2107,11 +2140,23 @@ public final class QueryAnalyzer {
      * The name the query writes for its first source, which the analyzed model
      * carries as the query's table: the table's own name as the query spells
      * it, and the exposed name of a derived source, which names no table.
+     *
+     * <p>A parenthesized group that opens the {@code FROM} list is read as the
+     * same joins unparenthesized, so the first source is the one that group
+     * encloses, at any depth of leading groups.
      */
     private String declaredSourceName(FromItem fromItem, Source source) {
-        return source.derived()
-            ? source.name()
-            : ((Table) fromItem).getUnquotedName();
+        if (source.derived()) {
+            return source.name();
+        }
+
+        FromItem leading = fromItem;
+
+        while (leading instanceof ParenthesedFromItem group && group.getAlias() == null) {
+            leading = group.getFromItem();
+        }
+
+        return ((Table) leading).getUnquotedName();
     }
 
     /**
@@ -2287,7 +2332,11 @@ public final class QueryAnalyzer {
         return toDerivedSource(
             name,
             sqlName,
-            renamedDerivedColumns(name, columnList, analyzed.columns()),
+            renamedDerivedColumns(
+                name,
+                declaredColumnListNames(columnList),
+                analyzed.columns()
+            ),
             false
         );
     }
@@ -2413,7 +2462,7 @@ public final class QueryAnalyzer {
 
         List<org.sqlcj.schema.Column> firstColumns = renamedDerivedColumns(
             name,
-            columnList,
+            declaredColumnListNames(columnList),
             firstTerm.size() == 1
                 ? firstTerm.get(0).columns()
                 : resolveSetOperationColumns(
@@ -2540,21 +2589,25 @@ public final class QueryAnalyzer {
      * <p>The renamed columns are the ones the distinct-name rule of a derived
      * source then reads, so a list may resolve a name its {@code SELECT}
      * repeats, and may repeat one itself.
+     *
+     * <p>{@code declaredNames} are the names the list writes, SQL identifier
+     * delimiters included, and no name at all where the derived source writes
+     * no list.
      */
     private List<org.sqlcj.schema.Column> renamedDerivedColumns(
         String name,
-        List<SelectItem<?>> columnList,
+        List<String> declaredNames,
         List<org.sqlcj.schema.Column> columns
     ) {
-        if (columnList == null) {
+        if (declaredNames.isEmpty()) {
             return columns;
         }
 
-        if (columnList.size() > columns.size()) {
+        if (declaredNames.size() > columns.size()) {
             throw new UnsupportedOperationException(
                 DERIVED_SOURCE_COLUMN_LIST_COUNT_REJECTION.formatted(
                     name,
-                    columnList.size(),
+                    declaredNames.size(),
                     columns.size()
                 )
             );
@@ -2562,28 +2615,40 @@ public final class QueryAnalyzer {
 
         List<org.sqlcj.schema.Column> renamed = new ArrayList<>(columns);
 
-        for (int index = 0; index < columnList.size(); index++) {
+        for (int index = 0; index < declaredNames.size(); index++) {
             org.sqlcj.schema.Column column = columns.get(index);
-            Expression listed = columnList.get(index).getExpression();
+            String declaredName = declaredNames.get(index);
 
             renamed.set(
                 index,
                 new org.sqlcj.schema.Column(
-                    ((net.sf.jsqlparser.schema.Column) listed).getUnquotedColumnName(),
+                    MultiPartName.unquote(declaredName),
                     column.type(),
                     column.nullable(),
                     column.unsupportedType(),
                     column.enumType(),
                     column.array(),
                     column.blankPadded(),
-                    SchemaNamespace.storedName(
-                        ((net.sf.jsqlparser.schema.Column) listed).getColumnName()
-                    )
+                    SchemaNamespace.storedName(declaredName)
                 )
             );
         }
 
         return List.copyOf(renamed);
+    }
+
+    /**
+     * The names one column list on a derived source writes, as the query writes
+     * them, and no name at all where the source writes no list.
+     */
+    private List<String> declaredColumnListNames(List<SelectItem<?>> columnList) {
+        if (columnList == null) {
+            return List.of();
+        }
+
+        return columnList.stream()
+            .map(item -> ((net.sf.jsqlparser.schema.Column) item.getExpression()).getColumnName())
+            .toList();
     }
 
     /**
@@ -4053,8 +4118,9 @@ public final class QueryAnalyzer {
     /**
      * Resolves one query source: a subquery in the clause, a source that names
      * a common table expression in scope, which reads that expression rather
-     * than the schema table of the same name as PostgreSQL resolves it, or a
-     * table of the schema.
+     * than the schema table of the same name as PostgreSQL resolves it, a
+     * table of the schema, or a view the schema records, which is resolved
+     * after the table of its name.
      *
      * <p>{@code lateral} is the level a {@code LATERAL} subquery's body reads
      * as the one enclosing it, which the clause resolving this source states;
@@ -4113,7 +4179,118 @@ public final class QueryAnalyzer {
             );
         }
 
+        View view = recordedView(table, analysis.schema());
+
+        if (view != null) {
+            return toViewSource(table, view, nullable);
+        }
+
         return toSource(table, analysis.schema(), nullable);
+    }
+
+    /**
+     * The view the schema records under the name one source writes, and
+     * {@code null} where it records none, where the schema models a table of
+     * that name, which a source resolves first, and where the name is qualified
+     * with a schema the group does not model, which keeps the rejection its
+     * qualifier states.
+     */
+    private View recordedView(Table table, Schema schema) {
+        if (!new SchemaNamespace(schema.namespace()).isModeled(table)) {
+            return null;
+        }
+
+        String name = table.getUnquotedName();
+
+        if (findTable(schema, name).isPresent()) {
+            return null;
+        }
+
+        return schema.views().stream()
+            .filter(view -> view.name().equalsIgnoreCase(name))
+            .findFirst()
+            .orElse(null);
+    }
+
+    /**
+     * Resolves a source that names a recorded view into the derived source its
+     * own defining query exposes, under the name the query exposes it as: its
+     * alias where it writes one and the view's written name otherwise, as a
+     * table source is exposed.
+     */
+    private Source toViewSource(Table table, View view, boolean nullable) {
+        return toDerivedSource(
+            table.getAlias() == null
+                ? table.getUnquotedName()
+                : table.getAlias().getUnquotedName(),
+            sourceSqlName(table),
+            analyzedViewColumns(table.getUnquotedName(), view),
+            nullable
+        );
+    }
+
+    /**
+     * The columns one recorded view exposes, which are the result columns of
+     * its own defining query, renamed by its column list.
+     *
+     * <p>The query is parsed by the one SQL parser and analyzed in an analysis
+     * of its own, against the schema recorded with the view, so none of its
+     * wildcards and none of its placeholders belongs to the query that names
+     * the view and a view over a view resolves the inner view from that inner
+     * view's own recorded schema.
+     *
+     * <p>Every failure of that analysis — a query the parser cannot read, a
+     * query that writes a placeholder, which PostgreSQL does not accept in a
+     * view, a column list longer than the query's columns, a recursive view,
+     * and every failure of a clause — makes this a view sqlcj cannot analyze,
+     * reported with the failure's own text as its reason. A failure that states
+     * no text at all is a defect of this analyzer and stays as it is.
+     */
+    private List<org.sqlcj.schema.Column> analyzedViewColumns(String writtenName, View view) {
+        try {
+            return viewColumns(view);
+        } catch (RuntimeException e) {
+            if (e.getMessage() == null || e.getMessage().isBlank()) {
+                throw e;
+            }
+
+            throw new UnsupportedOperationException(
+                UNANALYZABLE_VIEW_REJECTION.formatted(writtenName, viewKind(view), e.getMessage())
+            );
+        }
+    }
+
+    private List<org.sqlcj.schema.Column> viewColumns(View view) {
+        if (view.recursive()) {
+            throw new UnsupportedOperationException(RECURSIVE_VIEW_REASON);
+        }
+
+        ParsedSql parsedSql = sqlParser.parse(view.query());
+
+        if (!parsedSql.placeholders().isEmpty()) {
+            throw new UnsupportedOperationException(VIEW_PLACEHOLDER_REASON);
+        }
+
+        if (!(parsedSql.statement() instanceof Select select)) {
+            throw new UnsupportedOperationException(UNSUPPORTED_STATEMENT_REJECTION);
+        }
+
+        Schema schema = view.schema();
+        Analysis analysis = new Analysis(parsedSql, schema, toPlaceholders(parsedSql, schema));
+
+        return renamedDerivedColumns(
+            view.name(),
+            view.columnNames(),
+            analyzeNestedSelect(select, analysis, List.of(), view.columnNames().size(), null)
+                .columns()
+        );
+    }
+
+    /** The kind of one recorded view, as PostgreSQL spells it. */
+    private String viewKind(View view) {
+        return view.materialized()
+            ? "materialized view"
+            : "view";
     }
 
     /**
@@ -4383,17 +4560,24 @@ public final class QueryAnalyzer {
      * sources of its own group — and then the levels enclosing this one. A
      * write's target is resolved before this clause, so it is in none of them,
      * as PostgreSQL scopes a source of {@code FROM} or {@code USING}.
+     *
+     * <p>A parenthesized join group that opens this clause is read as the same
+     * joins unparenthesized; see
+     * {@link #unparenthesizedJoins(List, List)}.
      */
     private void resolveJoinGroups(
         List<Source> sources,
-        List<FromItem> groupItems,
-        List<Join> joins,
+        List<FromItem> clauseItems,
+        List<Join> clauseJoins,
         String groupItemRejection,
         String joinedItemRejection,
         Analysis analysis,
         List<Source> commonTableExpressions,
         Scope enclosing
     ) {
+        List<FromItem> groupItems = new ArrayList<>(clauseItems);
+        List<Join> joins = unparenthesizedJoins(groupItems, clauseJoins);
+
         int firstGroupIndex = sources.size();
         List<Source> group = new ArrayList<>();
 
@@ -4416,10 +4600,6 @@ public final class QueryAnalyzer {
                     )
                 )
             );
-        }
-
-        if (joins == null) {
-            return;
         }
 
         for (Join join : joins) {
@@ -4481,6 +4661,44 @@ public final class QueryAnalyzer {
             resolveJoinConditionColumns(condition, scope);
             resolveParameters(condition, scope, analysis);
         }
+    }
+
+    /**
+     * The joins of one {@code FROM} or {@code USING} clause with the joins of
+     * the parenthesized group that opens it written before them, replacing
+     * that group in {@code groupItems} by the source it encloses.
+     *
+     * <p>A join is left-associative, so {@code (a JOIN b) JOIN c} joins the
+     * same sources in the same order as {@code a JOIN b JOIN c}, at any depth
+     * of leading groups. {@code pg_dump} writes every join of a view that way,
+     * so a view's query and the dump of the database it was created in are
+     * read alike.
+     *
+     * <p>A group that writes an alias exposes its own name for its columns,
+     * which this subset does not model, and a group written anywhere but at
+     * the start of the clause is no leading group at all; both keep the
+     * rejection their clause states.
+     */
+    private List<Join> unparenthesizedJoins(List<FromItem> groupItems, List<Join> clauseJoins) {
+        List<Join> joins = new ArrayList<>();
+
+        while (
+            !groupItems.isEmpty()
+                && groupItems.get(0) instanceof ParenthesedFromItem group
+                && group.getAlias() == null
+        ) {
+            groupItems.set(0, group.getFromItem());
+
+            if (group.getJoins() != null) {
+                joins.addAll(0, group.getJoins());
+            }
+        }
+
+        if (clauseJoins != null) {
+            joins.addAll(clauseJoins);
+        }
+
+        return joins;
     }
 
     /**
@@ -4934,8 +5152,21 @@ public final class QueryAnalyzer {
         sources.add(source);
     }
 
-    /** A write source, which always contributes a row of its own. */
+    /**
+     * A write's target, which always contributes a row of its own. sqlcj reads
+     * a view as a source but writes through none, so a target that names a
+     * recorded view, and no modeled table, is rejected here, where every write
+     * resolves its target.
+     */
     private Source toSource(Table table, Schema schema) {
+        View view = recordedView(table, schema);
+
+        if (view != null) {
+            throw new UnsupportedOperationException(
+                VIEW_WRITE_REJECTION.formatted(table.getUnquotedName(), viewKind(view))
+            );
+        }
+
         return toSource(table, schema, false);
     }
 
@@ -4970,10 +5201,10 @@ public final class QueryAnalyzer {
      * names a table the group models nowhere, which is reported from the
      * qualifier alone before any lookup.
      *
-     * <p>A modeled table is found before a recorded view of its name, so a
-     * source that resolves to a table keeps resolving to it. A source that
-     * names neither is reported as a view or as a missing table; see
-     * {@link #unmodeledSource(Schema, String)}.
+     * <p>A source that names a recorded view is resolved as that view before
+     * this lookup, and a write's target that names one is rejected before it,
+     * so a name that reaches here and names no modeled table names nothing the
+     * schema holds at all.
      */
     private org.sqlcj.schema.Table findSourceTable(Schema schema, Table table) {
         SchemaNamespace namespace = new SchemaNamespace(schema.namespace());
@@ -4998,32 +5229,15 @@ public final class QueryAnalyzer {
     }
 
     /**
-     * The failure of a source that names no modeled table: the view rejection
-     * when the schema records a view or a materialized view of the name, and
-     * the missing-table rejection otherwise, which suggests the modeled table
-     * closest to the written name.
+     * The failure of a source that names no modeled table, which suggests the
+     * modeled table closest to the written name.
      */
     private IllegalArgumentException unmodeledSource(Schema schema, String tableName) {
-        return schema.views().stream()
-            .filter(view -> view.name().equalsIgnoreCase(tableName))
-            .findFirst()
-            .map(
-                view -> new IllegalArgumentException(
-                    VIEW_SOURCE_REJECTION.formatted(
-                        tableName,
-                        view.materialized()
-                            ? "materialized view"
-                            : "view"
-                    )
-                )
-            )
-            .orElseGet(
-                () -> new IllegalArgumentException(
-                    "Table not found in schema: "
-                        + tableName
-                        + suggestion(tableName, tableNames(schema))
-                )
-            );
+        return new IllegalArgumentException(
+            "Table not found in schema: "
+                + tableName
+                + suggestion(tableName, tableNames(schema))
+        );
     }
 
     /**

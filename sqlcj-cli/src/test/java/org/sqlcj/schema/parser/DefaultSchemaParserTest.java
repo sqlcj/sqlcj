@@ -1227,8 +1227,8 @@ class DefaultSchemaParserTest {
 
     /**
      * The views and materialized views of the modeled namespace are recorded by
-     * their name and their kind, from the words of the statement that creates
-     * them, so that a query naming one states that sqlcj does not model a view.
+     * their name, their kind, and their defining query, from the words of the
+     * statement that creates them, so that a query naming one reads the view.
      * The statement itself stays ignored: the tables and the enum types the
      * statements before it left are unchanged.
      */
@@ -1255,7 +1255,12 @@ class DefaultSchemaParserTest {
         Schema base = parser.parse(BASE_SCHEMA);
         Schema schema = applied(statement);
 
-        assertEquals(List.of(new View(name, materialized)), schema.views());
+        assertEquals(1, schema.views().size());
+
+        View view = schema.views().get(0);
+
+        assertEquals(name, view.name());
+        assertEquals(materialized, view.materialized());
         assertEquals(base.tables(), schema.tables());
         assertEquals(base.enums(), schema.enums());
     }
@@ -1278,12 +1283,141 @@ class DefaultSchemaParserTest {
             """);
 
         assertEquals(
-            List.of(new View("ACTIVE_USERS", true), new View("recent_orders", false)),
-            schema.views()
+            List.of("ACTIVE_USERS", "recent_orders"),
+            viewNames(schema)
         );
+
+        assertTrue(schema.views().get(0).materialized());
+        assertFalse(schema.views().get(1).materialized());
 
         assertEquals(base.tables(), schema.tables());
         assertEquals(base.enums(), schema.enums());
+    }
+
+    /**
+     * A {@code CREATE MATERIALIZED VIEW IF NOT EXISTS} of a recorded name keeps
+     * the recorded view, as PostgreSQL keeps the relation it has, while every
+     * other {@code CREATE} of a recorded name replaces it with its own
+     * definition.
+     */
+    @Test
+    void shouldKeepTheRecordedViewOfACreateIfNotExists() {
+        Schema schema = applied("""
+            CREATE MATERIALIZED VIEW user_totals AS SELECT id FROM users;
+            CREATE MATERIALIZED VIEW IF NOT EXISTS user_totals AS SELECT email FROM users;
+            CREATE VIEW active_users AS SELECT id FROM users;
+            CREATE OR REPLACE VIEW active_users AS SELECT id, email FROM users;
+            """);
+
+        assertEquals(List.of("user_totals", "active_users"), viewNames(schema));
+        assertEquals("SELECT id FROM users", schema.views().get(0).query());
+        assertEquals("SELECT id, email FROM users", schema.views().get(1).query());
+    }
+
+    /**
+     * A recorded view holds the text of its defining query, which is the text
+     * after the {@code AS} that follows the view's name, its column list, and
+     * the clauses PostgreSQL writes between them, without the trailing
+     * {@code WITH CHECK OPTION} or {@code WITH [NO] DATA} clause and without
+     * the statement separator.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "CREATE VIEW v AS SELECT id FROM users;|SELECT id FROM users",
+            "CREATE VIEW v (ident) AS SELECT id FROM users;|SELECT id FROM users",
+            "CREATE VIEW v WITH (security_barrier = true) AS SELECT id FROM users;"
+                + "|SELECT id FROM users",
+            "CREATE VIEW v AS SELECT id FROM users WITH CHECK OPTION;|SELECT id FROM users",
+            "CREATE VIEW v AS SELECT id FROM users WITH CASCADED CHECK OPTION;"
+                + "|SELECT id FROM users",
+            "CREATE VIEW v AS SELECT id FROM users WITH LOCAL CHECK OPTION;"
+                + "|SELECT id FROM users",
+            "CREATE VIEW v AS SELECT id FROM users -- the identifiers|SELECT id FROM users",
+            "CREATE MATERIALIZED VIEW v USING heap WITH (fillfactor = 70) TABLESPACE pg_default"
+                + " AS SELECT id FROM users WITH NO DATA;|SELECT id FROM users",
+            "CREATE MATERIALIZED VIEW v AS SELECT id FROM users WITH DATA;|SELECT id FROM users",
+            "CREATE VIEW v AS SELECT id FROM users WHERE name = 'with no data';"
+                + "|SELECT id FROM users WHERE name = 'with no data'"
+        }
+    )
+    void shouldRecordTheDefiningQueryOfAView(String statement, String query) {
+        Schema schema = applied(statement);
+
+        assertEquals(1, schema.views().size());
+        assertEquals(query, schema.views().get(0).query());
+    }
+
+    /**
+     * A recorded view holds the column list written after its name, as the
+     * statement writes it, and no name at all where the statement writes no
+     * list.
+     */
+    @Test
+    void shouldRecordTheColumnListOfAView() {
+        Schema schema = applied("""
+            CREATE VIEW listed (ident, "Label") AS SELECT id, name FROM users;
+            CREATE VIEW unlisted AS SELECT id FROM users;
+            CREATE MATERIALIZED VIEW counted (total) AS SELECT count(id) FROM users;
+            """);
+
+        assertEquals(List.of("ident", "\"Label\""), schema.views().get(0).columnNames());
+        assertEquals(List.of(), schema.views().get(1).columnNames());
+        assertEquals(List.of("total"), schema.views().get(2).columnNames());
+    }
+
+    /**
+     * A recorded view holds the schema as it stood just before its own
+     * statement, which is the schema PostgreSQL fixes its columns against, so a
+     * table a later statement creates or alters is no part of it.
+     */
+    @Test
+    void shouldRecordTheSchemaAViewWasCreatedAgainst() {
+        Schema schema = applied("""
+            CREATE VIEW active_users AS SELECT id FROM users;
+            ALTER TABLE users ADD COLUMN active BOOLEAN NOT NULL;
+            CREATE TABLE payments (id BIGINT NOT NULL);
+            CREATE VIEW paid AS SELECT id FROM payments;
+            """);
+
+        Schema recorded = schema.views().get(0).schema();
+
+        assertEquals(List.of("users", "orders"), tableNames(recorded));
+
+        assertEquals(
+            List.of("id", "email", "name"),
+            table(recorded, "users").columns().stream()
+                .map(Column::name)
+                .toList()
+        );
+
+        assertEquals(
+            List.of("users", "orders", "payments"),
+            tableNames(schema.views().get(1).schema())
+        );
+
+        assertEquals(
+            List.of("active_users"),
+            viewNames(schema.views().get(1).schema()),
+            "a view records the views recorded before it, so a view over a view resolves"
+        );
+    }
+
+    /**
+     * A {@code CREATE RECURSIVE VIEW} is recorded as a recursive view, which
+     * sqlcj does not analyze, and every other form is recorded as one it does.
+     */
+    @Test
+    void shouldRecordWhetherAViewIsRecursive() {
+        Schema schema = applied("""
+            CREATE RECURSIVE VIEW chain (id) AS SELECT id FROM users;
+            CREATE VIEW plain AS SELECT id FROM users;
+            """);
+
+        assertTrue(schema.views().get(0).recursive());
+        assertEquals(List.of("id"), schema.views().get(0).columnNames());
+        assertFalse(schema.views().get(1).recursive());
     }
 
     /**
@@ -1304,7 +1438,7 @@ class DefaultSchemaParserTest {
             DROP VIEW missing_view;
             """);
 
-        assertEquals(List.of(new View("recent_orders", false)), schema.views());
+        assertEquals(List.of("recent_orders"), viewNames(schema));
         assertEquals(base.tables(), schema.tables());
         assertEquals(base.enums(), schema.enums());
     }
@@ -5111,6 +5245,13 @@ class DefaultSchemaParserTest {
     private List<String> tableNames(Schema schema) {
         return schema.tables().stream()
             .map(Table::name)
+            .toList();
+    }
+
+    /** The names of the views one schema records, in their recorded order. */
+    private List<String> viewNames(Schema schema) {
+        return schema.views().stream()
+            .map(View::name)
             .toList();
     }
 

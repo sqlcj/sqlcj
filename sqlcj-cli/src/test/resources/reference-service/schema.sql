@@ -131,3 +131,19 @@ CREATE TABLE reporting.projects
     exported_at timestamptz NOT NULL DEFAULT now(),
     task_count  bigint
 );
+
+CREATE VIEW unfinished_tasks AS
+SELECT t.id,
+       t.project_id,
+       t.title,
+       t.status,
+       t.priority
+FROM tasks t
+WHERE t.status <> 'done';
+
+CREATE MATERIALIZED VIEW project_task_counts AS
+SELECT p.id        AS project_id,
+       count(t.id) AS task_count
+FROM projects p
+         LEFT JOIN tasks t ON t.project_id = p.id
+GROUP BY p.id;
