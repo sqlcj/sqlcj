@@ -6705,10 +6705,10 @@ class SqlcjCompilerIntegrationTest {
      * column, a left-joined column, a null-extended embedded row, a nullable
      * aggregate, a nullable array and its elements, a nullable {@code BYTEA}
      * array, a batch parameter component of a nullable target column, and an
-     * enum's {@code fromLabel}; while a non-null column, the value a
+     * enum's {@code fromValue}; while a non-null column, the value a
      * {@code COUNT(*)} query returns, a compared parameter, a batch parameter
      * component of a {@code NOT NULL} target column, a batch method's list,
-     * the enum's {@code label}, and a nested result record stay unannotated.
+     * the enum's {@code value}, and a nested result record stay unannotated.
      */
     @Test
     void shouldStateTheNullnessOfTheGeneratedApiInTheClassFiles() throws Exception {
@@ -6868,11 +6868,11 @@ class SqlcjCompilerIntegrationTest {
             assertFalse(isNullable(batch));
             assertFalse(isNullable(elementType(batch)));
 
-            Method fromLabel = stageSetting.getMethod("fromLabel", String.class);
+            Method fromValue = stageSetting.getMethod("fromValue", String.class);
 
-            assertTrue(isNullable(fromLabel.getAnnotatedReturnType()));
-            assertTrue(isNullable(fromLabel.getAnnotatedParameterTypes()[0]));
-            assertFalse(isNullable(stageSetting.getMethod("label").getAnnotatedReturnType()));
+            assertTrue(isNullable(fromValue.getAnnotatedReturnType()));
+            assertTrue(isNullable(fromValue.getAnnotatedParameterTypes()[0]));
+            assertFalse(isNullable(stageSetting.getMethod("value").getAnnotatedReturnType()));
         }
     }
 

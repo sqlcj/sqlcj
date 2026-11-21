@@ -298,11 +298,11 @@ therefore does not hold, raises
 
 ```text
 Failed to execute query 'GetDriftedSetting' in UsersRepository
-Unknown label for enum type drift_setting: sad
+Unknown value for enum type drift_setting: sad
 ```
 
 The first message is the exception's own and the second its cause's, which is
-the `UnmappableValueException` the generated enum's `fromLabel` raised.
+the `UnmappableValueException` the generated enum's `fromValue` raised.
 `type()` is the PostgreSQL type name, `drift_setting`, and `value()` is the
 label, `sad`, so an application reports both without reading a message.
 `sqlState()` is `null`, because no database reported the failure. Every other
@@ -719,7 +719,7 @@ or with `resultSet.getString(position)` for a `JSON`, `JSONB`, `CITEXT`,
 `INET`, `CIDR`, `MACADDR`, or `MACADDR8` column, which the driver reports as a
 type of its own rather than as a character type. An
 enum column reads its label the same way and resolves it with
-`<EnumType>.fromLabel(...)`, an `INTERVAL` column reads PostgreSQL's own text
+`<EnumType>.fromValue(...)`, an `INTERVAL` column reads PostgreSQL's own text
 the same way and parses it with
 `SqlInterval.parse(resultSet.getString(position))`, and an array column is read
 with `SqlArray.getList(...)`. Those are the reads of a nullable column. A
@@ -728,7 +728,7 @@ the same value and fails on a SQL `NULL`:
 `NotNullColumn.getObject(resultSet, position, JavaType.class)`,
 `NotNullColumn.getString(resultSet, position)` for the types
 read as text,
-`NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`
+`NotNullColumn.getString(resultSet, position, <EnumType>::fromValue)`
 for an enum and
 `NotNullColumn.getString(resultSet, position, SqlInterval::parse)`
 for an `INTERVAL`, and
@@ -762,7 +762,7 @@ An `INTERVAL` argument is passed to the executor as
 `new UntypedText(value.format())`, or as
 `new UntypedText(value == null ? null : value.format())` for a
 nullable parameter or component, as an enum argument is written around
-`label()`.
+`value()`.
 `format()` writes the three counts with an explicit sign on every field, as in
 `+14 mons -3 days +3723000004 microseconds`, so that PostgreSQL reads the text
 alike under every `IntervalStyle` and the least microsecond count the record
@@ -802,31 +802,31 @@ public enum StageSetting {
     COVERED("covered"),
     OUTDOOR("outdoor");
 
-    private final String label;
+    private final String value;
 
-    StageSetting(String label) {
-        this.label = label;
+    StageSetting(String value) {
+        this.value = value;
     }
 
-    public String label() {
-        return label;
+    public String value() {
+        return value;
     }
 
-    public static @Nullable StageSetting fromLabel(@Nullable String label) {
-        if (label == null) {
+    public static @Nullable StageSetting fromValue(@Nullable String value) {
+        if (value == null) {
             return null;
         }
 
-        for (StageSetting value : values()) {
-            if (value.label.equals(label)) {
-                return value;
+        for (StageSetting constant : values()) {
+            if (constant.value.equals(value)) {
+                return constant;
             }
         }
 
         throw new UnmappableValueException(
-                "Unknown label for enum type stage_setting: " + label,
+                "Unknown value for enum type stage_setting: " + value,
                 "stage_setting",
-                label,
+                value,
                 null
         );
     }
@@ -838,7 +838,10 @@ public enum StageSetting {
   label in the position its `ALTER TYPE ... ADD VALUE` places it.
 - A constant is named by the naming rules in
   [Generated Java Names](configuration.md#generated-java-names).
-- `fromLabel` reads back a label: `null` for a SQL `NULL`, and
+- `value()` is the label PostgreSQL declares for the constant, which its Java
+  name need not equal, so `fromValue` resolves that label while the JDK's own
+  `valueOf` resolves the constant's name.
+- `fromValue` reads back a label: `null` for a SQL `NULL`, and
   `org.sqlcj.runtime.UnmappableValueException` for a label the generated enum
   does not hold, which means the database declares one the schema source does
   not. That exception carries the PostgreSQL type name and the label itself,
@@ -846,9 +849,9 @@ public enum StageSetting {
   through a generated read it arrives as
   [Connection Ownership and Transactions](#connection-ownership-and-transactions)
   describes. A nullable enum column is read with
-  `<EnumType>.fromLabel(resultSet.getString(position))`, while a non-null one is
+  `<EnumType>.fromValue(resultSet.getString(position))`, while a non-null one is
   read with
-  `NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`,
+  `NotNullColumn.getString(resultSet, position, <EnumType>::fromValue)`,
   which resolves the label the same way and fails on a SQL `NULL` instead of
   reading it as `null`.
 - Only an enum type a query actually uses generates a file, including an enum
@@ -1033,7 +1036,7 @@ with another one; `VARCHAR` and `CHARACTER VARYING` elements are named
 `varchar`. Both read their elements back as `String`, blank padded to the
 declared length for `CHAR`, as a scalar of that type is read. An array of an
 enum carries the labels of its constants instead, as
-`SqlArray.of("<enum type>", <parameter>, <EnumType>::label)`, and an array of
+`SqlArray.of("<enum type>", <parameter>, <EnumType>::value)`, and an array of
 `INTERVAL` carries the text of its elements, as
 `SqlArray.of("interval", <parameter>, SqlInterval::format)`.
 
@@ -1043,7 +1046,7 @@ connection the operation runs on and binds it with
 `SqlArray.getList(resultSet, position, <Type>.class)`, which reads each element
 as a scalar of that type is read, a `String` element with `getString`, for the
 same reason a scalar of one of those types is; an array of an enum is read as
-`SqlArray.getList(resultSet, position, String.class, <EnumType>::fromLabel)`,
+`SqlArray.getList(resultSet, position, String.class, <EnumType>::fromValue)`,
 and an array of `INTERVAL` as
 `SqlArray.getList(resultSet, position, String.class, SqlInterval::parse)`. A
 non-null array column is read with the same three forms of
@@ -1530,7 +1533,7 @@ Null handling does not depend on the column type:
   `ResultSet.getObject(position, Class)`, or with
   `ResultSet.getString(position)` for `JSON`, `JSONB`, `CITEXT`, `INET`,
   `CIDR`, `MACADDR`, `MACADDR8`, and an enum, so a
-  SQL `NULL` is read back as `null`, which `fromLabel` keeps `null` for an
+  SQL `NULL` is read back as `null`, which `fromValue` keeps `null` for an
   enum. A nullable array column is read with
   `SqlArray.getList`, which reads a SQL `NULL` as a null list
   and a `NULL` element as a null element,
@@ -1800,7 +1803,7 @@ Type table:
   enum column of a `CREATE TABLE`, an added column, and a changed column type,
   and `JavaCodeGeneratorTest.shouldBindEnumLabelsAndReadEnumColumnsByLabel`
   covers the generated enum parameter, its `UntypedText` argument at every
-  binding position, and the `fromLabel` read.
+  binding position, and the `fromValue` read.
 - `DefaultSchemaParserTest.shouldRecordUnsupportedColumnType` and
   `DefaultSchemaParserTest.shouldParseNullabilityOfUnsupportedColumnTypes` cover
   the recorded type of an unmapped spelling and of an array, beside the mapped
@@ -1914,7 +1917,7 @@ Enum types:
   `QueryAnalyzerTest.shouldRejectARepeatedIndexAcrossConflictingEnumTypes`
   cover the analyzed enum type and the repeated-index rejection.
 - `JavaCodeGeneratorTest.shouldGenerateCompilableEnumWithLabelLookups` compiles
-  the generated enum and executes `label`, `fromLabel`, its null, and its
+  the generated enum and executes `value`, `fromValue`, its null, and its
   unknown label;
   `JavaCodeGeneratorTest.shouldGenerateOnlyTheEnumTypesTheQueriesUse`,
   `JavaCodeGeneratorTest.shouldNameTheGeneratedEnumAndItsConstants`, and the
@@ -1936,7 +1939,7 @@ Enum types:
   `null` `sqlState()`, and the generated enum's own
   `UnmappableValueException` as its cause;
   `JavaCodeGeneratorTest.shouldGenerateCompilableEnumWithLabelLookups` covers
-  the exception the compiled `fromLabel` raises and both values it carries;
+  the exception the compiled `fromValue` raises and both values it carries;
   `JdbcQueryExecutorTest.shouldReportAMapperFailureOfADataSourceOperation`,
   `JdbcQueryExecutorTest.shouldReportAMapperFailureOnACallerOwnedConnection`,
   `JdbcQueryExecutorTest.shouldRethrowAnUnmappableValueOfAMapper`, and

@@ -841,7 +841,7 @@ on the repository alone:
   repository, such as `AuthorRepository.ListAuthorBooksResult`, which are
   classes of their own and carry no marker;
 - the generated enums of the `enums` subpackage, counters for the branches of
-  `fromLabel` included.
+  `fromValue` included.
 
 Those classes are covered by the code that constructs and reads them, which is
 the application's code and the tests above. The practical consequence is that
@@ -865,5 +865,5 @@ each project's tests were run with the sequence above against PostgreSQL 16
 The JaCoCo statements above were read off the reports of those runs, and the
 statement about generated enums off the same `my-app` with one more migration
 that adds a PostgreSQL enum type and a column of it: its `AuthorStatus` is
-reported with its constants, its `label` method, and the branches of
-`fromLabel`.
+reported with its constants, its `value` method, and the branches of
+`fromValue`.

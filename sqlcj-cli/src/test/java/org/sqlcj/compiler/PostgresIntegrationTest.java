@@ -3262,12 +3262,12 @@ class PostgresIntegrationTest {
                 Arrays.stream(constants).map(Object::toString).toList()
             );
 
-            Method label = stageSetting.getMethod("label");
+            Method value = stageSetting.getMethod("value");
 
             List<Object> labels = new ArrayList<>();
 
             for (Object constant : constants) {
-                labels.add(label.invoke(constant));
+                labels.add(value.invoke(constant));
             }
 
             assertEquals(enumLabels("stage_setting"), labels);
@@ -3671,12 +3671,12 @@ class PostgresIntegrationTest {
                 Arrays.stream(constants).map(Object::toString).toList()
             );
 
-            Method label = stageSetting.getMethod("label");
+            Method value = stageSetting.getMethod("value");
 
             List<Object> labels = new ArrayList<>();
 
             for (Object constant : constants) {
-                labels.add(label.invoke(constant));
+                labels.add(value.invoke(constant));
             }
 
             assertEquals(enumLabels("stage_setting"), labels);
@@ -4857,12 +4857,12 @@ class PostgresIntegrationTest {
                 Arrays.stream(constants).map(Object::toString).toList()
             );
 
-            Method label = albumKind.getMethod("label");
+            Method value = albumKind.getMethod("value");
 
             List<Object> labels = new ArrayList<>();
 
             for (Object constant : constants) {
-                labels.add(label.invoke(constant));
+                labels.add(value.invoke(constant));
             }
 
             assertEquals(enumLabels("album_kind"), labels);
@@ -6625,7 +6625,7 @@ class PostgresIntegrationTest {
             );
 
             assertEquals(
-                "Unknown label for enum type drift_setting: sad",
+                "Unknown value for enum type drift_setting: sad",
                 cause.getMessage()
             );
 

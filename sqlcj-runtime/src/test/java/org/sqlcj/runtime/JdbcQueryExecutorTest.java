@@ -1729,14 +1729,14 @@ class JdbcQueryExecutorTest {
 
     /**
      * A value the generated API cannot represent, which a generated enum's
-     * {@code fromLabel} raises while a row is mapped, keeps its
+     * {@code fromValue} raises while a row is mapped, keeps its
      * {@link UnmappableValueException} type, its type, and its value, names
      * the query and its repository, and carries the original as its cause.
      */
     @Test
     void shouldRethrowAnUnmappableValueOfAMapper() {
         UnmappableValueException raised = new UnmappableValueException(
-            "Unknown label for enum type stage_setting: covered",
+            "Unknown value for enum type stage_setting: covered",
             "stage_setting",
             "covered",
             null

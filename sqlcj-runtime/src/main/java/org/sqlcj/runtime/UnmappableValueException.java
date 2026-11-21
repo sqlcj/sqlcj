@@ -10,7 +10,7 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>{@link #type()} names the database type of the value and
  * {@link #value()} is the value itself, as text, so an application can report
- * both without reading the message. The generated enum's {@code fromLabel}
+ * both without reading the message. The generated enum's {@code fromValue}
  * raises this type while a row is mapped, and {@link JdbcQueryExecutor}
  * rethrows it with the message naming the query and its repository, the same
  * type and value, and the original as its cause.

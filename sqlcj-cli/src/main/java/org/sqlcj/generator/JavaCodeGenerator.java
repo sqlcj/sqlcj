@@ -712,10 +712,10 @@ public final class JavaCodeGenerator implements CodeGenerator {
     private String generateEnum(SharedEnum sharedEnum, NameScope scope) {
         List<String> members = List.of(
             generateEnumConstants(sharedEnum),
-            "private final %s label;".formatted(scope.type(STRING)),
+            "private final %s value;".formatted(scope.type(STRING)),
             generateEnumConstructor(sharedEnum, scope),
-            generateEnumLabelMethod(scope),
-            generateFromLabelMethod(sharedEnum, scope)
+            generateEnumValueMethod(scope),
+            generateFromValueMethod(sharedEnum, scope)
         );
 
         return """
@@ -746,17 +746,17 @@ public final class JavaCodeGenerator implements CodeGenerator {
 
     private String generateEnumConstructor(SharedEnum sharedEnum, NameScope scope) {
         return """
-            %s(%s label) {
-                this.label = label;
+            %s(%s value) {
+                this.value = value;
             }
             """
             .formatted(sharedEnum.typeName(), scope.type(STRING));
     }
 
-    private String generateEnumLabelMethod(NameScope scope) {
+    private String generateEnumValueMethod(NameScope scope) {
         return """
-            public %s label() {
-                return label;
+            public %s value() {
+                return value;
             }
             """
             .formatted(scope.type(STRING));
@@ -764,20 +764,20 @@ public final class JavaCodeGenerator implements CodeGenerator {
 
     /**
      * Generates the reverse lookup a generated read uses: {@code null} for a
-     * SQL {@code NULL}, and a failure for a label the generated enum does not
+     * SQL {@code NULL}, and a failure for a value the generated enum does not
      * hold, which means the database has a label the schema source does not
      * declare.
      */
-    private String generateFromLabelMethod(SharedEnum sharedEnum, NameScope scope) {
+    private String generateFromValueMethod(SharedEnum sharedEnum, NameScope scope) {
         return """
             %s
-                if (label == null) {
+                if (value == null) {
                     return null;
                 }
 
-                for (%s value : values()) {
-                    if (value.label.equals(label)) {
-                        return value;
+                for (%s constant : values()) {
+                    if (constant.value.equals(value)) {
+                        return constant;
                     }
                 }
 
@@ -786,24 +786,24 @@ public final class JavaCodeGenerator implements CodeGenerator {
             """
             .formatted(
                 generateMethodDeclaration(
-                    "public static %s %s fromLabel"
+                    "public static %s %s fromValue"
                         .formatted(scope.annotation(NULLABLE), sharedEnum.typeName()),
-                    List.of(scope.annotated(STRING, scope.annotation(NULLABLE)) + " label")
+                    List.of(scope.annotated(STRING, scope.annotation(NULLABLE)) + " value")
                 ),
                 sharedEnum.typeName(),
-                generateUnknownLabelFailure(sharedEnum, BODY_INDENT, scope)
+                generateUnknownValueFailure(sharedEnum, BODY_INDENT, scope)
             );
     }
 
     /**
-     * Writes the failure of a label the generated enum does not hold, which
-     * carries the PostgreSQL type and the label itself so that the runtime
+     * Writes the failure of a value the generated enum does not hold, which
+     * carries the PostgreSQL type and the value itself so that the runtime
      * reports both beside the query that read them. A statement that does not
      * fit the limit writes its arguments one per line, one call continuation
      * past the line that opens the call, with the closing parenthesis at that
      * line's column, the layout a wrapped bound-argument list already uses.
      */
-    private String generateUnknownLabelFailure(
+    private String generateUnknownValueFailure(
         SharedEnum sharedEnum,
         int indent,
         NameScope scope
@@ -811,10 +811,10 @@ public final class JavaCodeGenerator implements CodeGenerator {
         String margin = " ".repeat(indent);
         String call = "throw new %s(".formatted(scope.type(UNMAPPABLE_VALUE_EXCEPTION));
         String message = generateStringLiteral(
-            "Unknown label for enum type " + sharedEnum.enumName() + ": "
-        ) + " + label";
+            "Unknown value for enum type " + sharedEnum.enumName() + ": "
+        ) + " + value";
         String type = generateStringLiteral(sharedEnum.enumName());
-        String oneLine = call + message + ", " + type + ", label, null);";
+        String oneLine = call + message + ", " + type + ", value, null);";
 
         if (fits(indent, oneLine)) {
             return margin + oneLine;
@@ -825,7 +825,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
         return margin + call + "\n"
             + argumentMargin + message + ",\n"
             + argumentMargin + type + ",\n"
-            + argumentMargin + "label,\n"
+            + argumentMargin + "value,\n"
             + argumentMargin + "null\n"
             + margin + ");";
     }
@@ -2309,7 +2309,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
         }
 
         if (parameter.type() == ColumnType.ENUM) {
-            return generateUntypedTextArgument(parameter, name, "label", scope);
+            return generateUntypedTextArgument(parameter, name, "value", scope);
         }
 
         if (parameter.type() == ColumnType.INTERVAL) {
@@ -2353,7 +2353,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
      */
     private String generateArrayArgument(QueryParameter parameter, String name, NameScope scope) {
         if (parameter.type() == ColumnType.ENUM) {
-            return "%s.of(%s, %s, %s::label)"
+            return "%s.of(%s, %s, %s::value)"
                 .formatted(
                     scope.type(SQL_ARRAY),
                     generateStringLiteral(parameter.enumType()),
@@ -2614,8 +2614,8 @@ public final class JavaCodeGenerator implements CodeGenerator {
             String enumTypeName = scope.type(enumTypeQualifiedName(column.enumType()));
 
             return column.nullable()
-                ? "%s.fromLabel(resultSet.getString(%d))".formatted(enumTypeName, position)
-                : "%s.getString(resultSet, %d, %s::fromLabel)"
+                ? "%s.fromValue(resultSet.getString(%d))".formatted(enumTypeName, position)
+                : "%s.getString(resultSet, %d, %s::fromValue)"
                     .formatted(scope.type(NOT_NULL_COLUMN), position, enumTypeName);
         }
 
@@ -2661,7 +2661,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             : scope.type(NOT_NULL_COLUMN);
 
         if (column.type() == ColumnType.ENUM) {
-            return "%s.getList(resultSet, %d, %s.class, %s::fromLabel)"
+            return "%s.getList(resultSet, %d, %s.class, %s::fromValue)"
                 .formatted(
                     reader,
                     position,
