@@ -291,7 +291,11 @@ configuration entry.
   view was created, so a column a later statement adds to an underlying table
   is no column of the view, as PostgreSQL fixes a view's columns at creation;
   a view dropped and recreated, or replaced with `CREATE OR REPLACE`, has the
-  columns of its newest definition. A view's query is analyzed in its own
+  columns of its newest definition. Two later statements are the exception to
+  that schema: an `ALTER COLUMN ... DROP NOT NULL` stated after the view makes
+  every one of its columns nullable, and an enum type renamed after it names
+  the view's columns of that type by the new name; see
+  [Views](postgresql.md#views). A view's query is analyzed in its own
   scope, so none of its wildcards or placeholders belongs to the query that
   names it, and a view over a view resolves the inner view the same way. The
   views sqlcj records are those of the modeled namespace; see
