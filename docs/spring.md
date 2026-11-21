@@ -124,6 +124,39 @@ An application that defines its own executor builds it over a
 the plain `DataSource` obtains a connection of its own, so each of its writes
 is committed at once and survives the rollback of the transaction it ran in.
 
+### When a repository is missing at startup
+
+An application that asks for a generated repository the starter did not
+register fails to start, as it would for any missing bean, and the startup
+report names the starter's own decision that left it unregistered and the fix
+this guide documents for it, in place of Spring Boot's generic
+`Consider defining a bean of type ...`. A missing type that carries no
+`@GeneratedRepository` is none of the starter's business and keeps Spring
+Boot's report unchanged.
+
+There are four reasons, each citing the section that documents its fix:
+
+| Why nothing was registered | The fix it cites |
+| --- | --- |
+| No `QueryExecutor` bean, because the application has no `DataSource` bean | [The executor](#the-executor) |
+| No `QueryExecutor` bean, because several `DataSource` beans, none of them `@Primary`, leave no single candidate; the report names them | [Several Databases](#several-databases) |
+| Several `QueryExecutor` beans, which the report names | [Several Databases](#several-databases) |
+| The repository's package lies outside the application's auto-configuration packages, which the report names beside it | [A Generated Package Outside the Application's Packages](#a-generated-package-outside-the-applications-packages) |
+
+The last one reads:
+
+```text
+Description:
+
+Parameter 0 of constructor in com.example.app.LibraryService required a bean of type 'com.example.generated.repositories.AuthorRepository' that could not be found.
+
+The sqlcj starter registers only the generated repositories in the application's auto-configuration packages (com.example.app), and this repository's package is com.example.generated.repositories.
+
+Action:
+
+Register the repository with @Import(AuthorRepository.class) on a @Configuration class, or generate it under the application's packages by changing java.package in the sqlcj configuration. See "A Generated Package Outside the Application's Packages" in the sqlcj Spring guide.
+```
+
 ### Transactions
 
 A `@Transactional` method commits or rolls back every generated write it made,
