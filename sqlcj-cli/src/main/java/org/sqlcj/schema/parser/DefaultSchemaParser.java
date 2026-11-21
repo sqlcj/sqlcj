@@ -168,7 +168,7 @@ public class DefaultSchemaParser implements SchemaParser {
                 && parsed.size() == 1
                 && !(parsed.get(0) instanceof UnsupportedStatement)
         ) {
-            apply(parsed.get(0), statement.line(), tables, enums, domains, namespace);
+            apply(parsed.get(0), statement.line(), tables, enums, domains, views, namespace);
 
             return;
         }
@@ -818,6 +818,12 @@ public class DefaultSchemaParser implements SchemaParser {
      * model is ignored the same way, before anything it names is resolved; see
      * {@link SchemaNamespace}. {@code DROP TABLE} is the one statement that
      * carries on, skipping such a name among its names.
+     *
+     * <p>An {@code ALTER TABLE} and an {@code ALTER TYPE} are applied to the
+     * views recorded before them as well, because a {@code DROP NOT NULL} and
+     * an enum type rename reach the views PostgreSQL holds; see
+     * {@link #markViewColumnsNullable(List)} and
+     * {@link #recordViewEnumRename(List, String, String)}.
      */
     private void apply(
         Statement statement,
@@ -825,6 +831,7 @@ public class DefaultSchemaParser implements SchemaParser {
         List<Table> tables,
         List<EnumType> enums,
         List<DomainType> domains,
+        List<View> views,
         SchemaNamespace namespace
     ) {
         if (statement instanceof CreateTable createTable) {
@@ -833,7 +840,7 @@ public class DefaultSchemaParser implements SchemaParser {
             }
         } else if (statement instanceof Alter alter) {
             if (namespace.isModeled(alter.getTable())) {
-                applyAlterTable(alter, line, enums, domains, tables, namespace);
+                applyAlterTable(alter, line, enums, domains, tables, views, namespace);
             }
         } else if (statement instanceof Drop drop && drop.getObjectType() == Drop.ObjectType.TABLE) {
             applyDropTable(drop, tables, namespace);
@@ -843,7 +850,7 @@ public class DefaultSchemaParser implements SchemaParser {
         ) {
             applyCreateEnumType(createType, definition, enums, domains, namespace);
         } else if (statement instanceof AlterType alterType) {
-            applyAlterType(alterType, line, enums, domains, tables, namespace);
+            applyAlterType(alterType, line, enums, domains, tables, views, namespace);
         } else if (statement instanceof CreateDomain createDomain) {
             applyCreateDomain(createDomain, enums, domains, namespace);
         } else if (statement instanceof AlterDomain alterDomain) {
@@ -973,6 +980,7 @@ public class DefaultSchemaParser implements SchemaParser {
         List<EnumType> enums,
         List<DomainType> domains,
         List<Table> tables,
+        List<View> views,
         SchemaNamespace namespace
     ) {
         AlterType.Action action = alterType.getAction();
@@ -1003,7 +1011,8 @@ public class DefaultSchemaParser implements SchemaParser {
                 index,
                 enums,
                 domains,
-                tables
+                tables,
+                views
             );
             case SET_SCHEMA -> moveEnumTypeToSchema(alterType, line, index, namespace);
             default -> throw unsupportedAlterTypeAction(String.valueOf(action), line);
@@ -1069,7 +1078,8 @@ public class DefaultSchemaParser implements SchemaParser {
         int index,
         List<EnumType> enums,
         List<DomainType> domains,
-        List<Table> tables
+        List<Table> tables,
+        List<View> views
     ) {
         int domain = indexOfDomain(domains, typeName);
 
@@ -1079,7 +1089,7 @@ public class DefaultSchemaParser implements SchemaParser {
             return;
         }
 
-        renameEnumType(newName, typeName, index, enums, domains, tables);
+        renameEnumType(newName, typeName, index, enums, domains, tables, views);
     }
 
     /**
@@ -1091,6 +1101,9 @@ public class DefaultSchemaParser implements SchemaParser {
      * naming the renamed enum keeps that name, so it is modeled as a column of
      * the renamed enum with its labels, the column PostgreSQL would have
      * removed.
+     *
+     * <p>The rename is recorded with every view recorded before it as well,
+     * because PostgreSQL renames the type of a view's columns with it.
      */
     private void renameEnumType(
         String newName,
@@ -1098,11 +1111,14 @@ public class DefaultSchemaParser implements SchemaParser {
         int index,
         List<EnumType> enums,
         List<DomainType> domains,
-        List<Table> tables
+        List<Table> tables,
+        List<View> views
     ) {
         if (index < 0) {
             return;
         }
+
+        recordViewEnumRename(views, typeName, newName);
 
         int replaced = indexOfEnum(enums, newName);
         int renamed = index;
@@ -1735,6 +1751,10 @@ public class DefaultSchemaParser implements SchemaParser {
      * Applies the actions of one {@code ALTER TABLE} in order, in the position
      * of the altered table. {@code ALTER TABLE IF EXISTS} covers only the table,
      * so a missing column of an existing table still fails.
+     *
+     * <p>A statement that drops a {@code NOT NULL} marks every view recorded
+     * before it, once its actions are applied; see
+     * {@link #markViewColumnsNullable(List)}.
      */
     private void applyAlterTable(
         Alter alter,
@@ -1742,6 +1762,7 @@ public class DefaultSchemaParser implements SchemaParser {
         List<EnumType> enums,
         List<DomainType> domains,
         List<Table> tables,
+        List<View> views,
         SchemaNamespace namespace
     ) {
         String tableName = alter.getTable().getUnquotedName();
@@ -1767,6 +1788,65 @@ public class DefaultSchemaParser implements SchemaParser {
         for (AlterExpression expression : alter.getAlterExpressions()) {
             applyToTableAndPartitions(line, expression, enums, domains, tables, index, namespace);
         }
+
+        if (alter.getAlterExpressions().stream().anyMatch(this::dropsNotNull)) {
+            markViewColumnsNullable(views);
+        }
+    }
+
+    /**
+     * Reports whether one {@code ALTER TABLE} action is an
+     * {@code ALTER COLUMN ... DROP NOT NULL}, which makes a column of a
+     * modeled table nullable.
+     */
+    private boolean dropsNotNull(AlterExpression expression) {
+        return expression.getOperation() == AlterOperation.ALTER
+            && isNotEmpty(expression.getColumnDropNotNullList());
+    }
+
+    /**
+     * Marks the columns of every recorded view nullable, keeping each view's
+     * recorded schema as it stood, because a column PostgreSQL made nullable
+     * may be read by any of their columns and sqlcj does not track which table
+     * column a view column reads.
+     */
+    private void markViewColumnsNullable(List<View> views) {
+        views.replaceAll(
+            view -> new View(
+                view.name(),
+                view.materialized(),
+                view.query(),
+                view.columnNames(),
+                view.schema(),
+                view.recursive(),
+                true,
+                view.enumRenames()
+            )
+        );
+    }
+
+    /**
+     * Records one enum type rename with every recorded view, after the renames
+     * recorded before it, keeping each view's recorded schema as it stood,
+     * because a defining query may name the type by the name it had there.
+     */
+    private void recordViewEnumRename(List<View> views, String typeName, String newName) {
+        views.replaceAll(view -> {
+            List<View.EnumRename> renames = new ArrayList<>(view.enumRenames());
+
+            renames.add(new View.EnumRename(typeName, newName));
+
+            return new View(
+                view.name(),
+                view.materialized(),
+                view.query(),
+                view.columnNames(),
+                view.schema(),
+                view.recursive(),
+                view.columnsNullable(),
+                renames
+            );
+        });
     }
 
     /**

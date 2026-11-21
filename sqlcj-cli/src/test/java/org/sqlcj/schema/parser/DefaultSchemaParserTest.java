@@ -1405,6 +1405,76 @@ class DefaultSchemaParserTest {
     }
 
     /**
+     * A view recorded before an {@code ALTER COLUMN ... DROP NOT NULL} of a
+     * modeled table is marked as one whose columns are all nullable, while a
+     * view recorded after that statement is not, and the recorded schema of
+     * the marked view stays as it stood, with the column still non-null.
+     */
+    @Test
+    void shouldMarkTheViewsRecordedBeforeADropNotNull() {
+        Schema schema = applied("""
+            CREATE VIEW early_users AS SELECT id, name FROM users;
+            ALTER TABLE users ALTER COLUMN id DROP NOT NULL;
+            CREATE VIEW later_users AS SELECT id FROM users;
+            """);
+
+        assertTrue(schema.views().get(0).columnsNullable());
+        assertFalse(schema.views().get(1).columnsNullable());
+
+        assertFalse(
+            table(schema.views().get(0).schema(), "users").columns().get(0).nullable(),
+            "the schema a view was recorded against stays as it stood"
+        );
+
+        assertTrue(table(schema, "users").columns().get(0).nullable());
+    }
+
+    /**
+     * A view recorded before an enum type rename records that rename, and the
+     * renames of several statements are recorded in their order, so a view
+     * recorded between two of them records only the one stated after it. The
+     * recorded schema of each view keeps the name the type had there.
+     */
+    @Test
+    void shouldRecordTheEnumRenamesStatedAfterAView() {
+        Schema schema = applied("""
+            CREATE TYPE mood AS ENUM ('calm', 'tense');
+            CREATE VIEW early_users AS SELECT id FROM users;
+            ALTER TYPE mood RENAME TO feeling;
+            CREATE VIEW middle_users AS SELECT id FROM users;
+            ALTER TYPE feeling RENAME TO emotion;
+            """);
+
+        assertEquals(
+            List.of(
+                new View.EnumRename("mood", "feeling"),
+                new View.EnumRename("feeling", "emotion")
+            ),
+            schema.views().get(0).enumRenames()
+        );
+
+        assertEquals(
+            List.of(new View.EnumRename("feeling", "emotion")),
+            schema.views().get(1).enumRenames()
+        );
+
+        List<String> labels = List.of("calm", "tense");
+
+        assertEquals(
+            List.of(new EnumType("mood", labels)),
+            schema.views().get(0).schema().enums(),
+            "the schema a view was recorded against stays as it stood"
+        );
+
+        assertEquals(
+            List.of(new EnumType("feeling", labels)),
+            schema.views().get(1).schema().enums()
+        );
+
+        assertEquals(List.of(new EnumType("emotion", labels)), schema.enums());
+    }
+
+    /**
      * A {@code CREATE RECURSIVE VIEW} is recorded as a recursive view, which
      * sqlcj does not analyze, and every other form is recorded as one it does.
      */

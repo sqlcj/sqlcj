@@ -5198,6 +5198,147 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
+     * The later statements of a migration history reach a view recorded before
+     * them: a view recorded before an {@code ALTER COLUMN ... DROP NOT NULL}
+     * reads every one of its columns as nullable, while a view recorded after
+     * that statement keeps the nullness its own analysis gives, so a
+     * {@code :optional} read of its one non-null column still returns that
+     * value. A column of an enum type a later statement renamed is typed with
+     * the generated enum of the new name, which is the only enum generated.
+     */
+    @Test
+    void shouldReadAViewTheLaterMigrationsReach() throws Exception {
+        Path migrations = Files.createDirectories(tempDir.resolve("migrations"));
+
+        Files.writeString(
+            migrations.resolve("V1__entries.sql"),
+            """
+                CREATE TYPE mood AS ENUM ('calm', 'tense');
+
+                CREATE TABLE entries
+                (
+                    id    BIGINT NOT NULL,
+                    note  TEXT NOT NULL,
+                    state mood NOT NULL
+                );
+                """
+        );
+
+        Files.writeString(
+            migrations.resolve("V2__early_entries.sql"),
+            """
+                CREATE VIEW early_entries AS
+                SELECT id, note, state
+                FROM entries;
+                """
+        );
+
+        Files.writeString(
+            migrations.resolve("V3__reshape_entries.sql"),
+            """
+                ALTER TABLE entries ALTER COLUMN note DROP NOT NULL;
+
+                ALTER TYPE mood RENAME TO feeling;
+
+                CREATE VIEW later_entries AS
+                SELECT id, note
+                FROM entries;
+                """
+        );
+
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: ListEarlyEntries :many
+                SELECT id, note, state
+                FROM early_entries;
+
+                -- name: FindLaterEntryId :optional
+                SELECT id
+                FROM later_entries
+                WHERE id = $1;
+                """
+        );
+
+        Path generatedDirectory = tempDir.resolve("generated");
+
+        String source = Files.readString(
+            generateUsersRepository(
+                List.of(migrations.toString()),
+                queriesFile,
+                generatedDirectory
+            )
+        );
+
+        assertEquals(
+            List.of("@Nullable Long id", "@Nullable String note", "@Nullable Feeling state"),
+            recordComponents(source, "ListEarlyEntriesResult"),
+            "the DROP NOT NULL stated after the view reaches every one of its columns"
+        );
+
+        assertEquals(
+            Set.of(
+                "generated/sqlcj-manifest.txt",
+                "generated/enums/Feeling.java",
+                "generated/repositories/UsersRepository.java"
+            ),
+            generatedFiles(generatedDirectory).keySet(),
+            "the renamed enum is generated under its new name alone"
+        );
+
+        Path classesDirectory = tempDir.resolve("classes");
+
+        assertCompiles(generatedDirectory, classesDirectory);
+
+        JdbcDataSource dataSource = new JdbcDataSource();
+
+        dataSource.setURL("jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1");
+
+        try (
+            Connection connection = dataSource.getConnection();
+            Statement statement = connection.createStatement()
+        ) {
+            statement.execute("""
+                CREATE TABLE entries (
+                    id BIGINT PRIMARY KEY,
+                    note VARCHAR(255)
+                )
+                """);
+
+            statement.execute("""
+                CREATE VIEW later_entries AS
+                SELECT id, note FROM entries
+                """);
+
+            statement.execute("""
+                INSERT INTO entries (id, note)
+                VALUES (1, 'first')
+                """);
+        }
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = Class.forName(
+                "generated.repositories.UsersRepository",
+                true,
+                classLoader
+            )
+                .getConstructor(QueryExecutor.class)
+                .newInstance(new JdbcQueryExecutor(dataSource));
+
+            Optional<?> found = assertInstanceOf(
+                Optional.class,
+                repository.getClass()
+                    .getMethod("findLaterEntryId", Long.class)
+                    .invoke(repository, 1L)
+            );
+
+            assertEquals(1L, found.orElseThrow());
+        }
+    }
+
+    /**
      * A write into a view of the migration history states the table to write
      * to instead, and nothing is generated.
      */

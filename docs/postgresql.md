@@ -1230,6 +1230,26 @@ Nothing of the definition is analyzed while the schema is read, so a view whose
 query sqlcj cannot analyze never stops a schema from loading; it fails only a
 query that names it, with the reason that analysis states.
 
+Two later statements do reach the view PostgreSQL holds, and sqlcj records what
+they state beside the recorded schema, which stays as it stood:
+
+- An `ALTER TABLE ... ALTER COLUMN ... DROP NOT NULL` of a modeled table makes
+  every column of every view recorded before it nullable, because such a view
+  column may read the column PostgreSQL made nullable and sqlcj does not track
+  which table column a view column reads. A view created after the statement
+  keeps the nullness its own analysis states.
+- `ALTER TYPE <enum> RENAME TO <new>` renames the enum type of the columns of
+  every view recorded before it, and several renames are applied in the order
+  they are stated, so a view column of the renamed type is generated as the
+  enum of its newest name. The recorded schema keeps the name the type had,
+  because the defining query may name it by that name, as a `'calm'::mood`
+  cast does.
+
+A `pg_dump` snapshot writes every view after those statements and types its
+columns by the columns the view has, so a history can read more of a view's
+columns as nullable than its own dump does, while both name the renamed enum
+type alike.
+
 `CREATE OR REPLACE VIEW` and every other `CREATE` of a recorded name replace
 the recorded view in its position, as PostgreSQL holds one relation of a name at
 a time, while `CREATE MATERIALIZED VIEW IF NOT EXISTS` of a recorded name keeps
@@ -2139,6 +2159,24 @@ Views:
   kind and of a name no view is recorded of; and
   `DefaultSchemaParserTest.shouldRecordNoViewOutsideTheModeledNamespace` covers
   the temporary view and the view of another schema that are recorded nowhere.
+- `DefaultSchemaParserTest.shouldMarkTheViewsRecordedBeforeADropNotNull` covers
+  the marked view, the view recorded after the statement that is not marked,
+  and the recorded schema whose column stays non-null;
+  `DefaultSchemaParserTest.shouldRecordTheEnumRenamesStatedAfterAView` covers
+  two renames recorded in their order, the view recorded between them that
+  records only the second, and the recorded schemas that keep the name the
+  type had; and
+  `QueryAnalyzerTest.shouldReadEveryColumnOfAViewADropNotNullReachedAsNullable`
+  and `QueryAnalyzerTest.shouldTypeAViewColumnWithTheRenamedEnumType` cover the
+  columns those records give a query that reads the view.
+- `SqlcjCompilerIntegrationTest.shouldReadAViewTheLaterMigrationsReach`
+  generates `@Nullable` components for the view a later migration's
+  `DROP NOT NULL` reached, generates the renamed enum under its new name alone,
+  compiles the output, and executes the `:optional` read of the view created
+  after that migration; and
+  `PostgresIntegrationTest.shouldReadAViewTheLaterStatementsReachAgainstPostgres`
+  reads the `NULL` of the column whose `NOT NULL` was dropped and the renamed
+  enum's constant through that view against PostgreSQL 16.
 - The queries that read a recorded view, the two view diagnostics, and the
   PostgreSQL 16 runs of `ReferenceServiceIntegrationTest` and
   `ViewSourcesIntegrationTest` are listed in
