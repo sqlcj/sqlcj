@@ -1970,6 +1970,168 @@ class PostgresIntegrationTest {
         }
     }
 
+    /**
+     * Covers a query's own parameter record end to end: a wide {@code $N}
+     * insert and a {@code :name} update, each asking for one record in its
+     * header, are called with one record built by name through its builder and
+     * write the expected rows; a batch row built through its builder writes the
+     * row its constructor builds; and a record built without one of its
+     * non-null components fails naming the parameter, the query, and the
+     * repository.
+     */
+    @Test
+    void shouldExecuteGeneratedParameterRecordsAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile("""
+            -- name: InsertUser :exec params
+            INSERT INTO users (id, code, score, name, bio, active, birth_date, balance)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+
+            -- name: UpdateUser :exec params
+            UPDATE users
+            SET name  = :name,
+                bio   = :bio,
+                score = :score
+            WHERE id = :id;
+
+            -- name: InsertUserCodes :batchexec
+            INSERT INTO users (id, code, name)
+            VALUES ($1, $2, $3);
+
+            -- name: ListUsers :many
+            SELECT id, code, score, name, bio
+            FROM users
+            ORDER BY id;
+            """);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Class<?> insertUserParams = paramsType(repository, "InsertUserParams");
+            Class<?> updateUserParams = paramsType(repository, "UpdateUserParams");
+            Class<?> insertUserCodesParams = paramsType(repository, "InsertUserCodesParams");
+
+            assertEquals(
+                1,
+                repository
+                    .getClass()
+                    .getMethod("insertUser", insertUserParams)
+                    .invoke(
+                        repository,
+                        built(
+                            insertUserParams,
+                            "id",
+                            1L,
+                            "code",
+                            7,
+                            "score",
+                            (short) 3,
+                            "name",
+                            "Alice",
+                            "bio",
+                            "Reader",
+                            "active",
+                            true,
+                            "birthDate",
+                            LocalDate.of(1999, 1, 2),
+                            "balance",
+                            new BigDecimal("12.50")
+                        )
+                    )
+            );
+
+            assertEquals(
+                1,
+                repository
+                    .getClass()
+                    .getMethod("updateUser", updateUserParams)
+                    .invoke(
+                        repository,
+                        built(
+                            updateUserParams,
+                            "name",
+                            "Alice Second",
+                            "bio",
+                            null,
+                            "score",
+                            (short) 9,
+                            "id",
+                            1L
+                        )
+                    )
+            );
+
+            assertArrayEquals(
+                new int[] { 1, 1 },
+                batch(
+                    repository,
+                    "insertUserCodes",
+                    List.of(
+                        params(insertUserCodesParams, 2L, 8, "Bob"),
+                        built(
+                            insertUserCodesParams,
+                            "id",
+                            3L,
+                            "code",
+                            9,
+                            "name",
+                            "Cara"
+                        )
+                    )
+                )
+            );
+
+            List<?> rows = (List<?>) repository.getClass().getMethod("listUsers").invoke(repository);
+
+            assertEquals(List.of(1L, 2L, 3L), ids(rows));
+            assertEquals(List.of("Alice Second", "Bob", "Cara"), names(rows));
+            assertEquals(List.of(7, 8, 9), components(rows, "code"));
+            assertEquals(Arrays.asList((short) 9, null, null), components(rows, "score"));
+            assertEquals(Arrays.asList(null, null, null), components(rows, "bio"));
+
+            Object builder = insertUserParams.getMethod("builder").invoke(null);
+
+            InvocationTargetException failure = assertThrows(
+                InvocationTargetException.class,
+                () -> builder.getClass().getMethod("build").invoke(builder)
+            );
+
+            assertInstanceOf(NullPointerException.class, failure.getCause());
+
+            assertEquals(
+                "Parameter 'id' of query 'InsertUser' in UsersRepository must not be null",
+                failure.getCause().getMessage()
+            );
+        }
+    }
+
+    /**
+     * One generated record built by name: each pair of the arguments is one
+     * component name and the value its setter takes, which the setter is
+     * looked up by the component's own declared type.
+     */
+    private Object built(Class<?> recordType, Object... components) throws Exception {
+        Object builder = recordType.getMethod("builder").invoke(null);
+
+        for (int index = 0; index < components.length; index += 2) {
+            String name = (String) components[index];
+
+            builder = builder.getClass()
+                .getMethod(name, componentType(recordType, name))
+                .invoke(builder, components[index + 1]);
+        }
+
+        return builder.getClass().getMethod("build").invoke(builder);
+    }
+
+    /** The declared type of one component of a generated record. */
+    private Class<?> componentType(Class<?> recordType, String name) {
+        return Arrays.stream(recordType.getRecordComponents())
+            .filter(component -> component.getName().equals(name))
+            .<Class<?>>map(RecordComponent::getType)
+            .findFirst()
+            .orElseThrow();
+    }
+
     /** One {@code criteria} record of the group query, built by name. */
     private Object criteria(Class<?> criteriaType, String name, List<Integer> codes)
         throws Exception {

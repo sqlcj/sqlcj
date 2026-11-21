@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -8422,6 +8423,86 @@ class QueryAnalyzerTest {
             ),
             model.parameters()
         );
+    }
+
+    /**
+     * A query with the {@code params} option passes its parameters as one
+     * record, so a group placeholder in it is rejected naming the plain
+     * placeholder to write instead.
+     */
+    @Test
+    void shouldRejectAParameterGroupInAQueryWithTheParameterRecordOption() {
+        String sql = "SELECT * FROM users WHERE name = :name LIMIT :page.size";
+
+        Query query = parameterRecordQuery("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, schema)
+        );
+
+        assertEquals(
+            "A query with the option 'params' cannot use the parameter group placeholder "
+                + ":page.size, because its parameters are already one record; write a plain "
+                + "named placeholder, such as :size",
+            exception.getMessage()
+        );
+    }
+
+    /** The option is rejected on a query that binds no parameter. */
+    @Test
+    void shouldRejectTheParameterRecordOptionOnAQueryWithoutParameters() {
+        String sql = "SELECT * FROM users";
+
+        Query query = parameterRecordQuery("ListUsers", QueryType.MANY, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, schema)
+        );
+
+        assertEquals(
+            "The query option 'params' has no effect on a query that binds no parameter; "
+                + "remove it",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * The analyzed model of a query with the option carries the option, beside
+     * the parameters it analyzes exactly as it analyzes them without it.
+     */
+    @Test
+    void shouldCarryTheParameterRecordOptionOfTheQuery() {
+        String sql = "UPDATE users SET name = :name WHERE id = :id";
+
+        QueryModel model = analyzer.analyze(
+            parameterRecordQuery("UpdateUser", QueryType.EXEC, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertTrue(model.parameterRecord());
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "name", ColumnType.VARCHAR, null, false, false, true),
+                new QueryParameter(2, "id", ColumnType.BIGINT)
+            ),
+            model.parameters()
+        );
+
+        assertFalse(
+            analyzer
+                .analyze(new Query("UpdateUser", QueryType.EXEC, sql), parser.parse(sql), schema)
+                .parameterRecord()
+        );
+    }
+
+    /** One query whose header carries the {@code params} option. */
+    private Query parameterRecordQuery(String name, QueryType type, String sql) {
+        return new Query(name, type, sql, 0, List.of(), sql, true);
     }
 
     @Test

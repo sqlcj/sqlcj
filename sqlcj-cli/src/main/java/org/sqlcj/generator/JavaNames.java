@@ -82,6 +82,12 @@ final class JavaNames {
     static final String BUILD_METHOD_NAME = "build";
 
     /**
+     * The one parameter the method of a query with the {@code params} option
+     * takes, which holds that query's parameter record.
+     */
+    static final String PARAMETER_RECORD_NAME = "params";
+
+    /**
      * Inherited {@link Object} method names that a generated method or record
      * component cannot use.
      */
@@ -184,7 +190,7 @@ final class JavaNames {
                         RESERVED_MEMBER_NAMES,
                         query.name()
                     ),
-                    methodParameters
+                    methodParameters(query, methodParameters)
                 )
             );
         }
@@ -293,8 +299,10 @@ final class JavaNames {
      * that returns one complete table row names the repository's shared row
      * record and row mapper instead of a record of its own.
      *
-     * @param paramsTypeName  the nested record a batch query takes one list of,
-     *                        whose components are this query's parameters
+     * @param paramsTypeName  the nested record whose components are this
+     *                        query's parameters, which a batch query takes one
+     *                        list of and a query with the {@code params} option
+     *                        takes one of
      * @param parameterNames  the Java name of each parameter of the query, in
      *                        logical parameter order, which is the method
      *                        parameter of a plain placeholder and the record
@@ -315,15 +323,16 @@ final class JavaNames {
     }
 
     /**
-     * One parameter of a generated method: the value of one plain placeholder
-     * or the record of one parameter group.
+     * One parameter of a generated method: the value of one plain placeholder,
+     * the record of one parameter group, or the query's own parameter record.
      *
      * @param name      the resolved Java name of the parameter
      * @param parameter the logical parameter it binds, as an index into the
-     *                  query's parameters, and {@code -1} for a group, whose
-     *                  fields are logical parameters of their own
+     *                  query's parameters, and {@code -1} for a group and for
+     *                  the query's parameter record, whose fields and
+     *                  components are logical parameters of their own
      * @param group     the group record it holds, and {@code null} for a plain
-     *                  parameter
+     *                  parameter and for the query's parameter record
      */
     record MethodParameter(String name, int parameter, GroupNames group) {
     }
@@ -493,7 +502,7 @@ final class JavaNames {
                     .formatted(resultTypeNames.get(index), query.name())
             );
 
-            if (query.type() == QueryType.BATCH_EXEC) {
+            if (hasParamsRecord(query)) {
                 types.putIfAbsent(
                     paramsTypeNames.get(index).toLowerCase(Locale.ROOT),
                     "the parameter record %s of query '%s'"
@@ -584,6 +593,21 @@ final class JavaNames {
                 )
             )
             .toList();
+    }
+
+    /**
+     * The parameters one generated method takes. A query with the
+     * {@code params} option takes one parameter named after the option, which
+     * holds its {@code Params} record, whatever its own placeholders are named,
+     * while every other query takes the parameters its placeholders resolve to.
+     */
+    private static List<MethodParameter> methodParameters(
+        QueryModel query,
+        List<MethodParameter> resolved
+    ) {
+        return query.parameterRecord()
+            ? List.of(new MethodParameter(PARAMETER_RECORD_NAME, -1, null))
+            : resolved;
     }
 
     /**
@@ -856,24 +880,34 @@ final class JavaNames {
     }
 
     /**
-     * The names one query's parameters avoid. A batch query's parameters are
-     * the components of its generated {@code Params} record, so they avoid the
-     * inherited {@link Object} member names a record component cannot use
+     * The names one query's parameters avoid. The parameters of a query that
+     * generates a {@code Params} record are that record's components, so they
+     * avoid the names a component of a record with a builder cannot use — the
+     * inherited {@link Object} member names and the two the builder takes —
      * beside the generated names a method parameter avoids.
      */
     private static Set<String> reservedParameterNames(
         QueryModel query,
         Set<String> reservedParameterNames
     ) {
-        if (query.type() != QueryType.BATCH_EXEC) {
+        if (!hasParamsRecord(query)) {
             return reservedParameterNames;
         }
 
         Set<String> reserved = new LinkedHashSet<>(reservedParameterNames);
 
-        reserved.addAll(RESERVED_MEMBER_NAMES);
+        reserved.addAll(RESERVED_GROUP_MEMBER_NAMES);
 
         return reserved;
+    }
+
+    /**
+     * Whether one query generates a {@code Params} record of its parameters: a
+     * {@code :batchexec} query, which takes one per row, and a query whose
+     * header carries the {@code params} option.
+     */
+    private static boolean hasParamsRecord(QueryModel query) {
+        return query.type() == QueryType.BATCH_EXEC || query.parameterRecord();
     }
 
     private static String methodName(String queryName) {

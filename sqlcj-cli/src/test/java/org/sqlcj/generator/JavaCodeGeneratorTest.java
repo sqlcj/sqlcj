@@ -2936,6 +2936,73 @@ class JavaCodeGeneratorTest {
     }
 
     /**
+     * A Java enum must not take the name of the builder a batch query's
+     * parameter record nests either, because inside that record the name
+     * resolves to the nested builder instead of the imported enum.
+     */
+    @Test
+    void shouldRejectAnEnumTypeThatCollidesWithTheBuilderOfABatchParamsRecord() {
+        QueryGroupModel group = new QueryGroupModel(
+            GROUP,
+            List.of(
+                new QueryModel(
+                    "InsertTools",
+                    QueryType.BATCH_EXEC,
+                    "tools",
+                    "INSERT INTO tools (kind) VALUES (?)",
+                    List.of(1),
+                    List.of(),
+                    List.of(new QueryParameter(1, "kind", ColumnType.ENUM, "builder")),
+                    null
+                )
+            ),
+            List.of(new EnumType("builder", List.of("a", "b")))
+        );
+
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> codeGenerator.generate(group)
+        );
+
+        assertEquals(
+            "Enum type 'builder' generates Builder, "
+                + "which is equal ignoring case to the generated type Builder",
+            exception.getMessage()
+        );
+    }
+
+    /**
+     * A batch query that binds no parameter generates no builder, so a Java
+     * enum may still take that name beside it.
+     */
+    @Test
+    void shouldAcceptAnEnumNamedBuilderBesideAParamsRecordWithoutComponents() throws IOException {
+        QueryGroupModel group = new QueryGroupModel(
+            GROUP,
+            List.of(
+                batchQueryWithoutParameters(),
+                new QueryModel(
+                    "ListTools",
+                    QueryType.MANY,
+                    "tools",
+                    "SELECT kind FROM tools",
+                    List.of(),
+                    List.of(new QueryColumn("kind", ColumnType.ENUM, false, "builder")),
+                    List.of(),
+                    null
+                )
+            ),
+            List.of(new EnumType("builder", List.of("a", "b")))
+        );
+
+        GeneratedFile file = codeGenerator.generate(group);
+
+        assertTrue(file.content().contains("public record TouchUsersParams() {"));
+
+        assertCompiles(file, codeGenerator.generateEnums().get(0));
+    }
+
+    /**
      * A {@code :many} search whose criteria and page are parameter groups, with
      * a cast filter the query repeats and an optional list criterion.
      */
@@ -3205,7 +3272,6 @@ class JavaCodeGeneratorTest {
                                 Objects.requireNonNull(name, \
                     "Parameter 'name' of query 'InsertUser' in UsersRepository must not be null");
                             }
-                        }
                     """
                     .stripTrailing()
             )
@@ -3312,6 +3378,361 @@ class JavaCodeGeneratorTest {
         }
     }
 
+    /**
+     * A query whose header carries the {@code params} option generates its
+     * nested parameter record where a batch record stands, in logical parameter
+     * order and with the types and the nullness its positional method's
+     * parameters have, with the compact constructor and the builder every
+     * parameter record has, and its method takes one {@code params} argument,
+     * rejects a {@code null} one, and binds every component of it.
+     */
+    @Test
+    void shouldGenerateOneParameterRecordForAQueryWithTheParameterRecordOption()
+        throws Exception {
+        GeneratedFile file = generate(insertUserWithParameterRecord());
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public record InsertUserParams(
+                            Long id,
+                            String name,
+                            @Nullable String bio
+                        ) {
+
+                            public InsertUserParams {
+                                Objects.requireNonNull(id, \
+                    "Parameter 'id' of query 'InsertUser' in UsersRepository must not be null");
+                                Objects.requireNonNull(name, \
+                    "Parameter 'name' of query 'InsertUser' in UsersRepository must not be null");
+                            }
+
+                            public static Builder builder() {
+                                return new Builder();
+                            }
+
+                            public static final class Builder {
+
+                                private @Nullable Long id;
+                                private @Nullable String name;
+                                private @Nullable String bio;
+
+                                private Builder() {
+                                }
+
+                                public Builder id(Long id) {
+                                    this.id = id;
+
+                                    return this;
+                                }
+
+                                public Builder name(String name) {
+                                    this.name = name;
+
+                                    return this;
+                                }
+
+                                public Builder bio(@Nullable String bio) {
+                                    this.bio = bio;
+
+                                    return this;
+                                }
+
+                                public InsertUserParams build() {
+                                    return new InsertUserParams(
+                                            Objects.requireNonNull(
+                                                    id,
+                                                    \
+                    "Parameter 'id' of query 'InsertUser' in UsersRepository must not be null"
+                                            ),
+                                            Objects.requireNonNull(
+                                                    name,
+                                                    \
+                    "Parameter 'name' of query 'InsertUser' in UsersRepository must not be null"
+                                            ),
+                                            bio
+                                    );
+                                }
+                            }
+                        }
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(source.contains("public int insertUser(InsertUserParams params) {"), source);
+
+        assertTrue(
+            source.contains(
+                "        Objects.requireNonNull(params, "
+                    + "\"Parameter 'params' of query 'InsertUser' in UsersRepository "
+                    + "must not be null\");"
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                "Arrays.<@Nullable Object>asList(params.id(), params.name(), params.bio())"
+            ),
+            source
+        );
+
+        assertFalse(source.contains("public record InsertUserResult("), source);
+
+        assertCompiles(file);
+
+        try (URLClassLoader classLoader = classLoader()) {
+            Class<?> repositoryType = Class.forName(
+                "generated.repositories.UsersRepository",
+                true,
+                classLoader
+            );
+
+            Class<?> paramsType = Class.forName(
+                "generated.repositories.UsersRepository$InsertUserParams",
+                true,
+                classLoader
+            );
+
+            RecordingQueryExecutor executor = new RecordingQueryExecutor();
+
+            Object repository = repositoryType
+                .getConstructor(QueryExecutor.class)
+                .newInstance(executor);
+
+            Method insertUser = repositoryType.getMethod("insertUser", paramsType);
+
+            Object builder = paramsType.getMethod("builder").invoke(null);
+
+            builder = builder.getClass().getMethod("id", Long.class).invoke(builder, 7L);
+            builder = builder.getClass().getMethod("name", String.class).invoke(builder, "Ada");
+
+            Object params = builder.getClass().getMethod("build").invoke(builder);
+
+            insertUser.invoke(repository, params);
+
+            assertEquals(
+                List.of(Arrays.asList(7L, "Ada", null)),
+                executor.parameters
+            );
+
+            InvocationTargetException failure = assertThrows(
+                InvocationTargetException.class,
+                () -> insertUser.invoke(repository, new Object[] { null })
+            );
+
+            assertInstanceOf(NullPointerException.class, failure.getCause());
+
+            assertEquals(
+                "Parameter 'params' of query 'InsertUser' in UsersRepository must not be null",
+                failure.getCause().getMessage()
+            );
+
+            assertEquals(1, executor.parameters.size());
+        }
+    }
+
+    /**
+     * A repeated placeholder of a query with the option is one component of its
+     * record, read at each of its own binding positions.
+     */
+    @Test
+    void shouldRepeatAParameterRecordComponentAtEveryBindingPosition() throws IOException {
+        QueryModel query = new QueryModel(
+            "SearchUsers",
+            QueryType.MANY,
+            "users",
+            """
+                SELECT id, name
+                FROM users
+                WHERE (? IS NULL OR name = ?)
+                  AND code = ?""",
+            List.of(1, 1, 2),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, false)
+            ),
+            List.of(
+                new QueryParameter(1, "name", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(2, "code", ColumnType.INTEGER)
+            ),
+            null,
+            List.of(),
+            "SELECT",
+            1,
+            true
+        );
+
+        String source = generate(query).content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public record SearchUsersParams(
+                            @Nullable String name,
+                            Integer code
+                        ) {
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains("public List<SearchUsersResult> searchUsers(SearchUsersParams params) {"),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                "Arrays.<@Nullable Object>asList(params.name(), params.name(), params.code())"
+            ),
+            source
+        );
+
+        assertCompiles(generate(query));
+    }
+
+    /** One {@code :exec} insert whose header carries the {@code params} option. */
+    private QueryModel insertUserWithParameterRecord() {
+        return new QueryModel(
+            "InsertUser",
+            QueryType.EXEC,
+            "users",
+            """
+                INSERT INTO users (id, name, bio)
+                VALUES (?, ?, ?)
+                """,
+            List.of(1, 2, 3),
+            List.of(),
+            List.of(
+                new QueryParameter(1, "id", ColumnType.BIGINT),
+                new QueryParameter(2, "name", ColumnType.VARCHAR),
+                new QueryParameter(3, "bio", ColumnType.TEXT).asNullable()
+            ),
+            null,
+            List.of(),
+            "INSERT INTO users (id, name, bio)\nVALUES ($1, $2, $3);",
+            1,
+            true
+        );
+    }
+
+    /**
+     * A batch record with components nests the builder a group record nests,
+     * whose setters carry the component names and whose {@code build()} checks
+     * each non-null component with the record's own failure, and a row built
+     * through it is the row its constructor builds.
+     */
+    @Test
+    void shouldGenerateABuilderForABatchParamsRecord() throws Exception {
+        GeneratedFile file = generate(
+            query(
+                "InsertUsers",
+                QueryType.BATCH_EXEC,
+                List.of(
+                    new QueryParameter(1, "id", ColumnType.BIGINT),
+                    new QueryParameter(2, "bio", ColumnType.TEXT).asNullable()
+                )
+            )
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public record InsertUsersParams(
+                            Long id,
+                            @Nullable String bio
+                        ) {
+
+                            public InsertUsersParams {
+                                Objects.requireNonNull(id, \
+                    "Parameter 'id' of query 'InsertUsers' in UsersRepository must not be null");
+                            }
+
+                            public static Builder builder() {
+                                return new Builder();
+                            }
+
+                            public static final class Builder {
+
+                                private @Nullable Long id;
+                                private @Nullable String bio;
+
+                                private Builder() {
+                                }
+
+                                public Builder id(Long id) {
+                                    this.id = id;
+
+                                    return this;
+                                }
+
+                                public Builder bio(@Nullable String bio) {
+                                    this.bio = bio;
+
+                                    return this;
+                                }
+
+                                public InsertUsersParams build() {
+                                    return new InsertUsersParams(
+                                            Objects.requireNonNull(
+                                                    id,
+                                                    \
+                    "Parameter 'id' of query 'InsertUsers' in UsersRepository must not be null"
+                                            ),
+                                            bio
+                                    );
+                                }
+                            }
+                        }
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertCompiles(file);
+
+        try (URLClassLoader classLoader = classLoader()) {
+            Class<?> paramsType = Class.forName(
+                "generated.repositories.UsersRepository$InsertUsersParams",
+                true,
+                classLoader
+            );
+
+            Object builder = paramsType.getMethod("builder").invoke(null);
+            Method build = builder.getClass().getMethod("build");
+
+            InvocationTargetException failure = assertThrows(
+                InvocationTargetException.class,
+                () -> build.invoke(builder)
+            );
+
+            assertInstanceOf(NullPointerException.class, failure.getCause());
+
+            assertEquals(
+                "Parameter 'id' of query 'InsertUsers' in UsersRepository must not be null",
+                failure.getCause().getMessage()
+            );
+
+            Object set = builder.getClass()
+                .getMethod("id", Long.class)
+                .invoke(builder, 7L);
+
+            assertEquals(
+                paramsType.getConstructor(Long.class, String.class).newInstance(7L, null),
+                build.invoke(set)
+            );
+        }
+    }
+
     /** A batch query whose statement binds no parameter. */
     private QueryModel batchQueryWithoutParameters() {
         return new QueryModel(
@@ -3363,7 +3784,6 @@ class JavaCodeGeneratorTest {
                             @Nullable String name,
                             @Nullable Long id2
                         ) {
-                        }
                     """
                     .stripTrailing()
             )
@@ -3429,7 +3849,6 @@ class JavaCodeGeneratorTest {
                             @Nullable SqlInterval span,
                             @Nullable List<@Nullable String> tags
                         ) {
-                        }
                     """
                     .stripTrailing()
             )
@@ -3707,7 +4126,6 @@ class JavaCodeGeneratorTest {
                                 Objects.requireNonNull(id, \
                     "Parameter 'id' of query 'InsertUsers' in UsersRepository must not be null");
                             }
-                        }
                     """
                     .stripTrailing()
             ),
@@ -3717,7 +4135,10 @@ class JavaCodeGeneratorTest {
         assertCompiles(file);
     }
 
-    /** A record of nullable components alone declares no constructor. */
+    /**
+     * A record of nullable components alone declares no constructor, while it
+     * still nests its builder.
+     */
     @Test
     void shouldGenerateNoCompactConstructorForNullableBatchComponentsAlone() throws IOException {
         GeneratedFile file = generate(
@@ -3736,6 +4157,28 @@ class JavaCodeGeneratorTest {
                         public record InsertUsersParams(
                             @Nullable String bio
                         ) {
+
+                            public static Builder builder() {
+                                return new Builder();
+                            }
+
+                            public static final class Builder {
+
+                                private @Nullable String bio;
+
+                                private Builder() {
+                                }
+
+                                public Builder bio(@Nullable String bio) {
+                                    this.bio = bio;
+
+                                    return this;
+                                }
+
+                                public InsertUsersParams build() {
+                                    return new InsertUsersParams(bio);
+                                }
+                            }
                         }
                     """
                     .stripTrailing()
@@ -4201,7 +4644,6 @@ class JavaCodeGeneratorTest {
                         public record InsertUserParams(
                             @Nullable String hashCode1
                         ) {
-                        }
                     """
                     .stripTrailing()
             )
@@ -4212,6 +4654,69 @@ class JavaCodeGeneratorTest {
                 "batch.stream().map(params -> Collections.singletonList("
                     + "params.hashCode1())).toList()"
             )
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A parameter named after a member its own builder takes is disambiguated
+     * as a repeated name is, so the record and its builder stay compilable.
+     */
+    @Test
+    void shouldDisambiguateAParamsComponentFromABuilderMemberName() throws IOException {
+        QueryModel query = new QueryModel(
+            "InsertUser",
+            QueryType.BATCH_EXEC,
+            "users",
+            """
+                INSERT INTO users (build, builder)
+                VALUES (?, ?)
+                """,
+            List.of(1, 2),
+            List.of(),
+            List.of(
+                new QueryParameter(1, "build", ColumnType.VARCHAR).asNullable(),
+                new QueryParameter(2, "builder", ColumnType.VARCHAR).asNullable()
+            ),
+            null
+        );
+
+        GeneratedFile file = generate(query);
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        public record InsertUserParams(
+                            @Nullable String build1,
+                            @Nullable String builder1
+                        ) {
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(source.contains("public Builder build1(@Nullable String build1) {"), source);
+        assertTrue(
+            source.contains("public Builder builder1(@Nullable String builder1) {"),
+            source
+        );
+        assertTrue(
+            source.contains("return new InsertUserParams(build1, builder1);"),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                "                batch.stream().map(params -> Arrays.<@Nullable Object>asList(\n"
+                    + "                        params.build1(),\n"
+                    + "                        params.builder1()\n"
+                    + "                )).toList()"
+            ),
+            source
         );
 
         assertCompiles(file);

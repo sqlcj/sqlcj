@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DefaultQueryParserTest {
@@ -207,6 +208,142 @@ class DefaultQueryParserTest {
                 )
             ),
             parser.parse(source).rejections()
+        );
+    }
+
+    /**
+     * A header may carry the {@code params} option after its annotation, which
+     * asks for the query's parameters as one record. A header without it asks
+     * for none.
+     */
+    @Test
+    void parsesParameterRecordOption() {
+        String source = """
+            -- name: InsertUser :exec params
+            INSERT INTO users (id, name)
+            VALUES ($1, $2);
+
+            -- name: DeleteUser :exec
+            DELETE FROM users
+            WHERE id = $1;
+            """;
+
+        ParsedQueries parsed = parser.parse(source);
+
+        assertEquals(List.of(), parsed.rejections());
+        assertEquals(List.of("InsertUser", "DeleteUser"), names(parsed));
+
+        assertTrue(parsed.queries().get(0).parameterRecord());
+        assertFalse(parsed.queries().get(1).parameterRecord());
+    }
+
+    /**
+     * An option sqlcj does not parse is rejected at its own header line, naming
+     * the accepted option and, by the suggestion rule, the closest one: both a
+     * colon-prefixed {@code :params} and a misspelled {@code parms} are
+     * answered with {@code params}.
+     */
+    @Test
+    void suggestsClosestOptionAtItsHeaderLine() {
+        String source = """
+            -- name: GetUser :one
+            SELECT *
+            FROM users
+            WHERE id = $1;
+
+            -- name: InsertUser :exec :params
+            INSERT INTO users (id)
+            VALUES ($1);
+
+            -- name: UpdateUser :exec parms
+            UPDATE users
+            SET name = $2
+            WHERE id = $1;
+            """;
+
+        ParsedQueries parsed = parser.parse(source);
+
+        assertEquals(List.of("GetUser"), names(parsed));
+        assertEquals(
+            List.of(
+                new QueryRejection(
+                    6,
+                    "Unknown query option ':params'; did you mean 'params'? Use params"
+                ),
+                new QueryRejection(
+                    10,
+                    "Unknown query option 'parms'; did you mean 'params'? Use params"
+                )
+            ),
+            parsed.rejections()
+        );
+    }
+
+    /** An option no accepted option is close to keeps its diagnostic. */
+    @Test
+    void suggestsNoOptionForFarOption() {
+        String source = """
+            -- name: InsertUser :exec struct
+            INSERT INTO users (id)
+            VALUES ($1);
+            """;
+
+        ParsedQueries parsed = parser.parse(source);
+
+        assertEquals(List.of(), parsed.queries());
+        assertEquals(
+            List.of(new QueryRejection(1, "Unknown query option 'struct'. Use params")),
+            parsed.rejections()
+        );
+    }
+
+    /** A header of more than three tokens is unreadable. */
+    @Test
+    void rejectsHeaderOfMoreThanThreeTokens() {
+        String source = """
+            -- name: InsertUser :exec params extra
+            INSERT INTO users (id)
+            VALUES ($1);
+            """;
+
+        ParsedQueries parsed = parser.parse(source);
+
+        assertEquals(List.of(), parsed.queries());
+        assertEquals(
+            List.of(
+                new QueryRejection(
+                    1,
+                    "Invalid query header: -- name: InsertUser :exec params extra"
+                )
+            ),
+            parsed.rejections()
+        );
+    }
+
+    /**
+     * The option is rejected on a {@code :batchexec} query, whose method
+     * already takes one parameter record per row.
+     */
+    @Test
+    void rejectsParameterRecordOptionOnBatchQuery() {
+        String source = """
+            -- name: InsertUsers :batchexec params
+            INSERT INTO users (id, name)
+            VALUES ($1, $2);
+            """;
+
+        ParsedQueries parsed = parser.parse(source);
+
+        assertEquals(List.of(), parsed.queries());
+        assertEquals(
+            List.of(
+                new QueryRejection(
+                    1,
+                    "The query option 'params' has no effect on a :batchexec query, which "
+                        + "already takes one parameter record per row; remove it"
+                )
+            ),
+            parsed.rejections()
         );
     }
 

@@ -437,9 +437,31 @@ public record RecordArticleViewsParams(
     Long articleId,
     OffsetDateTime viewedAt
 ) {
+
+    public static Builder builder();
+
+    public static final class Builder {
+
+        public Builder articleId(Long articleId);
+
+        public Builder viewedAt(OffsetDateTime viewedAt);
+
+        public RecordArticleViewsParams build();
+    }
 }
 
 public int[] recordArticleViews(List<RecordArticleViewsParams> batch);
+```
+
+One row is built either through the record's canonical constructor, as the
+recipe below does, or by name through its builder, which rejects a missing
+non-null component where the row is built:
+
+```java
+RecordArticleViewsParams row = RecordArticleViewsParams.builder()
+        .articleId(articleId)
+        .viewedAt(viewedAt)
+        .build();
 ```
 
 ```java

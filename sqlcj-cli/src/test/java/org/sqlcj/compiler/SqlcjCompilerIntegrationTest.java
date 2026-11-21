@@ -5769,6 +5769,83 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
+     * A query whose header carries the {@code params} option takes its
+     * parameters as one generated record, while an option sqlcj does not parse
+     * and an option it cannot honor are reported at their own header line, the
+     * first by the query parser and the second by analysis, and nothing is
+     * written.
+     */
+    @Test
+    void shouldCompileAQueryThatTakesItsParametersAsOneRecord() throws IOException {
+        Path generatedDirectory = tempDir.resolve("generated");
+
+        compileUsersQueries(
+            """
+                -- name: InsertUser :exec params
+                INSERT INTO users (id, name)
+                VALUES ($1, $2);
+                """,
+            generatedDirectory
+        );
+
+        String source = Files.readString(
+            generatedDirectory.resolve("generated/repositories/UsersRepository.java")
+        );
+
+        assertTrue(source.contains("public record InsertUserParams("), source);
+        assertTrue(source.contains("public static Builder builder() {"), source);
+        assertTrue(
+            source.contains("public int insertUser(InsertUserParams params) {"),
+            source
+        );
+    }
+
+    /** The located diagnostics of an option sqlcj cannot parse or honor. */
+    @Test
+    void shouldReportTheLocatedDiagnosticsOfTheParameterRecordOption() {
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path queriesFile = tempDir.resolve("queries.sql");
+
+        CompilationException exception = assertThrows(
+            CompilationException.class,
+            () -> compileUsersQueries(
+                """
+                    -- name: ListUsers :many parms
+                    SELECT id
+                    FROM users;
+
+                    -- name: ListNames :many params
+                    SELECT name
+                    FROM users;
+
+                    -- name: ListUserPage :many params
+                    SELECT id
+                    FROM users
+                    LIMIT :page.size OFFSET :page.offset;
+                    """,
+                generatedDirectory
+            )
+        );
+
+        assertEquals(
+            List.of(
+                "%s:1: Invalid query source: ".formatted(queriesFile)
+                    + "Unknown query option 'parms'; did you mean 'params'? Use params",
+                "%s:5: Invalid query 'ListNames': ".formatted(queriesFile)
+                    + "The query option 'params' has no effect on a query that binds no "
+                    + "parameter; remove it",
+                "%s:9: Invalid query 'ListUserPage': ".formatted(queriesFile)
+                    + "A query with the option 'params' cannot use the parameter group "
+                    + "placeholder :page.size, because its parameters are already one record; "
+                    + "write a plain named placeholder, such as :size"
+            ),
+            exception.diagnostics()
+        );
+
+        assertFalse(Files.exists(generatedDirectory));
+    }
+
+    /**
      * Every rejected query of one source is reported in one run, in the order
      * the source writes its headers, so a rejected header stands between the
      * analysis rejections around it, and nothing is written.

@@ -25,8 +25,9 @@ FROM authors
 WHERE id = $1;
 ```
 
-- A header line starts with `-- name:` and contains exactly the query name and
-  the query annotation, separated by whitespace.
+- A header line starts with `-- name:` and contains the query name and the
+  query annotation, separated by whitespace, and may carry one option after the
+  annotation.
 - A query owns every following line until the next header or the end of the
   file. The statement's trailing `;` is part of the query.
 - The lines directly under the header that begin with `--` at the first column
@@ -40,14 +41,30 @@ WHERE id = $1;
 - A query name must be unique inside its own query source. Two configuration
   entries may use the same query name, because each entry generates its own
   repository.
-- An unparsable header, an unknown annotation, a duplicate name, and a header
-  without SQL are all rejected. Each rejects its own query alone, at its header
-  line, and the lines up to the next header are skipped, so one run reports
-  every rejected header of the file. An unknown annotation names the accepted
-  annotations and the closest one, as in
+- The one accepted option is `params`, written as the header's third token, as
+  in `-- name: CreateOrder :one params`. It asks for the query's parameters as
+  one generated record, which
+  [One record for a query's parameters](#one-record-for-a-querys-parameters)
+  states. A header of more than three tokens is unparsable.
+- An unparsable header, an unknown annotation, an unknown option, a duplicate
+  name, and a header without SQL are all rejected. Each rejects its own query
+  alone, at its header line, and the lines up to the next header are skipped, so
+  one run reports every rejected header of the file. An unknown annotation names
+  the accepted annotations and the closest one, as in
   `/home/dev/project/sql/queries.sql:12: Invalid query source: Unknown query
   annotation ':mnay'; did you mean ':many'? Use one of :one, :optional, :many,
-  :exec, :batchexec`.
+  :exec, :batchexec`, and an unknown option names the accepted option the same
+  way, as in `Unknown query option 'parms'; did you mean 'params'? Use params`
+  and `Unknown query option 'struct'. Use params`.
+- The `params` option is rejected where sqlcj cannot honor it: on a
+  `:batchexec` query, by the query parser, as `The query option 'params' has no
+  effect on a :batchexec query, which already takes one parameter record per
+  row; remove it`, and, in analysis and so at the query's own header line, on a
+  query that binds no parameter, as `The query option 'params' has no effect on
+  a query that binds no parameter; remove it`, and on a query that uses a
+  parameter group, as `A query with the option 'params' cannot use the
+  parameter group placeholder :page.size, because its parameters are already one
+  record; write a plain named placeholder, such as :size`.
 
 The generated method documents its query, so that hovering over it in an IDE
 shows what it does: the comment lines, then the query's SQL as the source
@@ -1847,6 +1864,14 @@ in the record's compact constructor, which
 `NullPointerException` while the method builds its batch, before the executor
 runs, and so does a `null` element, so such a call executes nothing.
 
+A record with components is built either through its canonical constructor or
+through the builder it nests, as
+[One record for a query's parameters](#one-record-for-a-querys-parameters)
+shows: `InsertAuthorsParams.builder().name("Ada").bio("Reader").build()` is the
+row `new InsertAuthorsParams("Ada", "Reader")`. The one record without
+components, which only a query that binds no parameter generates, nests no
+builder, because it has no component to set.
+
 What a batch leaves behind when one of its rows fails, which transaction it
 runs in, and what the PostgreSQL driver reports when it rewrites batched
 inserts are stated in
@@ -2014,7 +2039,8 @@ The two orders are distinct and both are observable:
 - **Logical order** is placeholder index order. It is the order of the generated
   method parameters: `$1` is the first method parameter, `$2` the second. In a
   named query it is first-occurrence order: the name written first is the first
-  method parameter.
+  method parameter. A query that generates a `<QueryName>Params` record states
+  that same order as its components.
 - **Textual order** is the order in which placeholder tokens appear in the SQL.
   It is the JDBC binding order of the generated `?` positions.
 
@@ -2103,8 +2129,11 @@ A list parameter stays non-null while its elements stay nullable, as in
 `List<@Nullable Long> ids`, because a SQL array may hold a `NULL` element.
 
 The same rule applies to the components of a `<QueryName>Params` record, whose
-compact constructor rejects a `null` for each non-null component, so a batch row
-fails where it is built rather than where the batch binds it.
+compact constructor and whose builder's `build()` both reject a `null` for each
+non-null component, with the same message, so a row fails where it is built
+rather than where the query binds it. A method that takes such a record rejects
+a `null` record itself, with `Parameter 'params' of query '<QueryName>' in
+<Repository> must not be null`, before any execution.
 
 ```sql
 -- name: UpsertAuthor :one
@@ -2289,6 +2318,119 @@ without their Javadoc and bodies, are:
 public List<AuthorsRow> searchAuthors(Criteria criteria, Page page);
 
 public List<AuthorsRow> listAuthorPage(Page page);
+```
+
+### One record for a query's parameters
+
+A query whose header carries the `params` option takes its parameters as one
+record of its own, without rewriting a single placeholder: `$N` and plain
+`:name` placeholders alike stay as they are written.
+
+```sql
+-- name: CreateAuthor :one params
+INSERT INTO authors (name, bio)
+VALUES ($1, $2)
+RETURNING *;
+```
+
+- The method takes one parameter, named `params` and typed by a record the
+  repository nests, named `<QueryName>Params`, so `CreateAuthor` generates
+  `AuthorsRow createAuthor(CreateAuthorParams params)`.
+- The record's components are the query's parameters in logical order, named,
+  typed, and null-marked exactly as the positional method's parameters are, so a
+  `$N` placeholder keeps the name of the column it is compared with, assigned
+  to, or inserted into; see [Parameters](#parameters) and
+  [Parameter nullness](#parameter-nullness).
+- Binding is unchanged: every occurrence binds at its own `?` in textual order,
+  read from the component of its parameter, so a repeated placeholder is one
+  component read at each of its positions.
+- The record is built through its canonical constructor or through the builder
+  it nests, and `build()` and the compact constructor reject a `null` for each
+  non-null component with the message the positional method gave,
+  `Parameter 'name' of query 'CreateAuthor' in AuthorRepository must not be
+  null`. The method rejects a `null` record itself, with
+  `Parameter 'params' of query 'CreateAuthor' in AuthorRepository must not be
+  null`, before any execution.
+- The record takes part in the repository's name collisions as a batch
+  parameter record does, and a parameter named `build` or `builder` is suffixed
+  as a colliding name is, becoming `build1` or `builder1`.
+- The option is rejected on a `:batchexec` query, which already takes one
+  record per row, on a query that binds no parameter, and on a query that uses
+  a parameter group; [Query Sources](#query-sources) states the three
+  diagnostics and their location.
+
+A parameter group and the option solve two different problems, and a query uses
+one of them:
+
+- a **group** is for a value several queries share, such as a page or a filter:
+  the group names the record, every query of the entry that uses the group takes
+  that one record, and the query's other placeholders stay method parameters of
+  their own;
+- the **option** is for one query's own wide input, such as a 20-column insert:
+  the record belongs to that query alone, holds every one of its parameters, and
+  is named after it.
+
+`CreateAuthor` generates its record in full as:
+
+```java
+public record CreateAuthorParams(
+    String name,
+    @Nullable String bio
+) {
+
+    public CreateAuthorParams {
+        Objects.requireNonNull(
+                name,
+                "Parameter 'name' of query 'CreateAuthor' in AuthorRepository must not be null"
+        );
+    }
+
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static final class Builder {
+
+        private @Nullable String name;
+        private @Nullable String bio;
+
+        private Builder() {
+        }
+
+        public Builder name(String name) {
+            this.name = name;
+
+            return this;
+        }
+
+        public Builder bio(@Nullable String bio) {
+            this.bio = bio;
+
+            return this;
+        }
+
+        public CreateAuthorParams build() {
+            return new CreateAuthorParams(
+                    Objects.requireNonNull(
+                            name,
+                            "Parameter 'name' of query 'CreateAuthor' in AuthorRepository must not be null"
+                    ),
+                    bio
+            );
+        }
+    }
+}
+```
+
+so the call reads
+
+```java
+AuthorsRow author = authors.createAuthor(
+        AuthorRepository.CreateAuthorParams.builder()
+                .name("Ada")
+                .bio("Reader")
+                .build()
+);
 ```
 
 ## Criteria Queries
@@ -2535,9 +2677,26 @@ subpackage names are fixed.
   exactly as the same argument of a single execution is. A query that binds no
   parameter reads no component, so its argument lists are built with an added
   `.map(Objects::requireNonNull)` that rejects a `null` element.
-  A component whose name a record cannot declare, because `Object` declares it,
-  is disambiguated as a repeated name is, so a `hash_code` parameter becomes
-  `hashCode1`.
+  A component whose name a record cannot declare, because `Object` declares it
+  or because its own builder takes it, is disambiguated as a repeated name is,
+  so a `hash_code` parameter becomes `hashCode1` and a `build` parameter
+  becomes `build1`.
+- A query whose header carries the `params` option generates the same nested
+  `<QueryName>Params` record, where a batch record would stand, and one method
+  that takes it: `<method>(<QueryName>Params params)`, whose return type is the
+  one its annotation gives. The method rejects a `null` record, reads each of
+  its components at every binding position of that parameter, and wraps each
+  argument exactly as a single execution of the same value does; see
+  [One record for a query's parameters](#one-record-for-a-querys-parameters).
+- Every `<QueryName>Params` record with at least one component nests the
+  builder a parameter group's record nests — a static `builder()`, one setter
+  per component carrying the component's own type, and a `build()` that
+  constructs the record — and checks each non-null component in its compact
+  constructor and in `build()` alike, both naming the parameter, the query, and
+  the repository. The one record without components, which only a `:batchexec`
+  query that binds no parameter generates, stays on one line and nests no
+  builder. The nested `Builder` is one declared name however many records of the
+  repository nest it.
 - Every generated method passes the repository class name and the query name to
   the executor, as the first two arguments of its call, so a runtime failure
   names the query the application called. A `JSON`, `JSONB`, `CITEXT`, `INET`,
@@ -2595,11 +2754,12 @@ subpackage names are fixed.
     component, carries `@Nullable` exactly when the query gives a `null` bound
     at it a meaning, which [Parameter nullness](#parameter-nullness) states.
     Every other parameter and component is unannotated, and therefore non-null,
-    and the generated method, the record's compact constructor, and a group
+    and the generated method, the record's compact constructor, and the
     record's `build()` reject a `null` for each of them with
     `Objects.requireNonNull`, before any execution, naming the parameter, the
     query, and the repository, or the field and the group record; see
-    [Parameter groups](#parameter-groups).
+    [Parameter groups](#parameter-groups) and
+    [One record for a query's parameters](#one-record-for-a-querys-parameters).
   - An array element is always nullable, wherever the list type is written, as
     in `List<@Nullable String>`, because a SQL array may hold a `NULL` element.
     A nullable `BYTEA` is written `byte @Nullable []`, which states that the
@@ -2631,7 +2791,8 @@ subpackage names are fixed.
   nothing, so a build that runs a null checker over its own sources need not
   exclude the generated ones.
 - A method declaration that has parameters, a null check, a bound-argument list
-  built with `Collections.singletonList` or `Arrays.asList`, and a value row
+  built with `Collections.singletonList` or `Arrays.asList`, the construction a
+  record's `build()` returns, and a value row
   mapper are written wrapped when one line would pass 120 columns,
   the repository's own formatter limit and an IDE's default right margin,
   counted with the member indentation and the trailing punctuation: the
@@ -2641,7 +2802,9 @@ subpackage names are fixed.
   argument on a line of its own, one call continuation past the line that
   opens the list, with its closing parenthesis at that line's column, a batch
   row keeping `batch.stream().map(params -> ...` and `)).toList()` on those
-  two lines; a null check writes its parameter and its message that way; and a
+  two lines; a null check writes its parameter and its message that way, in a
+  wrapped `build()` construction included, where a checked argument that would
+  pass the limit writes its two arguments one per line in the same layout; and a
   value row mapper continues `resultSet -> ...` on the next
   line. A declaration without parameters has nothing to wrap and stays on one
   line; a line inside a SQL text block stays as written, because it is the SQL
@@ -3141,6 +3304,15 @@ Query sources and annotations:
   unknown-annotation diagnostic, its header line, and its suggestion; and
   `SuggestionsTest` covers the suggestion rule itself, including the accepted
   distances, the length bound, a tie, and no candidate.
+- `DefaultQueryParserTest.parsesParameterRecordOption`,
+  `DefaultQueryParserTest.suggestsClosestOptionAtItsHeaderLine`,
+  `DefaultQueryParserTest.suggestsNoOptionForFarOption`,
+  `DefaultQueryParserTest.rejectsHeaderOfMoreThanThreeTokens`, and
+  `DefaultQueryParserTest.rejectsParameterRecordOptionOnBatchQuery` cover the
+  `params` option, the query that carries it and the query that does not, the
+  unknown-option diagnostic with and without a suggestion, the four-token
+  header, and the option rejected on a `:batchexec` query, each at its own
+  header line.
 - `DefaultQueryParserTest.parsesCommentBlockUnderHeader`,
   `DefaultQueryParserTest.endsCommentBlockAtABlankLine`,
   `DefaultQueryParserTest.keepsACommentBetweenSqlLinesInTheWrittenSql`,
@@ -4105,6 +4277,16 @@ Writes and `RETURNING`:
   repeated component, the enum, `JSONB`, interval, and array arguments, the
   component `Object` reserves, and the enum-name collision, each compiling the
   generated source.
+- `JavaCodeGeneratorTest.shouldGenerateABuilderForABatchParamsRecord`,
+  `JavaCodeGeneratorTest.shouldGenerateNoCompactConstructorForNullableBatchComponentsAlone`,
+  `JavaCodeGeneratorTest.shouldDisambiguateAParamsComponentFromABuilderMemberName`,
+  `JavaCodeGeneratorTest.shouldRejectAnEnumTypeThatCollidesWithTheBuilderOfABatchParamsRecord`,
+  and
+  `JavaCodeGeneratorTest.shouldAcceptAnEnumNamedBuilderBesideAParamsRecordWithoutComponents`
+  cover the builder a batch record nests, its checks and the row it builds, the
+  record of nullable components alone, the `build1` and `builder1` a component
+  of those names takes, and the `Builder` name a generated enum is rejected
+  against and the record without components that declares none.
 - `PostgresIntegrationTest.shouldExecuteGeneratedBatchWritesOfThousandsOfRowsAgainstPostgres`,
   `PostgresIntegrationTest.shouldReturnTheDriverCountsOfRewrittenBatchedInsertsAgainstPostgres`,
   `PostgresIntegrationTest.shouldLeaveNoRowWhenAGeneratedBatchRowFailsAgainstPostgres`,
@@ -4337,6 +4519,41 @@ Parameters:
   executes two queries that share a `page` group, one of them taking a
   `criteria` group of optional filters, against PostgreSQL 16, and fails a
   record built without one of its non-null fields.
+
+One record for a query's parameters:
+
+- `QueryAnalyzerTest.shouldRejectAParameterGroupInAQueryWithTheParameterRecordOption`,
+  `QueryAnalyzerTest.shouldRejectTheParameterRecordOptionOnAQueryWithoutParameters`,
+  and `QueryAnalyzerTest.shouldCarryTheParameterRecordOptionOfTheQuery` cover
+  the group and the no-parameter rejections and the analyzed model that carries
+  the option beside the parameters it analyzes without it.
+- `SqlcjCompilerIntegrationTest.shouldCompileAQueryThatTakesItsParametersAsOneRecord`
+  and
+  `SqlcjCompilerIntegrationTest.shouldReportTheLocatedDiagnosticsOfTheParameterRecordOption`
+  cover one query compiled end to end from its header to its generated record,
+  builder, and method, and the located diagnostics of an unknown option and of
+  the two rejections analysis reports, with nothing written.
+- `JavaNamesTest.shouldNameOneParameterRecordForAQueryWithTheParameterRecordOption`,
+  `JavaNamesTest.shouldResolveParameterRecordComponentNamesReservedByItsBuilder`,
+  and `JavaNamesTest.shouldRejectGroupRecordEqualIgnoringCaseToAnOptionParameterRecord`
+  cover the one `params` method parameter and the components the query's
+  parameters name, the `build1` and `builder1` a batch record and the option's
+  record both reserve, and the group record rejected against the option's.
+- `JavaCodeGeneratorTest.shouldGenerateOneParameterRecordForAQueryWithTheParameterRecordOption`
+  and `JavaCodeGeneratorTest.shouldRepeatAParameterRecordComponentAtEveryBindingPosition`
+  cover the generated record with its builder and its checks, the method's
+  `params` parameter, its null check and the message it raises, the components
+  it binds, and the repeated placeholder read at each of its positions, each
+  compiling the generated source.
+- `GeneratedSourceCheckTest.shouldReportNoFindingOnTheEveryTypeFixtureTree`
+  compiles one option query whose components cover an enum, an `INTERVAL`, an
+  array, and a `BYTEA` of each nullness under NullAway in JSpecify mode with no
+  finding, and
+  `PostgresIntegrationTest.shouldExecuteGeneratedParameterRecordsAgainstPostgres`
+  executes a wide `$N` insert and a `:name` update, each with the option, and a
+  batch row built through its builder beside one built through its constructor
+  against PostgreSQL 16, and fails a record built without one of its non-null
+  components.
 
 Parameter nullness:
 
