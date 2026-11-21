@@ -57,6 +57,11 @@ finds itself in, and on a connection of its own when there is none. The proxy
 is not registered as a bean, so the application keeps exactly one `DataSource`
 candidate.
 
+That executor is wrapped in an `ExceptionTranslatingQueryExecutor`, so a
+generated operation fails with the same `DataAccessException` a `JdbcTemplate`
+over the `DataSource` raises for the same failure; see
+[Exceptions](#exceptions).
+
 The executor is defined only when exactly one `DataSource` candidate qualifies:
 one `DataSource` bean, or several of which one is `@Primary`. With two
 candidates and none primary, or with no `DataSource` at all, the application
@@ -103,7 +108,9 @@ public class LibraryService {
 
 - An application's own `QueryExecutor` bean replaces the starter's: no sqlcj
   executor is defined, and the repositories are registered over the
-  application's executor instead.
+  application's executor instead. That executor translates no exception unless
+  the application wraps it in the starter's decorator itself; see
+  [Exceptions](#exceptions).
 - A repository type the application declares itself keeps that declaration.
   The starter registers nothing of a type an existing bean definition already
   produces.
@@ -147,27 +154,93 @@ configured by Spring Boot's own `spring.datasource.*` properties.
 
 ### Exceptions
 
-The starter translates no exception. A generated operation throws the
-runtime's own exceptions inside a Spring application exactly as outside one,
-and converts none of them into Spring's `DataAccessException` family:
+A generated operation on the starter's executor fails with the
+`org.springframework.dao.DataAccessException` that a `JdbcTemplate` over the
+same `DataSource` raises for the same failure, so a `@Transactional` service
+method catches a duplicate key as Spring's `DuplicateKeyException` and an
+application's existing handlers, retry rules, and rollback rules treat a
+generated repository as they treat the rest of its data layer:
 
-- `org.sqlcj.runtime.QueryExecutionException` for a failure, with
-  `UniqueViolationException`, `ForeignKeyViolationException`,
-  `NotNullViolationException`, `CheckViolationException`, their parent
-  `ConstraintViolationException`, `TransactionConflictException`, and
-  `QueryTimeoutException` under it, each named by what went wrong;
-- `org.sqlcj.runtime.QueryCardinalityException` for a `:one` read that matched
-  no row or several.
+| What failed | What the operation raises |
+| --- | --- |
+| a statement, a batch, or the connection either needed | exactly what the translator builds from the driver's `SQLException`, or `UncategorizedSQLException` when it builds none, as from `JdbcTemplate` |
+| a `:one` read that matched no row | `EmptyResultDataAccessException` |
+| a `:one` or `:optional` read that matched more rows than it allows | `IncorrectResultSizeDataAccessException` |
+| a value the generated API cannot represent | `TypeMismatchDataAccessException` |
+| a row mapper's own exception | the runtime's `QueryExecutionException`, unchanged, as `JdbcTemplate` lets a row mapper's exception through |
 
+Over PostgreSQL and Spring's own SQLSTATE translation, that makes `23505` a
+`DuplicateKeyException`, `23503` a `DataIntegrityViolationException`, and
+`40001` a `CannotAcquireLockException`.
+
+The cause is the driver's `SQLException`, as from `JdbcTemplate`, so a handler
+that reads the constraint name off a `PSQLException` works unchanged; for a
+cardinality failure it is the runtime's `QueryCardinalityException` and for an
+unmappable value its `UnmappableValueException`, which keeps the database type
+and the value. The message begins with the runtime's, which names the query and
+its repository, and Spring appends the SQL and the driver's message to it:
+
+```text
+Failed to execute query 'CreateAuthor' in AuthorRepository; SQL [INSERT INTO authors ...]; ERROR: duplicate key value violates unique constraint "authors_name_key"
+```
+
+The translator is the one Spring Boot's own `JdbcTemplate` uses: the
+application's `SQLExceptionTranslator` bean when it defines exactly one, and
+otherwise the translator a `JdbcTemplate` over the application's `DataSource`
+chooses, which reads a `sql-error-codes.xml` at the root of the class path when
+there is one and falls back to the SQLSTATE otherwise. So one database error
+raises one class from the generated repository and from `JdbcTemplate` alike.
+
+An application's own `QueryExecutor` bean is translated by nothing, because the
+starter backs off from it entirely. Such an application wraps its executor in
+the starter's own decorator to get the same exceptions:
+
+```java
+package com.example.app;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy;
+import org.sqlcj.runtime.JdbcQueryExecutor;
+import org.sqlcj.runtime.QueryExecutor;
+import org.sqlcj.spring.boot.autoconfigure.ExceptionTranslatingQueryExecutor;
+
+import javax.sql.DataSource;
+
+@Configuration(proxyBeanMethods = false)
+public class ApplicationExecutorConfiguration {
+
+    @Bean
+    QueryExecutor applicationQueryExecutor(DataSource dataSource) {
+        return new ExceptionTranslatingQueryExecutor(
+            new JdbcQueryExecutor(new TransactionAwareDataSourceProxy(dataSource)),
+            new JdbcTemplate(dataSource).getExceptionTranslator()
+        );
+    }
+}
+```
+
+`ExceptionTranslatingQueryExecutor` takes the executor it wraps and the
+`SQLExceptionTranslator` it translates with, and hands parameters, row order,
+and results on unchanged. The translator of a `JdbcTemplate` over the same
+`DataSource` is what makes its exceptions that `JdbcTemplate`'s; any other
+`SQLExceptionTranslator`, the application's own bean included, works too.
+
+Outside the starter nothing is translated: in plain Java, and in a Spring
+application that declares an executor of its own without the decorator, a
+generated operation raises the runtime's own `QueryExecutionException` family —
+`UniqueViolationException`, `ForeignKeyViolationException`,
+`NotNullViolationException`, `CheckViolationException`, their parent
+`ConstraintViolationException`, `TransactionConflictException`,
+`QueryTimeoutException`, and `QueryCardinalityException`.
 [Connection Ownership and Transactions](postgresql.md#connection-ownership-and-transactions)
-lists the exception each SQLSTATE raises, and `sqlState()` reports the code
-itself.
+lists the exception each SQLSTATE raises there, and `sqlState()` reports the
+code itself.
 
-So a `@Transactional` service method catches a duplicate key as
-`UniqueViolationException`, not as Spring's `DuplicateKeyException`. The
-`PersistenceExceptionTranslationPostProcessor` Spring Boot registers does not
-reach a generated repository either: a generated class carries no Spring
-stereotype.
+The `PersistenceExceptionTranslationPostProcessor` Spring Boot registers is not
+what translates any of this, and still does not reach a generated repository: a
+generated class carries no Spring stereotype.
 
 A commit failure of a Spring-managed transaction is Spring's own exception,
 because Spring commits that transaction: its transaction manager translates
@@ -301,6 +374,12 @@ public class AuditDatabaseConfiguration {
     }
 }
 ```
+
+The second database's executor is the application's own, so it translates no
+exception: wrapping it in an `ExceptionTranslatingQueryExecutor` over the
+translator of a `JdbcTemplate` on the qualified `DataSource` gives that
+database the exceptions the first database's executor raises; see
+[Exceptions](#exceptions).
 
 Two `QueryExecutor` bean definitions, the non-default one counted, leave the
 starter registering no repository at all, so the first database's repositories

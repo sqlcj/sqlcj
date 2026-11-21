@@ -1031,6 +1031,12 @@ class CookbookIntegrationTest {
      * on a transaction-aware view of the same data source, as the sqlcj Spring
      * Boot starter configures it. The recipe's own service and repository are
      * registered by the test.
+     *
+     * <p>The executor is the runtime's own, without the starter's translating
+     * decorator, which this module cannot use because the starter depends on
+     * it. The recipe's failures are therefore the runtime's, and the starter's
+     * own PostgreSQL scenarios prove the Spring exception a Spring Boot
+     * application sees for the same write.
      */
     @Configuration(proxyBeanMethods = false)
     @EnableTransactionManagement

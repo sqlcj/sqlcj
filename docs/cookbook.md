@@ -616,8 +616,10 @@ repository. The repository joins the transaction Spring opened because the
 the application's `DataSource`, which the sqlcj Spring Boot starter configures,
 so each generated write reaches the connection of the transaction it finds
 itself in. The transaction commits when the method returns and is rolled back
-by a failure such as the `UniqueViolationException` of a taken slug; see
-[Transactions](spring.md#transactions).
+by a failure such as the duplicate key of a taken slug, which the starter's
+executor raises as Spring's `DuplicateKeyException`; see
+[Transactions](spring.md#transactions) and
+[Exceptions](spring.md#exceptions).
 
 The class and the method are public and non-final so that the container can
 proxy them. The runtime's `JdbcTransactions` helper is not used here, because
@@ -667,9 +669,9 @@ import java.time.OffsetDateTime;
  * the {@code DataSource}, such as Spring's
  * {@code TransactionAwareDataSourceProxy}, which the sqlcj Spring Boot starter
  * configures. The transaction then commits on a normal return and is rolled
- * back by any failure, such as the
- * {@link org.sqlcj.runtime.UniqueViolationException} of a replacement whose
- * slug is already taken.
+ * back by any failure, such as the duplicate key of a replacement whose slug
+ * is already taken, which the starter's executor raises as Spring's
+ * {@code org.springframework.dao.DuplicateKeyException}.
  *
  * <p>The class and the method are public and non-final so that the container
  * can proxy them.
@@ -708,6 +710,10 @@ statement of that transaction fails too and only a rollback ends it. Either run
 the write outside a transaction, as this recipe does and as its test does, or
 let the violation roll its transaction back, as
 [A Transaction in Plain Java](#a-transaction-in-plain-java) does.
+
+A Spring Boot application on the sqlcj starter catches Spring's
+`DuplicateKeyException` here instead, because the starter's executor translates
+the duplicate key; see [Exceptions](spring.md#exceptions).
 
 ```sql
 -- name: CreateArticle :one
@@ -906,8 +912,14 @@ instead of a skip.
   archiving undone with no replacement stored, and that a free slug commits
   both writes: the returned row is the published replacement, the article it
   replaces is archived, and the newsletter holds six articles. The Spring test
-  runs the service in a context whose executor is built over a
-  `TransactionAwareDataSourceProxy`, as the starter builds it.
+  runs the service in a plain Spring context whose executor is built over a
+  `TransactionAwareDataSourceProxy`, as the starter builds it, but is not
+  wrapped in the starter's translating decorator, so the taken slug raises the
+  runtime's `UniqueViolationException` there. That the starter's own executor
+  raises Spring's `DuplicateKeyException` for the same write is proven against
+  PostgreSQL by
+  `PostgresApplicationScenarios.raisesSpringsDuplicateKeyInsideATransaction`,
+  on the starter's JDBC and JPA applications.
 - `CookbookIntegrationTest.shouldReportATakenSlugAsAnEmptyDraft` asserts that a
   free slug stores a draft of that title and status, that the taken slug is
   reported as `Optional.empty()` instead of raised, and that the second call

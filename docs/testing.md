@@ -545,6 +545,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.dao.EmptyResultDataAccessException;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -593,6 +594,11 @@ class LibraryServiceIntegrationTest {
         assertTrue(authors.searchAuthors("Temporary Author").isEmpty());
         assertTrue(authors.listAuthorBooks().stream().noneMatch(book -> "Never Stored".equals(book.title())));
     }
+
+    @Test
+    void raisesSpringsEmptyResultForAnAuthorThatIsNotThere() {
+        assertThrows(EmptyResultDataAccessException.class, () -> authors.getAuthor(-1L));
+    }
 }
 ```
 
@@ -614,6 +620,12 @@ class LibraryServiceIntegrationTest {
   author with a stored book and as no row at all. The starter's executor is why
   both writes of one method share the transaction's connection, the rule
   [Transactions](spring.md#transactions) documents.
+- The third test asserts a Spring exception rather than the runtime's: on the
+  starter, the `:one` read of an id no author has raises Spring's
+  `EmptyResultDataAccessException`, the class `JdbcTemplate.queryForObject`
+  raises for the same query, where the plain project's test above asserts
+  `QueryCardinalityException`. [Exceptions](spring.md#exceptions) lists what the
+  starter raises for every other failure.
 
 ## Unit Tests of a Service
 
