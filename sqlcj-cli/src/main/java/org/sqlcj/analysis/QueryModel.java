@@ -36,6 +36,9 @@ import java.util.List;
  *                                 which the generated method documents
  * @param line                     the one-based line of the query header in its
  *                                 source, or {@code 0} when it is unknown
+ * @param parameterRecord          whether the query's header carries the
+ *                                 {@code params} option, so that its
+ *                                 parameters are one generated record
  */
 public record QueryModel(
     String name,
@@ -48,7 +51,8 @@ public record QueryModel(
     String rowTable,
     List<String> comment,
     String writtenSql,
-    int line
+    int line,
+    boolean parameterRecord
 ) {
 
     /** A query documented by its executable SQL alone, at no known line. */
@@ -74,6 +78,36 @@ public record QueryModel(
             List.of(),
             executableSql,
             0
+        );
+    }
+
+    /** A query whose header carries no option. */
+    public QueryModel(
+        String name,
+        QueryType type,
+        String table,
+        String executableSql,
+        List<Integer> bindingParameterIndexes,
+        List<QueryColumn> columns,
+        List<QueryParameter> parameters,
+        String rowTable,
+        List<String> comment,
+        String writtenSql,
+        int line
+    ) {
+        this(
+            name,
+            type,
+            table,
+            executableSql,
+            bindingParameterIndexes,
+            columns,
+            parameters,
+            rowTable,
+            comment,
+            writtenSql,
+            line,
+            false
         );
     }
 }

@@ -13,6 +13,9 @@ import java.util.List;
  * @param writtenSql the query's SQL as the source writes it, without its
  *                   comment lines and without the blank lines before its first
  *                   and after its last line, joined by {@code \n}
+ * @param parameterRecord
+ *                   whether the query's header carries the {@code params}
+ *                   option, so that its parameters are one generated record
  */
 public record Query(
     String name,
@@ -20,7 +23,8 @@ public record Query(
     String sql,
     int line,
     List<String> comment,
-    String writtenSql
+    String writtenSql,
+    boolean parameterRecord
 ) {
 
     public Query(String name, QueryType type, String sql) {
@@ -29,5 +33,17 @@ public record Query(
 
     public Query(String name, QueryType type, String sql, int line) {
         this(name, type, sql, line, List.of(), sql);
+    }
+
+    /** A query whose header carries no option. */
+    public Query(
+        String name,
+        QueryType type,
+        String sql,
+        int line,
+        List<String> comment,
+        String writtenSql
+    ) {
+        this(name, type, sql, line, comment, writtenSql, false);
     }
 }

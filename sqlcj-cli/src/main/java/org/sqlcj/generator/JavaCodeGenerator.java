@@ -116,8 +116,12 @@ public final class JavaCodeGenerator implements CodeGenerator {
     /** Generator-owned name of the list one generated batch method takes. */
     private static final String BATCH_NAME = "batch";
 
-    /** Generator-owned name of the row a generated batch method binds. */
-    private static final String PARAMS_NAME = "params";
+    /**
+     * Generator-owned name of the row a generated batch method binds, which is
+     * also the name of the parameter record a query with the {@code params}
+     * option takes.
+     */
+    private static final String PARAMS_NAME = JavaNames.PARAMETER_RECORD_NAME;
 
     /**
      * The indentation, inside the member a generated method is, of the executor
@@ -171,15 +175,15 @@ public final class JavaCodeGenerator implements CodeGenerator {
     private static final int MAPPER_INDENT = 8;
 
     /**
-     * The indentation a member of a parameter group's record carries inside the
+     * The indentation a member of a parameter record carries inside the
      * repository, beside the indentation of its own lines, which is the one
      * level the record itself is written at.
      */
-    private static final int GROUP_MEMBER_INDENT = MEMBER_INDENT;
+    private static final int RECORD_MEMBER_INDENT = MEMBER_INDENT;
 
     /**
-     * The indentation a member of a group record's builder carries inside the
-     * repository, which is the record's level and the builder's own.
+     * The indentation a member of a parameter record's builder carries inside
+     * the repository, which is the record's level and the builder's own.
      */
     private static final int BUILDER_MEMBER_INDENT = MEMBER_INDENT * 2;
 
@@ -341,9 +345,9 @@ public final class JavaCodeGenerator implements CodeGenerator {
     /**
      * Records the types one group generates beside its enums: its repository,
      * the row records it returns, the record of each parameter group its
-     * queries use, the builder those records nest, the nested result records of
-     * its other queries, and the nested parameter record of each of its batch
-     * queries.
+     * queries use, the builder its parameter records nest, the nested result
+     * records of its other queries, and the nested parameter record of each
+     * query that has one.
      */
     private void recordGeneratedTypes(QueryGroupModel group, JavaNames names) {
         recordGeneratedType(names.repositoryClassName());
@@ -356,7 +360,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
             recordGeneratedType(parameterGroup.typeName());
         }
 
-        if (!names.groups().isEmpty()) {
+        if (hasBuilder(group, names)) {
             recordGeneratedType(JavaNames.BUILDER_TYPE_NAME);
         }
 
@@ -367,10 +371,20 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 recordGeneratedType(names.queries().get(index).resultTypeName());
             }
 
-            if (isBatchExec(query)) {
+            if (hasParamsRecord(query)) {
                 recordGeneratedType(names.queries().get(index).paramsTypeName());
             }
         }
+    }
+
+    /**
+     * Whether one repository declares the builder its parameter records nest,
+     * which is one name however many records nest it: every parameter group's
+     * record has one, and so has every {@code Params} record with a component.
+     */
+    private boolean hasBuilder(QueryGroupModel group, JavaNames names) {
+        return !names.groups().isEmpty()
+            || group.queries().stream().anyMatch(this::hasParamsBuilder);
     }
 
     /**
@@ -599,8 +613,8 @@ public final class JavaCodeGenerator implements CodeGenerator {
     /**
      * The simple names one repository's file declares: the repository, the
      * result, parameter, and parameter group records nested in it, and the
-     * builder every group record nests, which is one name however many groups
-     * the repository has. A query returning one complete table row names the
+     * builder its parameter records nest, which is one name however many of
+     * them nest it. A query returning one complete table row names the
      * package's row record, which another file declares.
      */
     private Set<String> repositoryDeclaredNames(QueryGroupModel group, JavaNames names) {
@@ -608,7 +622,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
 
         declaredNames.add(names.repositoryClassName());
 
-        if (!names.groups().isEmpty()) {
+        if (hasBuilder(group, names)) {
             declaredNames.add(JavaNames.BUILDER_TYPE_NAME);
         }
 
@@ -623,7 +637,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 declaredNames.add(names.queries().get(index).resultTypeName());
             }
 
-            if (isBatchExec(query)) {
+            if (hasParamsRecord(query)) {
                 declaredNames.add(names.queries().get(index).paramsTypeName());
             }
         }
@@ -894,6 +908,24 @@ public final class JavaCodeGenerator implements CodeGenerator {
         return query.type() == QueryType.BATCH_EXEC;
     }
 
+    /**
+     * A query that generates a nested {@code Params} record of its parameters:
+     * a {@code :batchexec} query, whose method takes one per row, and a query
+     * whose header carries the {@code params} option, whose method takes one.
+     */
+    private boolean hasParamsRecord(QueryModel query) {
+        return isBatchExec(query) || query.parameterRecord();
+    }
+
+    /**
+     * A parameter record with at least one component nests a builder; a record
+     * of no component, which only a batch query that binds no parameter
+     * generates, has no component for a builder to set.
+     */
+    private boolean hasParamsBuilder(QueryModel query) {
+        return hasParamsRecord(query) && !query.parameters().isEmpty();
+    }
+
     /** A write query has no generated result record. */
     private boolean hasResultType(QueryModel query) {
         return !isExec(query) && !isBatchExec(query);
@@ -1047,9 +1079,8 @@ public final class JavaCodeGenerator implements CodeGenerator {
                         && writtenGroups.add(parameter.group().groupName())
                 ) {
                     members.add(
-                        generateGroupRecord(
-                            parameter.group(),
-                            names.repositoryClassName(),
+                        generateParameterRecord(
+                            groupRecord(parameter.group(), names.repositoryClassName()),
                             scope
                         )
                     );
@@ -1067,7 +1098,7 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 );
             }
 
-            if (isBatchExec(query)) {
+            if (hasParamsRecord(query)) {
                 members.add(
                     generateParamsRecord(query, names.repositoryClassName(), queryNames, scope)
                 );
@@ -1144,16 +1175,17 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * Generates the parameter record of one batch query, in logical parameter
-     * order, whose components are typed exactly as the method parameters of a
-     * single execution of the same query are. A query that binds no parameter
-     * generates a record without components, written on one line so that the
-     * generated source carries no blank line of its own.
+     * Generates the parameter record of one query that has one, in logical
+     * parameter order, whose components are typed exactly as the method
+     * parameters of a single execution of the same query are. A query that
+     * binds no parameter generates a record without components, written on one
+     * line so that the generated source carries no blank line of its own and
+     * without a builder, which would name nothing.
      *
-     * <p>A record with a non-null component declares a compact constructor
-     * that rejects a {@code null} for each of them, so a row fails where it is
-     * built rather than where the batch binds it. A record whose every
-     * component is nullable declares no constructor.
+     * <p>A record with components is written in the shape every generated
+     * parameter record has, so it checks each of its non-null components and
+     * nests a builder, and its failures name the parameter, the query, and the
+     * repository, as the generated method's own check does.
      */
     private String generateParamsRecord(
         QueryModel query,
@@ -1169,64 +1201,64 @@ public final class JavaCodeGenerator implements CodeGenerator {
                 .formatted(names.paramsTypeName());
         }
 
-        return """
-            public record %s(
-            %s
-            ) {
-            %s}
-            """
-            .formatted(
-                names.paramsTypeName(),
-                generateParamsComponents(query, names, scope),
-                generateParamsConstructor(query, repositoryClassName, names, scope)
-            );
+        return generateParameterRecord(
+            paramsRecord(query, repositoryClassName, names),
+            scope
+        );
     }
 
     /**
-     * Generates the compact constructor of one parameter record, which runs one
-     * null check per non-null component in logical parameter order, and nothing
-     * at all when the record has no non-null component.
+     * The record one query's parameters are passed as, whose failures name the
+     * parameter, the query, and the repository, so that a query switched to the
+     * {@code params} option fails for a missing value with the message its
+     * positional method gave.
      */
-    private String generateParamsConstructor(
+    private ParameterRecord paramsRecord(
         QueryModel query,
         String repositoryClassName,
-        JavaNames.QueryNames names,
-        NameScope scope
+        JavaNames.QueryNames names
     ) {
-        List<String> checks = generateNullChecks(
-            query,
-            repositoryClassName,
-            names.parameterNames(),
-            MEMBER_INDENT + BODY_INDENT,
-            scope
-        );
-
-        if (checks.isEmpty()) {
-            return "";
-        }
-
-        return """
-
-                public %s {
-            %s
-                }
-            """
-            .formatted(
-                names.paramsTypeName(),
-                String.join("\n", checks)
-            );
-    }
-
-    private String generateParamsComponents(
-        QueryModel query,
-        JavaNames.QueryNames names,
-        NameScope scope
-    ) {
-        return generateParameterComponents(
+        return new ParameterRecord(
+            names.paramsTypeName(),
             query.parameters(),
             names.parameterNames(),
-            scope
+            name -> parameterNullMessage(name, query.name(), repositoryClassName)
         );
+    }
+
+    /**
+     * The record one parameter group is passed as, whose failures name the
+     * field and the record.
+     */
+    private ParameterRecord groupRecord(
+        JavaNames.GroupNames group,
+        String repositoryClassName
+    ) {
+        return new ParameterRecord(
+            group.typeName(),
+            group.fields(),
+            group.componentNames(),
+            name -> fieldNullMessage(group, repositoryClassName, name)
+        );
+    }
+
+    /**
+     * One generated record built from query parameters: the record of one
+     * parameter group and the {@code <QueryName>Params} record of one query.
+     *
+     * @param typeName       the record the repository declares
+     * @param fields         the analyzed parameter of each component, in
+     *                       component order
+     * @param componentNames the component of each of them, in that order
+     * @param nullMessage    the failure a {@code null} component is rejected
+     *                       with, by component name
+     */
+    private record ParameterRecord(
+        String typeName,
+        List<QueryParameter> fields,
+        List<String> componentNames,
+        Function<String, String> nullMessage
+    ) {
     }
 
     /**
@@ -1261,27 +1293,22 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * Generates the record of one parameter group, whose components are the
-     * group's fields in the order the first query that uses the group states
-     * them, each typed and null-marked as the method parameter of a plain
-     * placeholder of that use is.
+     * Generates one record built from query parameters, whose components are
+     * its fields in the order they are given, each typed and null-marked as the
+     * method parameter of a plain placeholder of that use is.
      *
      * <p>The record checks each of its non-null components wherever it is
-     * constructed, so a missing field fails where the caller builds the record
+     * constructed, so a missing value fails where the caller builds the record
      * rather than where a query binds it, and it nests the builder its static
      * {@code builder()} opens, whose setters carry the component names. A
      * record whose every component is nullable declares no constructor of its
      * own.
      */
-    private String generateGroupRecord(
-        JavaNames.GroupNames group,
-        String repositoryClassName,
-        NameScope scope
-    ) {
+    private String generateParameterRecord(ParameterRecord record, NameScope scope) {
         List<String> members = List.of(
-            generateGroupConstructor(group, repositoryClassName, scope),
-            generateGroupBuilderMethod(),
-            generateGroupBuilder(group, repositoryClassName, scope)
+            generateParameterRecordConstructor(record, scope),
+            generateBuilderMethod(),
+            generateRecordBuilder(record, scope)
         );
 
         return """
@@ -1293,8 +1320,8 @@ public final class JavaCodeGenerator implements CodeGenerator {
             }
             """
             .formatted(
-                group.typeName(),
-                generateParameterComponents(group.fields(), group.componentNames(), scope),
+                record.typeName(),
+                generateParameterComponents(record.fields(), record.componentNames(), scope),
                 members.stream()
                     .filter(member -> !member.isBlank())
                     .map(this::indent)
@@ -1303,19 +1330,14 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * Generates the compact constructor of one group record, which runs one
+     * Generates the compact constructor of one parameter record, which runs one
      * null check per non-null component in component order, and nothing at all
      * when the record has no non-null component.
      */
-    private String generateGroupConstructor(
-        JavaNames.GroupNames group,
-        String repositoryClassName,
-        NameScope scope
-    ) {
-        List<String> checks = generateFieldNullChecks(
-            group,
-            repositoryClassName,
-            GROUP_MEMBER_INDENT,
+    private String generateParameterRecordConstructor(ParameterRecord record, NameScope scope) {
+        List<String> checks = generateComponentNullChecks(
+            record,
+            RECORD_MEMBER_INDENT,
             scope
         );
 
@@ -1328,10 +1350,10 @@ public final class JavaCodeGenerator implements CodeGenerator {
             %s
             }
             """
-            .formatted(group.typeName(), String.join("\n", checks));
+            .formatted(record.typeName(), String.join("\n", checks));
     }
 
-    private String generateGroupBuilderMethod() {
+    private String generateBuilderMethod() {
         return """
             public static %s %s() {
                 return new %s();
@@ -1345,27 +1367,23 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * Generates the builder of one group record: one nullable field per
+     * Generates the builder of one parameter record: one nullable field per
      * component, a private constructor the record's {@code builder()} calls,
      * one setter per component, named after it and taking the component's own
      * type, and a {@code build()} that constructs the record, checking each
-     * non-null component so that a field left unset fails by name.
+     * non-null component so that a component left unset fails by name.
      */
-    private String generateGroupBuilder(
-        JavaNames.GroupNames group,
-        String repositoryClassName,
-        NameScope scope
-    ) {
+    private String generateRecordBuilder(ParameterRecord record, NameScope scope) {
         List<String> members = new ArrayList<>();
 
-        members.add(generateBuilderFields(group, scope));
+        members.add(generateBuilderFields(record, scope));
         members.add(generateBuilderConstructor());
 
-        for (int index = 0; index < group.fields().size(); index++) {
-            members.add(generateBuilderSetter(group, index, scope));
+        for (int index = 0; index < record.fields().size(); index++) {
+            members.add(generateBuilderSetter(record, index, scope));
         }
 
-        members.add(generateBuildMethod(group, repositoryClassName, scope));
+        members.add(generateBuildMethod(record, scope));
 
         return """
             public static final class %s {
@@ -1382,17 +1400,17 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * Generates the fields of one group record's builder, which are nullable
-     * whatever their component states, because a field is unset until a setter
-     * writes it.
+     * Generates the fields of one parameter record's builder, which are
+     * nullable whatever their component states, because a field is unset until
+     * a setter writes it.
      */
-    private String generateBuilderFields(JavaNames.GroupNames group, NameScope scope) {
-        return IntStream.range(0, group.fields().size())
+    private String generateBuilderFields(ParameterRecord record, NameScope scope) {
+        return IntStream.range(0, record.fields().size())
             .mapToObj(
                 index -> "private %s %s;"
                     .formatted(
-                        nullableFieldType(group.fields().get(index), scope),
-                        group.componentNames().get(index)
+                        nullableFieldType(record.fields().get(index), scope),
+                        record.componentNames().get(index)
                     )
             )
             .collect(Collectors.joining("\n"));
@@ -1407,12 +1425,12 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     private String generateBuilderSetter(
-        JavaNames.GroupNames group,
+        ParameterRecord record,
         int index,
         NameScope scope
     ) {
-        QueryParameter field = group.fields().get(index);
-        String name = group.componentNames().get(index);
+        QueryParameter field = record.fields().get(index);
+        String name = record.componentNames().get(index);
 
         return """
             public %s %s(%s %s) {
@@ -1438,44 +1456,23 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * Generates the {@code build()} of one group record's builder, which
+     * Generates the {@code build()} of one parameter record's builder, which
      * constructs the record from its fields, checking each non-null component
      * where it is read so that the construction states the nullness the record
      * declares. A construction whose line would pass the limit writes its
      * arguments one per line, one call continuation past the line that opens
      * the call, the layout a wrapped bound-argument list already uses.
      */
-    private String generateBuildMethod(
-        JavaNames.GroupNames group,
-        String repositoryClassName,
-        NameScope scope
-    ) {
-        List<String> arguments = IntStream.range(0, group.fields().size())
-            .mapToObj(index -> {
-                String name = group.componentNames().get(index);
-
-                return group.fields().get(index).nullable()
-                    ? name
-                    : "%s.requireNonNull(%s, %s)"
-                        .formatted(
-                            scope.type(OBJECTS),
-                            name,
-                            generateStringLiteral(
-                                fieldNullMessage(group, repositoryClassName, name)
-                            )
-                        );
-            })
-            .toList();
-
+    private String generateBuildMethod(ParameterRecord record, NameScope scope) {
         return """
             public %s %s() {
             %s
             }
             """
             .formatted(
-                group.typeName(),
+                record.typeName(),
                 JavaNames.BUILD_METHOD_NAME,
-                generateConstruction(group.typeName(), arguments)
+                generateConstruction(record, scope)
             );
     }
 
@@ -1483,28 +1480,81 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * Writes the construction one {@code build()} returns, on one line when
      * that line fits the limit and otherwise with each argument on a line of
      * its own, one call continuation past the line that opens the call, with
-     * the closing parenthesis at that line's column. A single argument that
-     * alone passes the limit stays on its line, as it does in a wrapped
-     * bound-argument list.
+     * the closing parenthesis at that line's column.
      */
-    private String generateConstruction(String typeName, List<String> arguments) {
+    private String generateConstruction(ParameterRecord record, NameScope scope) {
         String margin = " ".repeat(BODY_INDENT);
-        String call = "return new %s(".formatted(typeName);
-        String oneLine = call + String.join(", ", arguments) + ");";
+        String call = "return new %s(".formatted(record.typeName());
+        String oneLine = IntStream.range(0, record.fields().size())
+            .mapToObj(index -> generateComponentArgument(record, index, scope))
+            .collect(Collectors.joining(", ", call, ");"));
 
         if (fits(BUILDER_MEMBER_INDENT + BODY_INDENT, oneLine)) {
             return margin + oneLine;
         }
 
-        String argumentMargin = " ".repeat(BODY_INDENT + CONTINUATION_INDENT);
-
         return margin + call + "\n"
-            + arguments.stream()
-                .map(argument -> argumentMargin + argument)
+            + IntStream.range(0, record.fields().size())
+                .mapToObj(index -> generateWrappedComponentArgument(record, index, scope))
                 .collect(Collectors.joining(",\n"))
             + "\n"
             + margin
             + ");";
+    }
+
+    /**
+     * The argument one {@code build()} constructs its record from: the builder
+     * field itself for a nullable component, and the checked field for a
+     * non-null one, so that a component left unset fails by name.
+     */
+    private String generateComponentArgument(
+        ParameterRecord record,
+        int index,
+        NameScope scope
+    ) {
+        String name = record.componentNames().get(index);
+
+        return record.fields().get(index).nullable()
+            ? name
+            : "%s.requireNonNull(%s, %s)"
+                .formatted(
+                    scope.type(OBJECTS),
+                    name,
+                    generateStringLiteral(record.nullMessage().apply(name))
+                );
+    }
+
+    /**
+     * Writes one argument of a wrapped construction at its own column. A check
+     * whose line would pass the limit writes its two arguments one per line,
+     * one call continuation past the line that opens the check, with the
+     * closing parenthesis at that line's column, the layout a wrapped null
+     * check already uses. A field read as itself cannot be broken further.
+     */
+    private String generateWrappedComponentArgument(
+        ParameterRecord record,
+        int index,
+        NameScope scope
+    ) {
+        int indent = BODY_INDENT + CONTINUATION_INDENT;
+        String margin = " ".repeat(indent);
+        String argument = generateComponentArgument(record, index, scope);
+
+        if (
+            record.fields().get(index).nullable()
+                || fits(BUILDER_MEMBER_INDENT + indent, argument + ",")
+        ) {
+            return margin + argument;
+        }
+
+        String name = record.componentNames().get(index);
+        String literal = generateStringLiteral(record.nullMessage().apply(name));
+        String argumentMargin = " ".repeat(indent + CONTINUATION_INDENT);
+
+        return margin + "%s.requireNonNull(".formatted(scope.type(OBJECTS)) + "\n"
+            + argumentMargin + name + ",\n"
+            + argumentMargin + literal + "\n"
+            + margin + ")";
     }
 
     /**
@@ -1516,23 +1566,22 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * Writes one null check per non-null component of one group record, in
+     * Writes one null check per non-null component of one parameter record, in
      * component order and each indented inside the member it stands in, so that
-     * a field left unset fails naming the record and the field.
+     * a component left unset fails by the record's own failure.
      */
-    private List<String> generateFieldNullChecks(
-        JavaNames.GroupNames group,
-        String repositoryClassName,
+    private List<String> generateComponentNullChecks(
+        ParameterRecord record,
         int enclosing,
         NameScope scope
     ) {
-        return IntStream.range(0, group.fields().size())
-            .filter(index -> !group.fields().get(index).nullable())
-            .mapToObj(index -> group.componentNames().get(index))
+        return IntStream.range(0, record.fields().size())
+            .filter(index -> !record.fields().get(index).nullable())
+            .mapToObj(index -> record.componentNames().get(index))
             .map(
                 name -> generateCheck(
                     name,
-                    fieldNullMessage(group, repositoryClassName, name),
+                    record.nullMessage().apply(name),
                     BODY_INDENT,
                     enclosing,
                     scope
@@ -1644,7 +1693,9 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * Writes the parameters one generated method takes, in order of first
      * occurrence: the value of each plain placeholder, typed and null-marked as
      * its own use states, and the record of each parameter group the query
-     * uses, which the method always requires.
+     * uses, which the method always requires. A query with the {@code params}
+     * option takes its own parameter record instead, which the method requires
+     * as well.
      */
     private List<String> generateMethodParameters(
         QueryModel query,
@@ -1652,15 +1703,20 @@ public final class JavaCodeGenerator implements CodeGenerator {
         NameScope scope
     ) {
         return names.methodParameters().stream()
-            .map(methodParameter -> generateMethodParameter(query, methodParameter, scope))
+            .map(methodParameter -> generateMethodParameter(query, names, methodParameter, scope))
             .toList();
     }
 
     private String generateMethodParameter(
         QueryModel query,
+        JavaNames.QueryNames names,
         JavaNames.MethodParameter methodParameter,
         NameScope scope
     ) {
+        if (query.parameterRecord()) {
+            return names.paramsTypeName() + " " + methodParameter.name();
+        }
+
         if (methodParameter.group() != null) {
             return methodParameter.group().typeName() + " " + methodParameter.name();
         }
@@ -1682,9 +1738,17 @@ public final class JavaCodeGenerator implements CodeGenerator {
      * The Java expression each logical parameter of one query is bound from, in
      * logical parameter order: the method parameter of a plain placeholder, and
      * the component of its group's record for a group field, read through the
-     * method parameter that holds the record.
+     * method parameter that holds the record. A query with the {@code params}
+     * option reads every one of them from its own parameter record, as a batch
+     * row reads them.
      */
     private List<String> generateValueNames(QueryModel query, JavaNames.QueryNames names) {
+        if (query.parameterRecord()) {
+            return names.parameterNames().stream()
+                .map(name -> PARAMS_NAME + "." + name + "()")
+                .toList();
+        }
+
         Map<String, String> groupNames = new LinkedHashMap<>();
 
         for (JavaNames.MethodParameter methodParameter : names.methodParameters()) {
@@ -1774,41 +1838,13 @@ public final class JavaCodeGenerator implements CodeGenerator {
     }
 
     /**
-     * Writes one null check per non-null component of one parameter record, in
-     * logical parameter order and each on its own line indented by
-     * {@code indent}, so that a {@code null} fails where the row is built
-     * rather than where the batch binds it. A nullable component is checked
-     * nowhere, because the query gives its {@code null} a meaning.
-     */
-    private List<String> generateNullChecks(
-        QueryModel query,
-        String repositoryClassName,
-        List<String> parameterNames,
-        int indent,
-        NameScope scope
-    ) {
-        return IntStream.range(0, query.parameters().size())
-            .filter(index -> !query.parameters().get(index).nullable())
-            .mapToObj(
-                index -> generateNullCheck(
-                    parameterNames.get(index),
-                    query,
-                    repositoryClassName,
-                    indent,
-                    scope
-                )
-            )
-            .toList();
-    }
-
-    /**
      * Writes one null check per parameter of one generated method whose
      * argument must not be {@code null}, in the order the method takes them, so
      * that such an argument fails where the caller passes it rather than as an
      * empty result or a constraint violation. A nullable plain parameter is
      * checked nowhere, because the query gives its {@code null} a meaning,
-     * while a group record is always checked; the fields inside it are checked
-     * by the record itself.
+     * while a group record and the query's own parameter record are always
+     * checked; the components inside them are checked by the record itself.
      */
     private List<String> generateParameterNullChecks(
         QueryModel query,
@@ -1819,7 +1855,8 @@ public final class JavaCodeGenerator implements CodeGenerator {
     ) {
         return names.methodParameters().stream()
             .filter(
-                methodParameter -> methodParameter.group() != null
+                methodParameter -> query.parameterRecord()
+                    || methodParameter.group() != null
                     || !query.parameters().get(methodParameter.parameter()).nullable()
             )
             .map(
@@ -1848,12 +1885,27 @@ public final class JavaCodeGenerator implements CodeGenerator {
     ) {
         return generateCheck(
             parameterName,
-            "Parameter '%s' of query '%s' in %s must not be null"
-                .formatted(parameterName, query.name(), repositoryClassName),
+            parameterNullMessage(parameterName, query.name(), repositoryClassName),
             indent,
             0,
             scope
         );
+    }
+
+    /**
+     * The failure of one non-null parameter of a query, which names the
+     * parameter, the query, and the repository, so that the failure says which
+     * argument of which call was {@code null}. A component of the query's
+     * parameter record carries the same failure, because the record holds the
+     * arguments the positional method takes.
+     */
+    private String parameterNullMessage(
+        String parameterName,
+        String queryName,
+        String repositoryClassName
+    ) {
+        return "Parameter '%s' of query '%s' in %s must not be null"
+            .formatted(parameterName, queryName, repositoryClassName);
     }
 
     /**

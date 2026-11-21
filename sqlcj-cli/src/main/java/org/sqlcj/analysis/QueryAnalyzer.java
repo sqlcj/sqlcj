@@ -135,6 +135,22 @@ public final class QueryAnalyzer {
         A :batchexec query cannot use the parameter group placeholder %s, because a batch already \
         takes one record per row; write a plain named placeholder, such as %s""";
 
+    /**
+     * The rejection of a parameter group placeholder in a query that carries the
+     * {@code params} option, which is written with the placeholder as the query
+     * spells it and with the plain named placeholder of its field.
+     */
+    private static final String PARAMETER_RECORD_GROUP_REJECTION = """
+        A query with the option 'params' cannot use the parameter group placeholder %s, because \
+        its parameters are already one record; write a plain named placeholder, such as %s""";
+
+    /**
+     * The rejection of the {@code params} option on a query that binds no
+     * parameter, which has no parameter to make a record of.
+     */
+    private static final String PARAMETER_RECORD_WITHOUT_PARAMETER_REJECTION = """
+        The query option 'params' has no effect on a query that binds no parameter; remove it""";
+
     /** The rejection of a statement kind outside the supported subset. */
     private static final String UNSUPPORTED_STATEMENT_REJECTION = """
         Only SELECT, INSERT, UPDATE, and DELETE statements are supported.""";
@@ -1262,6 +1278,7 @@ public final class QueryAnalyzer {
     public QueryModel analyze(Query query, ParsedSql parsedSql, Schema schema) {
         requireSupportedPlaceholders(parsedSql);
         requireNoParameterGroupInBatch(query, parsedSql);
+        requireUsableParameterRecord(query, parsedSql);
 
         Statement statement = parsedSql.statement();
 
@@ -3620,7 +3637,8 @@ public final class QueryAnalyzer {
             rowTable,
             query.comment(),
             query.writtenSql(),
-            query.line()
+            query.line(),
+            query.parameterRecord()
         );
     }
 
@@ -6686,6 +6704,38 @@ public final class QueryAnalyzer {
                     )
                 );
             }
+        }
+    }
+
+    /**
+     * Rejects the {@code params} option where sqlcj cannot honor it: on a query
+     * that uses a parameter group, whose record would stand beside the one the
+     * option asks for, naming the first group placeholder of the source with
+     * the plain placeholder to write instead, and on a query that binds no
+     * parameter, which has no parameter to make a record of.
+     */
+    private void requireUsableParameterRecord(Query query, ParsedSql parsedSql) {
+        if (!query.parameterRecord()) {
+            return;
+        }
+
+        for (String name : parsedSql.parameters().names()) {
+            int separator = name.indexOf(GROUP_SEPARATOR);
+
+            if (separator >= 0) {
+                throw new UnsupportedOperationException(
+                    PARAMETER_RECORD_GROUP_REJECTION.formatted(
+                        NAME_PREFIX + name,
+                        NAME_PREFIX + name.substring(separator + GROUP_SEPARATOR.length())
+                    )
+                );
+            }
+        }
+
+        if (parsedSql.parameters().indexes().isEmpty()) {
+            throw new UnsupportedOperationException(
+                PARAMETER_RECORD_WITHOUT_PARAMETER_REJECTION
+            );
         }
     }
 

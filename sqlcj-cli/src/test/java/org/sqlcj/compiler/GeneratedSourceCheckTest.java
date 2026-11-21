@@ -33,9 +33,11 @@ import static org.junit.jupiter.api.Assertions.fail;
  * hand-written snapshot; a sqlcj-owned fixture that reads every mapped
  * type, scalar and array, nullable and {@code NOT NULL}, through every result
  * shape a generated repository has, binds an enum and an {@code INTERVAL}
- * parameter of each nullness, as one read and as one {@code :batchexec}, and
+ * parameter of each nullness, as one read and as one {@code :batchexec},
  * takes one parameter group whose fields cover an enum, an {@code INTERVAL},
- * an array, and a {@code BYTEA} of each nullness; and a sqlcj-owned fixture
+ * an array, and a {@code BYTEA} of each nullness, and takes the parameters of
+ * one query, covering the same types and nullness, as one generated record;
+ * and a sqlcj-owned fixture
  * whose eight enum types are named exactly like the JDK, runtime, and JSpecify
  * types generated code writes.
  *

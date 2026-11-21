@@ -537,6 +537,158 @@ class JavaNamesTest {
         );
     }
 
+    /**
+     * A query with the {@code params} option takes one method parameter named
+     * after the option, which holds its parameter record, while its own
+     * parameters name that record's components, as a batch query's do.
+     */
+    @Test
+    void shouldNameOneParameterRecordForAQueryWithTheParameterRecordOption() {
+        JavaNames.QueryNames names = JavaNames.of(
+            new QueryGroupModel(
+                "Users",
+                List.of(
+                    parameterRecordQuery(
+                        "SearchUsers",
+                        List.of(
+                            new QueryParameter(1, "created_at", ColumnType.BIGINT),
+                            new QueryParameter(2, "id", ColumnType.BIGINT)
+                        )
+                    )
+                )
+            )
+        )
+            .queries()
+            .get(0);
+
+        assertEquals("SearchUsersParams", names.paramsTypeName());
+        assertEquals(List.of("createdAt", "id"), names.parameterNames());
+
+        assertEquals(
+            List.of("params"),
+            names.methodParameters().stream()
+                .map(JavaNames.MethodParameter::name)
+                .toList()
+        );
+
+        assertEquals(
+            Arrays.asList((String) null),
+            names.methodParameters().stream()
+                .map(
+                    parameter -> parameter.group() == null
+                        ? null
+                        : parameter.group().typeName()
+                )
+                .toList()
+        );
+    }
+
+    /**
+     * The parameters of a query that generates a parameter record are that
+     * record's components, so a parameter named {@code build} or
+     * {@code builder} takes the suffix a group field of those names takes,
+     * whether the record is a batch query's or the option's.
+     */
+    @Test
+    void shouldResolveParameterRecordComponentNamesReservedByItsBuilder() {
+        List<QueryParameter> parameters = List.of(
+            new QueryParameter(1, "build", ColumnType.BIGINT),
+            new QueryParameter(2, "builder", ColumnType.BIGINT),
+            new QueryParameter(3, "hash_code", ColumnType.BIGINT),
+            new QueryParameter(4, "size", ColumnType.BIGINT)
+        );
+
+        assertEquals(
+            List.of("build1", "builder1", "hashCode1", "size"),
+            JavaNames.of(
+                new QueryGroupModel(
+                    "Users",
+                    List.of(parameterRecordQuery("SearchUsers", parameters))
+                )
+            )
+                .queries()
+                .get(0)
+                .parameterNames()
+        );
+
+        assertEquals(
+            List.of("build1", "builder1", "hashCode1", "size"),
+            JavaNames.of(
+                new QueryGroupModel(
+                    "Users",
+                    List.of(
+                        new QueryModel(
+                            "InsertUsers",
+                            QueryType.BATCH_EXEC,
+                            "users",
+                            SQL,
+                            List.of(1, 2, 3, 4),
+                            List.of(),
+                            parameters,
+                            null
+                        )
+                    )
+                )
+            )
+                .queries()
+                .get(0)
+                .parameterNames()
+        );
+    }
+
+    /**
+     * A group record is rejected against the parameter record of a query with
+     * the {@code params} option as well, which that query's own method takes.
+     */
+    @Test
+    void shouldRejectGroupRecordEqualIgnoringCaseToAnOptionParameterRecord() {
+        IllegalArgumentException exception = assertThrows(
+            IllegalArgumentException.class,
+            () -> JavaNames.of(
+                new QueryGroupModel(
+                    "Users",
+                    List.of(
+                        parameterRecordQuery(
+                            "ListUsers",
+                            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR))
+                        ),
+                        parameterQuery(
+                            "SearchUsers",
+                            List.of(groupParameter(1, "size", "list_users_params"))
+                        )
+                    )
+                )
+            )
+        );
+
+        assertEquals(
+            "Parameter group 'list_users_params' generates the record ListUsersParams, which "
+                + "is equal ignoring case to the parameter record ListUsersParams of query "
+                + "'ListUsers'; rename the group",
+            exception.getMessage()
+        );
+    }
+
+    /** One {@code :many} query that carries the {@code params} option. */
+    private QueryModel parameterRecordQuery(String queryName, List<QueryParameter> parameters) {
+        return new QueryModel(
+            queryName,
+            QueryType.MANY,
+            "users",
+            SQL,
+            parameters.stream()
+                .map(QueryParameter::index)
+                .toList(),
+            List.of(),
+            parameters,
+            null,
+            List.of(),
+            SQL,
+            0,
+            true
+        );
+    }
+
     /** The message of one rejected group record of a one-query repository. */
     private String groupCollision(String groupName) {
         IllegalArgumentException exception = assertThrows(
