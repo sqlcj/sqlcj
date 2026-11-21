@@ -885,7 +885,7 @@ class JavaCodeGeneratorTest {
             source.contains(
                 "private static final RowMapper<StageSetting> getStageSettingRowMapper =\n"
                     + "            resultSet -> NotNullColumn"
-                    + ".getString(resultSet, 1, StageSetting::fromLabel);"
+                    + ".getString(resultSet, 1, StageSetting::fromValue);"
             ),
             source
         );
@@ -986,17 +986,17 @@ class JavaCodeGeneratorTest {
                 "resultSet.getObject(2, Long.class)",
                 "NotNullColumn.getString(resultSet, 3)",
                 "resultSet.getString(4)",
-                "NotNullColumn.getString(resultSet, 5, StageSetting::fromLabel)",
-                "StageSetting.fromLabel(resultSet.getString(6))",
+                "NotNullColumn.getString(resultSet, 5, StageSetting::fromValue)",
+                "StageSetting.fromValue(resultSet.getString(6))",
                 "NotNullColumn.getString("
                     + "resultSet, 7, SqlInterval::parse)",
                 "SqlInterval.parse(resultSet.getString(8))",
                 "NotNullColumn.getList(resultSet, 9, String.class)",
                 "SqlArray.getList(resultSet, 10, String.class)",
                 "NotNullColumn.getList("
-                    + "resultSet, 11, String.class, StageSetting::fromLabel)",
+                    + "resultSet, 11, String.class, StageSetting::fromValue)",
                 "SqlArray.getList("
-                    + "resultSet, 12, String.class, StageSetting::fromLabel)",
+                    + "resultSet, 12, String.class, StageSetting::fromValue)",
                 "NotNullColumn.getList("
                     + "resultSet, 13, String.class, SqlInterval::parse)",
                 "SqlArray.getList("
@@ -2869,7 +2869,7 @@ class JavaCodeGeneratorTest {
             source.contains(
                 """
                                     Arrays.<Object>asList(
-                                            new UntypedText(filter.setting().label()),
+                                            new UntypedText(filter.setting().value()),
                                             new UntypedText(\
                     filter.span() == null ? null : filter.span().format()),
                                             new UntypedText(filter.handle())
@@ -3439,7 +3439,7 @@ class JavaCodeGeneratorTest {
             source.contains(
                 "                batch.stream().map(params -> Arrays.<Object>asList(\n"
                     + "                        new UntypedText("
-                    + "params.setting() == null ? null : params.setting().label()),\n"
+                    + "params.setting() == null ? null : params.setting().value()),\n"
                     + "                        new UntypedText(params.payload()),\n"
                     + "                        new UntypedText("
                     + "params.span() == null ? null : params.span().format()),\n"
@@ -3813,12 +3813,12 @@ class JavaCodeGeneratorTest {
         String source = file.content();
 
         assertTrue(
-            source.contains("new UntypedText(setting.label())"),
+            source.contains("new UntypedText(setting.value())"),
             source
         );
         assertTrue(
             source.contains(
-                "new UntypedText(state == null ? null : state.label())"
+                "new UntypedText(state == null ? null : state.value())"
             ),
             source
         );
@@ -5337,8 +5337,8 @@ class JavaCodeGeneratorTest {
 
         String enumSource = generatedEnum.content();
 
-        assertTrue(enumSource.contains("StageSetting(String label) {"), enumSource);
-        assertTrue(enumSource.contains("public String label() {"), enumSource);
+        assertTrue(enumSource.contains("StageSetting(String value) {"), enumSource);
+        assertTrue(enumSource.contains("public String value() {"), enumSource);
         assertTrue(enumSource.contains("INDOOR(\"indoor\");"), enumSource);
 
         assertCompiles(repository, codeGenerator.generateRows().get(0), generatedEnum);
@@ -5347,10 +5347,10 @@ class JavaCodeGeneratorTest {
     /**
      * A generated enum reads back a label that may be a SQL {@code NULL} and
      * returns {@code null} for it, so both the parameter and the result of
-     * {@code fromLabel} state that they may be null.
+     * {@code fromValue} state that they may be null.
      */
     @Test
-    void shouldAnnotateFromLabelOfAGeneratedEnum() throws IOException {
+    void shouldAnnotateFromValueOfAGeneratedEnum() throws IOException {
         GeneratedFile repository = generate(
             enumGroup(
                 GROUP,
@@ -5363,12 +5363,123 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             generatedEnum.content().contains(
-                "    public static @Nullable StageSetting fromLabel(@Nullable String label) {"
+                "    public static @Nullable StageSetting fromValue(@Nullable String value) {"
             ),
             generatedEnum.content()
         );
 
         assertCompiles(repository, generatedEnum);
+    }
+
+    /**
+     * An enum type named {@code value} and one named {@code values} name their
+     * own value {@code value} like any other generated enum, so the field, the
+     * constructor parameter, {@code value()}, and {@code fromValue} of each of
+     * them keep that name beside the enum's implicit {@code values()}. A
+     * repository that binds a non-null parameter, a nullable parameter, and an
+     * array of those types and reads a non-null, a nullable, and an array
+     * column of them compiles together with both enums.
+     */
+    @Test
+    void shouldGenerateEnumTypesNamedValueAndValues() throws IOException {
+        QueryModel query = new QueryModel(
+            "FindThing",
+            QueryType.ONE,
+            "things",
+            """
+                SELECT value, values, past_values
+                FROM things
+                WHERE value = ? AND values = ? AND past_values = ?
+                """,
+            List.of(1, 2, 3),
+            List.of(
+                new QueryColumn("value", ColumnType.ENUM, false, "value"),
+                new QueryColumn("values", ColumnType.ENUM, true, "values"),
+                new QueryColumn("past_values", ColumnType.ENUM, true, "values", true)
+            ),
+            List.of(
+                new QueryParameter(1, "value", ColumnType.ENUM, "value"),
+                new QueryParameter(2, "values", ColumnType.ENUM, "values").asNullable(),
+                new QueryParameter(3, "past_values", ColumnType.ENUM, "value", true)
+            ),
+            null
+        );
+
+        GeneratedFile repository = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(query),
+                List.of(
+                    new EnumType("value", List.of("kept")),
+                    new EnumType("values", List.of("counted"))
+                )
+            )
+        );
+
+        String source = repository.content();
+
+        assertTrue(source.contains("new UntypedText(value.value())"), source);
+
+        assertTrue(
+            source.contains("new UntypedText(values == null ? null : values.value())"),
+            source
+        );
+
+        assertTrue(source.contains("SqlArray.of(\"value\", pastValues, Value::value)"), source);
+        assertTrue(
+            source.contains("NotNullColumn.getString(resultSet, 1, Value::fromValue)"),
+            source
+        );
+        assertTrue(source.contains("Values.fromValue(resultSet.getString(2))"), source);
+        assertTrue(
+            source.contains(
+                "SqlArray.getList(resultSet, 3, String.class, Values::fromValue)"
+            ),
+            source
+        );
+
+        List<GeneratedFile> enums = codeGenerator.generateEnums();
+
+        assertEquals(
+            List.of(
+                Path.of("generated", "enums", "Value.java"),
+                Path.of("generated", "enums", "Values.java")
+            ),
+            enums.stream().map(GeneratedFile::path).toList()
+        );
+
+        for (GeneratedFile generatedEnum : enums) {
+            String typeName = generatedEnum.path()
+                .getFileName()
+                .toString()
+                .replace(".java", "");
+
+            assertTrue(
+                generatedEnum.content().contains(
+                    "    public static @Nullable %s fromValue(@Nullable String value) {"
+                        .formatted(typeName)
+                ),
+                generatedEnum.content()
+            );
+
+            assertTrue(
+                generatedEnum.content().contains(
+                    "        for (%s constant : values()) {\n".formatted(typeName)
+                        + "            if (constant.value.equals(value)) {\n"
+                        + "                return constant;\n"
+                        + "            }\n"
+                        + "        }"
+                ),
+                generatedEnum.content()
+            );
+        }
+
+        List<GeneratedFile> files = new ArrayList<>();
+
+        files.add(repository);
+        files.addAll(enums);
+
+        assertCompiles(files.toArray(new GeneratedFile[0]));
     }
 
     /** A {@code :batchexec} query of one parameter. */
@@ -5906,7 +6017,7 @@ class JavaCodeGeneratorTest {
         );
 
         assertTrue(source.contains("import java.time.LocalDateTime;"));
-        assertTrue(source.contains("StageSetting.fromLabel(resultSet.getString(2))"));
+        assertTrue(source.contains("StageSetting.fromValue(resultSet.getString(2))"));
         assertTrue(source.contains("resultSet.getObject(3, LocalDateTime.class)"));
         assertTrue(
             source.contains("NotNullColumn.getObject(resultSet, 4, Long.class)")
@@ -6232,14 +6343,14 @@ class JavaCodeGeneratorTest {
             source.contains(
                 "                Arrays.<@Nullable Object>asList(\n"
                     + "                        handle,\n"
-                    + "                        new UntypedText(setting == null ? null : setting.label()),\n"
-                    + "                        new UntypedText(setting == null ? null : setting.label())\n"
+                    + "                        new UntypedText(setting == null ? null : setting.value()),\n"
+                    + "                        new UntypedText(setting == null ? null : setting.value())\n"
                     + "                ),"
             )
         );
 
         assertTrue(source.contains("StageSetting setting"));
-        assertTrue(source.contains("StageSetting.fromLabel(resultSet.getString(2))"));
+        assertTrue(source.contains("StageSetting.fromValue(resultSet.getString(2))"));
         assertTrue(
             source.contains("NotNullColumn.getObject(resultSet, 1, Long.class)")
         );
@@ -6287,19 +6398,19 @@ class JavaCodeGeneratorTest {
                 Arrays.stream(constants).map(Object::toString).toList()
             );
 
-            Method label = type.getMethod("label");
+            Method value = type.getMethod("value");
 
-            assertEquals("indoor", label.invoke(constants[0]));
-            assertEquals("out door", label.invoke(constants[1]));
+            assertEquals("indoor", value.invoke(constants[0]));
+            assertEquals("out door", value.invoke(constants[1]));
 
-            Method fromLabel = type.getMethod("fromLabel", String.class);
+            Method fromValue = type.getMethod("fromValue", String.class);
 
-            assertEquals(constants[1], fromLabel.invoke(null, "out door"));
-            assertNull(fromLabel.invoke(null, new Object[] { null }));
+            assertEquals(constants[1], fromValue.invoke(null, "out door"));
+            assertNull(fromValue.invoke(null, new Object[] { null }));
 
             InvocationTargetException failure = assertThrows(
                 InvocationTargetException.class,
-                () -> fromLabel.invoke(null, "covered")
+                () -> fromValue.invoke(null, "covered")
             );
 
             UnmappableValueException unmappable = assertInstanceOf(
@@ -6308,7 +6419,7 @@ class JavaCodeGeneratorTest {
             );
 
             assertEquals(
-                "Unknown label for enum type stage_setting: covered",
+                "Unknown value for enum type stage_setting: covered",
                 unmappable.getMessage()
             );
 
@@ -6716,15 +6827,15 @@ class JavaCodeGeneratorTest {
         assertTrue(
             source.contains(
                 "                Arrays.<Object>asList(\n"
-                    + "                        SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label),\n"
-                    + "                        SqlArray.of(\"stage_setting\", pastSettings, StageSetting::label)\n"
+                    + "                        SqlArray.of(\"stage_setting\", pastSettings, StageSetting::value),\n"
+                    + "                        SqlArray.of(\"stage_setting\", pastSettings, StageSetting::value)\n"
                     + "                ),"
             )
         );
 
         assertTrue(
             source.contains(
-                "SqlArray.getList(resultSet, 2, String.class, StageSetting::fromLabel)"
+                "SqlArray.getList(resultSet, 2, String.class, StageSetting::fromValue)"
             )
         );
 
@@ -7175,8 +7286,8 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             enums.get(0).content().contains(
-                "    public static @org.jspecify.annotations.Nullable Nullable fromLabel(\n"
-                    + "        @org.jspecify.annotations.Nullable String label\n"
+                "    public static @org.jspecify.annotations.Nullable Nullable fromValue(\n"
+                    + "        @org.jspecify.annotations.Nullable String value\n"
                     + "    ) {"
             ),
             enums.get(0).content()
@@ -7191,7 +7302,7 @@ class JavaCodeGeneratorTest {
 
         assertTrue(
             enums.get(1).content().contains(
-                "    public static @Nullable NullMarked fromLabel(@Nullable String label) {"
+                "    public static @Nullable NullMarked fromValue(@Nullable String value) {"
             ),
             enums.get(1).content()
         );
@@ -7263,17 +7374,17 @@ class JavaCodeGeneratorTest {
         );
 
         assertTrue(
-            enums.get(0).content().contains("    private final java.lang.String label;"),
+            enums.get(0).content().contains("    private final java.lang.String value;"),
             enums.get(0).content()
         );
 
         assertTrue(
-            enums.get(0).content().contains("    String(java.lang.String label) {"),
+            enums.get(0).content().contains("    String(java.lang.String value) {"),
             enums.get(0).content()
         );
 
         assertTrue(
-            enums.get(1).content().contains("    private final java.lang.String label;"),
+            enums.get(1).content().contains("    private final java.lang.String value;"),
             enums.get(1).content()
         );
 

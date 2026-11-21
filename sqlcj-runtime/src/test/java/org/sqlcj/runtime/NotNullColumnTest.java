@@ -115,7 +115,7 @@ class NotNullColumnTest {
 
     /**
      * A converter that returns {@code null} for the text it was given, as a
-     * generated enum's {@code fromLabel} does for a label of its own that is
+     * generated enum's {@code fromValue} does for a label of its own that is
      * {@code null}, fails the read the same way, because the component would
      * hold {@code null} either way.
      */

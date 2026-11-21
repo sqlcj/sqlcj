@@ -62,7 +62,7 @@ import java.util.Optional;
  * query '<query>' in <repository>"} and the mapper's own exception as its
  * cause, so a mapping failure names the query it was read for. A value the
  * generated API cannot represent, which the generated enum's
- * {@code fromLabel} reports as an {@link UnmappableValueException}, keeps that
+ * {@code fromValue} reports as an {@link UnmappableValueException}, keeps that
  * type, its {@link UnmappableValueException#type() type}, and its
  * {@link UnmappableValueException#value() value}; every other unchecked
  * failure becomes a plain {@link QueryExecutionException}. An {@link Error} a
