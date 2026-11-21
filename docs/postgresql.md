@@ -400,9 +400,12 @@ Inside a Spring-managed transaction the transaction belongs to Spring, and the
 repository takes part through the proxy alone.
 
 The `org.sqlcj:sqlcj-spring-boot-starter` configures exactly this executor for
-a Spring Boot 4 application and registers its generated repositories as beans;
-[Spring](spring.md) documents the starter and the configurations an application
-writes itself. Neither the runtime nor the generated code depends on Spring or
+a Spring Boot 4 application and registers its generated repositories as beans.
+It also wraps the executor so that a failure raises the Spring
+`DataAccessException` a `JdbcTemplate` over the same `DataSource` raises,
+rather than the exception of the mapping above; [Spring](spring.md) documents
+the starter, that translation, and the configurations an application writes
+itself. Neither the runtime nor the generated code depends on Spring or
 on a JPA provider, which sqlcj's own tests use to verify the behavior above.
 
 Behavior is verified against PostgreSQL 16. The pipeline is executed end to end

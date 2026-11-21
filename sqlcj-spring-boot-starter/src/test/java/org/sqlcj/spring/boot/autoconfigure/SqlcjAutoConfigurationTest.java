@@ -13,10 +13,14 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.TransactionAwareDataSourceProxy;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseBuilder;
 import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseType;
 import org.springframework.jdbc.support.JdbcTransactionManager;
+import org.springframework.jdbc.support.SQLExceptionTranslator;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -51,6 +55,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * packages over the one executor and nothing else, and that an application
  * reaches it through the imports file and turns it off with
  * {@code spring.autoconfigure.exclude}.
+ *
+ * <p>Three tests cover the exception translation: the configured executor is
+ * the translating one, it translates with the application's one
+ * {@link SQLExceptionTranslator} bean when there is one, and an application's
+ * own executor wrapped in the starter's decorator raises Spring's exception
+ * too, which is also the sample the Spring guide shows.
  *
  * <p>Two tests cover the configurations the Spring guide documents beside the
  * auto-configured one: a repository of a package outside the
@@ -101,11 +111,67 @@ class SqlcjAutoConfigurationTest {
         );
 
     @Test
-    void configuresOneJdbcExecutorOverTheSingleDataSource() {
+    void configuresOneTranslatingExecutorOverTheSingleDataSource() {
         runner.run(context -> {
             assertEquals(1, context.getBeansOfType(QueryExecutor.class).size());
-            assertInstanceOf(JdbcQueryExecutor.class, context.getBean(QueryExecutor.class));
+            assertInstanceOf(
+                ExceptionTranslatingQueryExecutor.class,
+                context.getBean(QueryExecutor.class)
+            );
             assertEquals(1, context.getBeansOfType(DataSource.class).size());
+        });
+    }
+
+    /**
+     * The starter translates with the application's one
+     * {@link SQLExceptionTranslator} bean, which is the translator Spring
+     * Boot's own {@code JdbcTemplate} takes as well, so a failure raises
+     * exactly what that translator built.
+     */
+    @Test
+    void translatesWithTheApplicationsOneExceptionTranslatorBean() {
+        runner.withUserConfiguration(ExceptionTranslatorConfiguration.class).run(context -> {
+            DataSource dataSource = context.getBean(DataSource.class);
+            createNotes(dataSource);
+            QueryExecutor executor = context.getBean(QueryExecutor.class);
+            executor.execute(REPOSITORY, QUERY, INSERT_NOTE, List.of(1));
+
+            ApplicationDataAccessException failure = assertThrows(
+                ApplicationDataAccessException.class,
+                () -> executor.execute(REPOSITORY, QUERY, INSERT_NOTE, List.of(1))
+            );
+
+            assertEquals("Failed to execute query 'InsertNote' in NotesRepository", failure.getMessage());
+            assertInstanceOf(SQLException.class, failure.getCause());
+            assertEquals(List.of(1), noteIds(dataSource));
+        });
+    }
+
+    /**
+     * An application that wants its own executor translated wraps it in the
+     * starter's decorator, as the Spring guide's Exceptions section shows, and
+     * then a duplicate key raises Spring's {@code DuplicateKeyException} from
+     * that executor too.
+     */
+    @Test
+    void translatesAnApplicationExecutorWrappedInTheDecorator() {
+        runner.withUserConfiguration(TranslatingApplicationExecutorConfiguration.class).run(context -> {
+            DataSource dataSource = context.getBean(DataSource.class);
+            createNotes(dataSource);
+            QueryExecutor executor = context.getBean("applicationQueryExecutor", QueryExecutor.class);
+            executor.execute(REPOSITORY, QUERY, INSERT_NOTE, List.of(1));
+
+            DuplicateKeyException failure = assertThrows(
+                DuplicateKeyException.class,
+                () -> executor.execute(REPOSITORY, QUERY, INSERT_NOTE, List.of(1))
+            );
+
+            assertTrue(
+                failure.getMessage().startsWith("Failed to execute query 'InsertNote' in NotesRepository"),
+                () -> "the message should begin with the runtime's: " + failure.getMessage()
+            );
+            assertInstanceOf(SQLException.class, failure.getCause());
+            assertEquals(List.of(1), noteIds(dataSource));
         });
     }
 
@@ -433,6 +499,47 @@ class SqlcjAutoConfigurationTest {
         @Bean
         QueryExecutor applicationQueryExecutor(DataSource dataSource) {
             return new JdbcQueryExecutor(dataSource);
+        }
+    }
+
+    /** An application that defines one {@link SQLExceptionTranslator} bean. */
+    @Configuration(proxyBeanMethods = false)
+    static class ExceptionTranslatorConfiguration {
+
+        @Bean
+        SQLExceptionTranslator applicationExceptionTranslator() {
+            return (task, sql, failure) -> new ApplicationDataAccessException(task, failure);
+        }
+    }
+
+    /**
+     * An application's own executor wrapped in the starter's decorator, as the
+     * Spring guide's Exceptions section shows it: the executor the application
+     * would have built anyway, and the translator of a {@code JdbcTemplate}
+     * over the same data source.
+     */
+    @Configuration(proxyBeanMethods = false)
+    static class TranslatingApplicationExecutorConfiguration {
+
+        @Bean
+        DataSource dataSource() {
+            return embeddedDataSource();
+        }
+
+        @Bean
+        QueryExecutor applicationQueryExecutor(DataSource dataSource) {
+            return new ExceptionTranslatingQueryExecutor(
+                new JdbcQueryExecutor(new TransactionAwareDataSourceProxy(dataSource)),
+                new JdbcTemplate(dataSource).getExceptionTranslator()
+            );
+        }
+    }
+
+    /** The exception the application's own translator builds. */
+    static final class ApplicationDataAccessException extends DataAccessException {
+
+        ApplicationDataAccessException(String message, SQLException cause) {
+            super(message, cause);
         }
     }
 

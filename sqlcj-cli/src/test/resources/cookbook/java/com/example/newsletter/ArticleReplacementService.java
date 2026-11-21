@@ -18,9 +18,9 @@ import java.time.OffsetDateTime;
  * the {@code DataSource}, such as Spring's
  * {@code TransactionAwareDataSourceProxy}, which the sqlcj Spring Boot starter
  * configures. The transaction then commits on a normal return and is rolled
- * back by any failure, such as the
- * {@link org.sqlcj.runtime.UniqueViolationException} of a replacement whose
- * slug is already taken.
+ * back by any failure, such as the duplicate key of a replacement whose slug
+ * is already taken, which the starter's executor raises as Spring's
+ * {@code org.springframework.dao.DuplicateKeyException}.
  *
  * <p>The class and the method are public and non-final so that the container
  * can proxy them.
