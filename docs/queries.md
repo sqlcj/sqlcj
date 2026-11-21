@@ -2556,7 +2556,7 @@ subpackage names are fixed.
 - A column or parameter of a one-dimensional array type is a `List<T>` of the
   element's Java type. Its argument is passed as
   `new SqlArray("<element type>", <parameter>)`, or as
-  `SqlArray.of("<enum type>", <parameter>, <EnumType>::label)` for an array of
+  `SqlArray.of("<enum type>", <parameter>, <EnumType>::value)` for an array of
   an enum. A nullable column is read as
   `SqlArray.getList(resultSet, position, <Type>.class)` and a non-null one as
   `NotNullColumn.getList(resultSet, position, <Type>.class)`, so an empty list
@@ -2567,10 +2567,10 @@ subpackage names are fixed.
 - A column or parameter of an enum type the schema declares uses the Java enum
   `<java.package>.enums` holds for that type, imported by the repository and
   used by its simple name. Its argument is passed as
-  `new UntypedText(<parameter> == null ? null : <parameter>.label())`, a
+  `new UntypedText(<parameter> == null ? null : <parameter>.value())`, a
   nullable column is read as
-  `<EnumType>.fromLabel(resultSet.getString(position))`, and a non-null one as
-  `NotNullColumn.getString(resultSet, position, <EnumType>::fromLabel)`, so a
+  `<EnumType>.fromValue(resultSet.getString(position))`, and a non-null one as
+  `NotNullColumn.getString(resultSet, position, <EnumType>::fromValue)`, so a
   `null` stays `null` in both directions for a nullable column, while the
   non-null read fails on a SQL `NULL`; see
   [Enum Types](postgresql.md#enum-types).
@@ -2604,10 +2604,10 @@ subpackage names are fixed.
     in `List<@Nullable String>`, because a SQL array may hold a `NULL` element.
     A nullable `BYTEA` is written `byte @Nullable []`, which states that the
     array itself may be null rather than its bytes.
-  - A generated enum's `fromLabel` accepts and returns `@Nullable`, and its
-    constructor, `label()`, and constants stay non-null. An enum or `INTERVAL`
+  - A generated enum's `fromValue` accepts and returns `@Nullable`, and its
+    constructor, `value()`, and constants stay non-null. An enum or `INTERVAL`
     argument of a non-null parameter is therefore bound as
-    `new UntypedText(<parameter>.label())` or
+    `new UntypedText(<parameter>.value())` or
     `new UntypedText(<parameter>.format())`, without the null test a nullable
     one needs.
   - Unannotated, and therefore non-null, are the repository's
