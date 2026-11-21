@@ -437,7 +437,15 @@ The rules are applied as follows:
   forms of the group's fields, so `:search_criteria.created_at` generates the
   record `SearchCriteria`, the parameter `searchCriteria`, and the component
   and setter `createdAt`; see
-  [Parameter groups](queries.md#parameter-groups).
+  [Parameter groups](queries.md#parameter-groups),
+- a query's parameter record is the upper camel form of the query name followed
+  by `Params`, nested in the repository, and its components and its builder's
+  setters are the lower camel forms of the query's parameters, so a
+  `:batchexec` query `record_article_views` generates the record
+  `RecordArticleViewsParams` and the component and setter `articleId`. The
+  method of a query that carries the `params` option takes that record as its
+  one parameter, named `params` after the option itself; see
+  [One record for a query's parameters](queries.md#one-record-for-a-querys-parameters).
 
 Generated names also avoid names that Java or the generated source already uses:
 
@@ -447,7 +455,9 @@ Generated names also avoid names that Java or the generated source already uses:
   a column named `class` generates the component `class_`,
 - a method name also avoids the inherited `Object` method names, so a query
   named `ToString` generates the method `toString_`,
-- record components avoid inherited `Object` method names,
+- record components avoid inherited `Object` method names, and a component of a
+  record that nests a builder also avoids `build` and `builder`, which that
+  builder takes, so such a component becomes `build1` or `builder1`,
 - method parameters avoid the generator-owned name `executor` and every
   row-mapper field name of the repository, including the mappers of its row
   records,
