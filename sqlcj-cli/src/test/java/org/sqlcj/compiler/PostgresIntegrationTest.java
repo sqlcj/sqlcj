@@ -948,6 +948,40 @@ class PostgresIntegrationTest {
         VALUES ($1, $2, $3, NOW(), $4, $5, $6) RETURNING id;
         """;
 
+    /**
+     * A history whose later statements reach the view recorded before them: it
+     * drops the {@code NOT NULL} of a column that view reads, renames the enum
+     * type of another, and creates a second view afterwards.
+     */
+    private static final String JOURNAL_HISTORY = """
+        CREATE TYPE journal_mood AS ENUM ('calm', 'tense');
+
+        CREATE TABLE journal_entries (
+            id   BIGINT NOT NULL,
+            note text NOT NULL,
+            mood journal_mood NOT NULL
+        );
+
+        CREATE VIEW journal_early AS
+        SELECT id, note, mood FROM journal_entries;
+
+        ALTER TABLE journal_entries ALTER COLUMN note DROP NOT NULL;
+
+        ALTER TYPE journal_mood RENAME TO journal_feeling;
+
+        CREATE VIEW journal_later AS
+        SELECT id, note FROM journal_entries;
+        """;
+
+    /** Queries that read both views the journal history records. */
+    private static final String JOURNAL_QUERIES = """
+        -- name: ListJournalEarly :many
+        SELECT id, note, mood FROM journal_early ORDER BY id;
+
+        -- name: FindJournalLaterId :optional
+        SELECT id FROM journal_later WHERE id = $1;
+        """;
+
     private static final UUID EXTERNAL_ID = UUID.fromString("3f2504e0-4f89-11d3-9a0c-0305e82c3301");
 
     private static final OffsetDateTime UPDATED_AT = OffsetDateTime.of(
@@ -1053,6 +1087,11 @@ class PostgresIntegrationTest {
         execute("DROP TABLE IF EXISTS MixedItems");
         execute("DROP TABLE IF EXISTS \"DelimitedItems\"");
         execute("DROP TABLE IF EXISTS user_aliases");
+        execute("DROP VIEW IF EXISTS journal_later");
+        execute("DROP VIEW IF EXISTS journal_early");
+        execute("DROP TABLE IF EXISTS journal_entries");
+        execute("DROP TYPE IF EXISTS journal_feeling");
+        execute("DROP TYPE IF EXISTS journal_mood");
         execute("DROP TABLE IF EXISTS users");
         execute(SCHEMA);
     }
@@ -8304,6 +8343,59 @@ class PostgresIntegrationTest {
 
                 assertNotNull(stored.getTimestamp("opened_at"));
             }
+        }
+    }
+
+    /**
+     * Runs a history whose later statements reach the view recorded before
+     * them against PostgreSQL 16: the {@code NULL} PostgreSQL returns for the
+     * column whose {@code NOT NULL} was dropped is read through the earlier
+     * view, that view's enum column reads as the constant of the generated
+     * enum of the renamed type, and the {@code :optional} read of the view
+     * created afterwards returns its one non-null value.
+     */
+    @Test
+    void shouldReadAViewTheLaterStatementsReachAgainstPostgres() throws Exception {
+        execute(JOURNAL_HISTORY);
+
+        Path classesDirectory = generateAndCompile(JOURNAL_HISTORY, JOURNAL_QUERIES);
+
+        execute("""
+            INSERT INTO journal_entries (id, note, mood)
+            VALUES (1, NULL, 'tense')
+            """);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Class<?> feeling = enumClass(classLoader, "JournalFeeling");
+
+            Object repository = newRepository(classLoader);
+
+            List<?> rows = assertInstanceOf(
+                List.class,
+                repository
+                    .getClass()
+                    .getMethod("listJournalEarly")
+                    .invoke(repository)
+            );
+
+            assertEquals(1, rows.size());
+
+            Object row = rows.get(0);
+
+            assertEquals(List.of("id", "note", "mood"), recordComponentNames(row));
+            assertEquals(1L, component(row, "id"));
+            assertNull(component(row, "note"));
+            assertEquals(constant(feeling, "TENSE"), component(row, "mood"));
+
+            Optional<?> found = assertInstanceOf(
+                Optional.class,
+                repository
+                    .getClass()
+                    .getMethod("findJournalLaterId", Long.class)
+                    .invoke(repository, 1L)
+            );
+
+            assertEquals(1L, found.orElseThrow());
         }
     }
 

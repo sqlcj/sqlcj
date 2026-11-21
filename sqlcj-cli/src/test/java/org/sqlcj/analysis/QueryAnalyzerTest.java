@@ -555,6 +555,60 @@ class QueryAnalyzerTest {
         )
     );
 
+    /**
+     * The schema a view of an enum column was recorded against, whose enum
+     * type two later statements renamed.
+     */
+    private static final Schema moodViewSchema = new Schema(
+        List.of(
+            new Table(
+                "moods",
+                List.of(
+                    new Column("id", ColumnType.BIGINT, false),
+                    new Column("state", ColumnType.ENUM, false, null, "mood")
+                ),
+                List.of()
+            )
+        ),
+        List.of(new EnumType("mood", List.of("calm", "tense")))
+    );
+
+    /**
+     * A schema recording the views that later statements of its own history
+     * reached: one marked by a later {@code DROP NOT NULL} and one whose enum
+     * type two later renames left under a third name.
+     */
+    private static final Schema reachedViewSchema = new Schema(
+        viewBaseSchema.tables(),
+        List.of(new EnumType("emotion", List.of("calm", "tense"))),
+        List.of(),
+        List.of(
+            new View(
+                "nullable_users",
+                false,
+                "SELECT id, name FROM users",
+                List.of(),
+                viewBaseSchema,
+                false,
+                true,
+                List.of()
+            ),
+            new View(
+                "mood_states",
+                false,
+                "SELECT id, state FROM moods",
+                List.of(),
+                moodViewSchema,
+                false,
+                false,
+                List.of(
+                    new View.EnumRename("mood", "feeling"),
+                    new View.EnumRename("feeling", "emotion")
+                )
+            )
+        )
+    );
+
     /** One recorded view of {@link #viewBaseSchema} without a column list. */
     private static View view(String name, String query) {
         return view(name, query, List.of());
@@ -13377,6 +13431,52 @@ class QueryAnalyzerTest {
                 () -> analyzer.analyze(query, parsedSql, viewSchema)
             )
                 .getMessage()
+        );
+    }
+
+    /**
+     * Every column of a view an {@code ALTER COLUMN ... DROP NOT NULL} stated
+     * after it reached is nullable, whatever its own analysis resolves,
+     * because sqlcj does not track which table column a view column reads.
+     */
+    @Test
+    void shouldReadEveryColumnOfAViewADropNotNullReachedAsNullable() {
+        String sql = "SELECT id, name FROM nullable_users";
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, true),
+                new QueryColumn("name", ColumnType.VARCHAR, true)
+            ),
+            analyzer.analyze(
+                new Query("ListNullableUsers", QueryType.MANY, sql),
+                parser.parse(sql),
+                reachedViewSchema
+            )
+                .columns()
+        );
+    }
+
+    /**
+     * A column of a view whose enum type was renamed after it carries the name
+     * the renames stated after the view leave, applied in their order, which
+     * is the name the schema declares the type under.
+     */
+    @Test
+    void shouldTypeAViewColumnWithTheRenamedEnumType() {
+        String sql = "SELECT id, state FROM mood_states";
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("state", ColumnType.ENUM, false, "emotion")
+            ),
+            analyzer.analyze(
+                new Query("ListMoodStates", QueryType.MANY, sql),
+                parser.parse(sql),
+                reachedViewSchema
+            )
+                .columns()
         );
     }
 

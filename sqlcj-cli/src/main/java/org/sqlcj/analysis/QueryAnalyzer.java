@@ -4231,7 +4231,10 @@ public final class QueryAnalyzer {
 
     /**
      * The columns one recorded view exposes, which are the result columns of
-     * its own defining query, renamed by its column list.
+     * its own defining query, renamed by its column list and reached by the
+     * later statements recorded with the view: every column is nullable where
+     * a later {@code DROP NOT NULL} stands, and a column's enum type is named
+     * as the later renames leave it.
      *
      * <p>The query is parsed by the one SQL parser and analyzed in an analysis
      * of its own, against the schema recorded with the view, so none of its
@@ -4278,12 +4281,51 @@ public final class QueryAnalyzer {
         Schema schema = view.schema();
         Analysis analysis = new Analysis(parsedSql, schema, toPlaceholders(parsedSql, schema));
 
-        return renamedDerivedColumns(
+        List<org.sqlcj.schema.Column> columns = renamedDerivedColumns(
             view.name(),
             view.columnNames(),
             analyzeNestedSelect(select, analysis, List.of(), view.columnNames().size(), null)
                 .columns()
         );
+
+        return columns.stream()
+            .map(
+                column -> new org.sqlcj.schema.Column(
+                    column.name(),
+                    column.type(),
+                    column.nullable() || view.columnsNullable(),
+                    column.unsupportedType(),
+                    renamedEnumType(column.enumType(), view.enumRenames()),
+                    column.array(),
+                    column.blankPadded(),
+                    column.sqlName()
+                )
+            )
+            .toList();
+    }
+
+    /**
+     * The declared name one column's enum type is known by after the renames
+     * stated after its view was created, applied in their order, and
+     * {@code null} for a column of no enum type. A view's own analysis resolves
+     * the type by the name the defining query names it under, which is the name
+     * it had there, while every later name is the name the final schema
+     * declares the type under.
+     */
+    private String renamedEnumType(String enumType, List<View.EnumRename> renames) {
+        String name = enumType;
+
+        if (name == null) {
+            return null;
+        }
+
+        for (View.EnumRename rename : renames) {
+            if (name.equalsIgnoreCase(rename.oldName())) {
+                name = rename.newName();
+            }
+        }
+
+        return name;
     }
 
     /** The kind of one recorded view, as PostgreSQL spells it. */
