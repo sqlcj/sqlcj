@@ -10428,19 +10428,25 @@ class QueryAnalyzerTest {
             "INSERT INTO users (id) VALUES ($1) RETURNING * x"
                 + "|RETURNING * must not be aliased.",
             "INSERT INTO users (id) VALUES ($1) RETURNING id + 1"
-                + "|Unsupported RETURNING item id + 1;"
-                + " return columns of the target table or *",
+                + "|Cannot infer the type of id + 1 in RETURNING;"
+                + " state it with a cast and an alias, such as (id + 1)::<type> AS <alias>",
             "INSERT INTO users (id) VALUES ($1) RETURNING id + 1 AS x"
-                + "|Unsupported RETURNING item id + 1;"
-                + " return columns of the target table or *",
+                + "|Cannot infer the type of id + 1 in RETURNING;"
+                + " state it with a cast and an alias, such as (id + 1)::<type> AS x",
             "INSERT INTO users (id) VALUES ($1) RETURNING users.* AS x"
                 + "|RETURNING users.* must not be aliased.",
             "DELETE FROM users WHERE id = $1 RETURNING count(id)"
-                + "|Unsupported RETURNING item count(id);"
-                + " return columns of the target table or *",
+                + "|Cannot infer the type of count(id) in RETURNING;"
+                + " state it with a cast and an alias, such as count(id)::<type> AS <alias>",
+            "DELETE FROM users WHERE id = $1 RETURNING count(id) AS c"
+                + "|Cannot infer the type of count(id) in RETURNING;"
+                + " state it with a cast and an alias, such as count(id)::<type> AS c",
             "DELETE FROM users WHERE id = $1 RETURNING lower(name)"
-                + "|Unsupported RETURNING item lower(name);"
-                + " return columns of the target table or *"
+                + "|Cannot infer the type of lower(name) in RETURNING;"
+                + " state it with a cast and an alias, such as lower(name)::<type> AS <alias>",
+            "DELETE FROM users WHERE id = $1 RETURNING lower(name) AS l"
+                + "|Cannot infer the type of lower(name) in RETURNING;"
+                + " state it with a cast and an alias, such as lower(name)::<type> AS l"
         }
     )
     void shouldRejectUnsupportedReturningItem(String sql, String message) {
@@ -11018,18 +11024,20 @@ class QueryAnalyzerTest {
     /**
      * A subscripted or sliced reference returns an element rather than a column
      * of the write target, so it is rejected like any other computed returned
-     * item, aliased or not.
+     * item, aliased or not, naming the cast that states its type.
      */
     @ParameterizedTest
     @CsvSource(
         delimiter = '|',
         quoteCharacter = '"',
         value = {
-            "UPDATE stages SET handle = :h RETURNING tags[1]|tags[1]",
-            "UPDATE stages SET handle = :h RETURNING tags[1:2] AS s|tags[1 : 2]"
+            "UPDATE stages SET handle = :h RETURNING tags[1]|tags[1]|<alias>",
+            "UPDATE stages SET handle = :h RETURNING tags[1] AS t|tags[1]|t",
+            "UPDATE stages SET handle = :h RETURNING tags[1:2]|tags[1 : 2]|<alias>",
+            "UPDATE stages SET handle = :h RETURNING tags[1:2] AS s|tags[1 : 2]|s"
         }
     )
-    void shouldRejectASubscriptedReturningItem(String sql, String written) {
+    void shouldRejectASubscriptedReturningItem(String sql, String written, String alias) {
         Query query = new Query("UpdateStage", QueryType.MANY, sql);
         ParsedSql parsedSql = parser.parse(sql);
 
@@ -11039,8 +11047,8 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "Unsupported RETURNING item %s; return columns of the target table or *"
-                .formatted(written),
+            ("Cannot infer the type of %s in RETURNING; state it with a cast and an alias,"
+                + " such as (%s)::<type> AS %s").formatted(written, written, alias),
             exception.getMessage()
         );
     }
@@ -15559,6 +15567,172 @@ class QueryAnalyzerTest {
             ),
             model.columns()
         );
+    }
+
+    /**
+     * An aliased cast returned beside a direct column is one result column of
+     * the cast type, named after its alias and nullable because the comparison
+     * it casts is no operand sqlcj knows to read no {@code NULL}, in either
+     * cast spelling and with or without {@code AS}. The clause is a column
+     * list, so it keeps the query's own result rather than the target's row.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "INSERT INTO users (id) VALUES ($1) ON CONFLICT (id) DO UPDATE"
+                + " SET name = EXCLUDED.name RETURNING id, (xmax = 0)::boolean AS inserted",
+            "INSERT INTO users (id) VALUES ($1) ON CONFLICT (id) DO UPDATE"
+                + " SET name = EXCLUDED.name RETURNING id, CAST((xmax = 0) AS boolean) AS inserted",
+            "INSERT INTO users (id) VALUES ($1) ON CONFLICT (id) DO UPDATE"
+                + " SET name = EXCLUDED.name RETURNING id, (xmax = 0)::boolean inserted"
+        }
+    )
+    void shouldTypeACastReturningItemByItsCast(String sql) {
+        QueryModel model = analyzer.analyze(
+            new Query("UpsertUser", QueryType.ONE, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("inserted", ColumnType.BOOLEAN, true)
+            ),
+            model.columns()
+        );
+
+        assertNull(model.rowTable());
+    }
+
+    /**
+     * A target wildcard written beside a returned cast embeds the target's row
+     * in its own position, as it does beside a direct column, and the cast is
+     * the result column after it.
+     */
+    @Test
+    void shouldEmbedTheTargetRowBesideACastReturningItem() {
+        String sql = """
+            INSERT INTO users (id, name) VALUES (:id, :name)
+            ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name
+            RETURNING *, (xmax = 0)::boolean AS inserted
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("UpsertUser", QueryType.ONE, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertNull(model.rowTable());
+
+        assertEquals(
+            List.of(
+                usersRow("users"),
+                new QueryColumn("inserted", ColumnType.BOOLEAN, true)
+            ),
+            model.columns()
+        );
+    }
+
+    /**
+     * A returned cast reads {@code NULL} exactly where its operand does, which
+     * it resolves against the write's sources: a {@code NOT NULL} column of the
+     * target or of an added source is non-null, and a nullable column and a
+     * column of a null-extended added source are nullable.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "INSERT INTO users (id) VALUES ($1) RETURNING id::text AS v|false",
+            "INSERT INTO users (id, name) VALUES ($1, $2) RETURNING name::text AS v|true",
+            "UPDATE users u SET name = $1 FROM profiles p WHERE p.user_id = u.id"
+                + " RETURNING p.user_id::text AS v|false",
+            "UPDATE users u SET name = $1 FROM profiles p"
+                + " LEFT JOIN orders o ON o.user_id = p.user_id"
+                + " WHERE p.user_id = u.id RETURNING o.id::text AS v|true",
+            "DELETE FROM users WHERE id = $1 RETURNING id::text AS v|false",
+            "DELETE FROM users u USING profiles p WHERE p.user_id = u.id"
+                + " RETURNING p.nickname::text AS v|true"
+        }
+    )
+    void shouldResolveNullnessOfACastReturningItem(String sql, boolean nullable) {
+        QueryModel model = analyzer.analyze(
+            new Query("WriteUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("v", ColumnType.TEXT, nullable)),
+            model.columns()
+        );
+    }
+
+    /** A returned cast may name a declared enum type. */
+    @Test
+    void shouldResolveEnumCastReturningItem() {
+        String sql = "UPDATE stages SET handle = :h RETURNING handle::stage_setting AS s";
+
+        QueryModel model = analyzer.analyze(
+            new Query("UpdateStage", QueryType.MANY, sql),
+            parser.parse(sql),
+            enumSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("s", ColumnType.ENUM, true, "stage_setting")),
+            model.columns()
+        );
+    }
+
+    /** A returned cast of a one-dimensional array is an array column. */
+    @Test
+    void shouldResolveArrayCastReturningItem() {
+        String sql = "UPDATE stages SET handle = :h RETURNING handle::text[] AS labels";
+
+        QueryModel model = analyzer.analyze(
+            new Query("UpdateStage", QueryType.MANY, sql),
+            parser.parse(sql),
+            arraySchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("labels", ColumnType.TEXT, true, null, true)),
+            model.columns()
+        );
+    }
+
+    /**
+     * A returned cast names one result column, so it requires an alias, which
+     * is rejected naming the cast as the query writes it, and a cast type sqlcj
+     * does not map is rejected naming the result column and the declared type,
+     * as a cast projection reports it.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "INSERT INTO users (id) VALUES ($1) RETURNING (xmax = 0)::boolean"
+                + "|(xmax = 0)::boolean requires a result alias,"
+                + " such as (xmax = 0)::boolean AS <alias>.",
+            "DELETE FROM users WHERE id = $1 RETURNING id::text"
+                + "|id::text requires a result alias, such as id::text AS <alias>.",
+            "INSERT INTO users (id) VALUES ($1) RETURNING id::money AS i"
+                + "|Result column 'i' has unsupported cast type MONEY"
+        }
+    )
+    void shouldRejectUnsupportedCastReturningItem(String sql, String message) {
+        Query query = new Query("WriteUser", QueryType.ONE, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        UnsupportedOperationException exception = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(query, parsedSql, schema)
+        );
+
+        assertEquals(message, exception.getMessage());
     }
 
     /**

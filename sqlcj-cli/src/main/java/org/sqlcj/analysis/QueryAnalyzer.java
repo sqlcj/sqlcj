@@ -267,13 +267,17 @@ public final class QueryAnalyzer {
         instead.""";
 
     /**
-     * The rejection of a returned item that is neither a column of the write
-     * target nor a bare {@code *}, which is written as the query spells it. A
-     * cast does not make such an item supported, so the rejection names the
-     * items that are.
+     * The rejection of a returned item that is no column of the write's
+     * sources, no wildcard of its target, and no cast, which is written as the
+     * query spells it. A cast states the type of such an item, exactly as it
+     * states the type of a computed projection, so the rejection names that
+     * fix: the query's own expression, cast to a type the user writes in place
+     * of {@code <type>}, under the query's own alias or {@code <alias>} where
+     * it writes none.
      */
     private static final String COMPUTED_RETURNING_REJECTION = """
-        Unsupported RETURNING item %s; return columns of the target table or *""";
+        Cannot infer the type of %s in RETURNING; state it with a cast and an alias, \
+        such as %s::<type> AS %s""";
 
     /**
      * The rejection of an aliased returned wildcard, which is written as the
@@ -2716,6 +2720,7 @@ public final class QueryAnalyzer {
             columns = resolveReturningColumns(
                 returningClause,
                 List.of(source),
+                schema,
                 analysis.wildcards()
             );
             rowTable = resolveReturningRowTable(returningClause, List.of(source));
@@ -2763,7 +2768,12 @@ public final class QueryAnalyzer {
         String rowTable = null;
 
         if (returningClause != null) {
-            columns = resolveReturningColumns(returningClause, sources, analysis.wildcards());
+            columns = resolveReturningColumns(
+                returningClause,
+                sources,
+                schema,
+                analysis.wildcards()
+            );
             rowTable = resolveReturningRowTable(returningClause, sources);
         }
 
@@ -2812,7 +2822,12 @@ public final class QueryAnalyzer {
         String rowTable = null;
 
         if (returningClause != null) {
-            columns = resolveReturningColumns(returningClause, sources, analysis.wildcards());
+            columns = resolveReturningColumns(
+                returningClause,
+                sources,
+                schema,
+                analysis.wildcards()
+            );
             rowTable = resolveReturningRowTable(returningClause, sources);
         }
 
@@ -2890,6 +2905,7 @@ public final class QueryAnalyzer {
     private List<QueryColumn> resolveReturningColumns(
         ReturningClause returningClause,
         List<Source> sources,
+        Schema schema,
         Wildcards wildcards
     ) {
         if (
@@ -2910,6 +2926,7 @@ public final class QueryAnalyzer {
                 resolveReturningItem(
                     returningItem,
                     sources,
+                    schema,
                     !wholeRow,
                     wildcards
                 )
@@ -2951,19 +2968,26 @@ public final class QueryAnalyzer {
     }
 
     /**
-     * Resolves one returned item, which is either a wildcard of the write
-     * target or a direct column of one of the write's sources, whose alias
-     * names its result component. A computed item, a subscripted reference
-     * included, has no schema type to generate, so it is rejected instead of
-     * analyzed.
+     * Resolves one returned item, which is a wildcard of the write target, a
+     * direct column of one of the write's sources, or an aliased cast, whose
+     * alias names its result component. Every other computed item, a
+     * subscripted reference included, has no type to generate, so it is
+     * rejected naming the cast that states one.
      *
      * <p>A returned column of a null-extended source is nullable even when its
      * schema declaration is not, because an unmatched row reads it as
      * {@code NULL}.
+     *
+     * <p>A returned cast is typed and its nullness read by the rule a cast
+     * projection carries, against the write's sources. {@code RETURNING} names
+     * one result column per item and accepts no aggregate, so the alias is
+     * required here, where the cast as the query writes it names the fix,
+     * rather than by that rule, whose example names an aggregate.
      */
     private List<QueryColumn> resolveReturningItem(
         SelectItem<?> returningItem,
         List<Source> sources,
+        Schema schema,
         boolean embedRow,
         Wildcards wildcards
     ) {
@@ -2998,8 +3022,24 @@ public final class QueryAnalyzer {
             );
         }
 
+        if (expression instanceof CastExpression cast && cast.getColDataType() != null) {
+            if (alias == null) {
+                throw new UnsupportedOperationException(
+                    FUNCTION_ALIAS_REJECTION.formatted(written(cast), written(cast))
+                );
+            }
+
+            return List.of(
+                toQueryColumn(castColumn(cast, alias, schema, Scope.of(sources), true))
+            );
+        }
+
         throw new UnsupportedOperationException(
-            COMPUTED_RETURNING_REJECTION.formatted(written(expression))
+            COMPUTED_RETURNING_REJECTION.formatted(
+                written(expression),
+                castOperand(expression),
+                hintAlias(alias)
+            )
         );
     }
 
