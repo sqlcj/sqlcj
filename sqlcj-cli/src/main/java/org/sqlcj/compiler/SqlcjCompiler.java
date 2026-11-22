@@ -92,12 +92,13 @@ public final class SqlcjCompiler {
      * <p>The manifest of the previous run of this package is read before the
      * first write, and the files it lists that this run did not produce are
      * deleted before the new manifest replaces it, so a failed write or cleanup
-     * keeps the previous manifest for the next run.
+     * keeps the previous manifest for the next run. A manifest a reader edited
+     * past its owner line is reported instead, before anything is written.
      *
      * <p>Both ownership checks run before the first write: a package another
-     * configuration file generated is never regenerated, and a file the
-     * previous manifest does not list is overwritten only when it carries the
-     * generated-code notice.
+     * configuration file generated is never regenerated, and a file at a
+     * generated path is overwritten only when it carries the generated-code
+     * notice, whether or not the previous manifest lists it.
      */
     public void compile(Config config, Path configFile) {
         List<Source> sources = sourceLoader.load(config);
@@ -116,11 +117,11 @@ public final class SqlcjCompiler {
 
         checkOwner(previous, outputDirectory, packageName, configuration);
 
+        checkHandWritten(files, outputDirectory);
+
         List<String> previousEntries = previous
             .map(GeneratedOutputManifest.Contents::entries)
             .orElse(List.of());
-
-        checkHandWritten(files, previousEntries, outputDirectory);
 
         for (GeneratedFile file : files) {
             write(file, outputDirectory);
@@ -163,19 +164,12 @@ public final class SqlcjCompiler {
 
     /**
      * Rejects the first generated path, in generation order, that holds a file
-     * the previous manifest does not list and that sqlcj did not write, as
-     * every other pre-write check stops at its first failure.
+     * sqlcj did not write, as every other pre-write check stops at its first
+     * failure. The previous manifest's entries do not excuse a path, so an
+     * entry a reader added by hand cannot cost a hand-written file.
      */
-    private void checkHandWritten(
-        List<GeneratedFile> files,
-        List<String> previousEntries,
-        Path outputDirectory
-    ) {
+    private void checkHandWritten(List<GeneratedFile> files, Path outputDirectory) {
         for (GeneratedFile file : files) {
-            if (generatedOutputManifest.lists(previousEntries, file.path())) {
-                continue;
-            }
-
             if (isReplaceable(file, outputDirectory)) {
                 continue;
             }

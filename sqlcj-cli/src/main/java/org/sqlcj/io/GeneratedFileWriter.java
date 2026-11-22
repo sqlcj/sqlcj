@@ -1,15 +1,11 @@
 package org.sqlcj.io;
 
 import org.sqlcj.generator.GeneratedFile;
-import org.sqlcj.generator.JavaCodeGenerator;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.Arrays;
 
 public final class GeneratedFileWriter {
 
@@ -26,17 +22,7 @@ public final class GeneratedFileWriter {
             return true;
         }
 
-        byte[] notice = JavaCodeGenerator.GENERATED_NOTICE.getBytes(StandardCharsets.UTF_8);
-
-        try (InputStream source = Files.newInputStream(outputFile)) {
-            return Arrays.equals(notice, source.readNBytes(notice.length));
-        } catch (IOException e) {
-            throw new IOException(
-                "Cannot read existing output file: %s: %s"
-                    .formatted(outputFile, FileSystemReason.of(e)),
-                e
-            );
-        }
+        return GeneratedNotice.begins(outputFile);
     }
 
     public void write(GeneratedFile file, Path outputDirectory) throws IOException {
