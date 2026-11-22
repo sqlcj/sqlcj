@@ -280,9 +280,10 @@ configuration entry.
   name renames the column of its own position, which keeps the type, enum type,
   array, blank-padded spelling, and nullability its `SELECT` states, and the
   columns past a shorter list keep the names that `SELECT` states. A position
-  the list names takes its name from the list, so an aggregate or a cast written
-  there needs no alias of its own, while every later position still requires
-  one. A list that names more columns than its `SELECT` returns is rejected as
+  the list names takes its name from the list, so a cast written there needs no
+  alias of its own, while every later position still requires one, and an
+  aggregate past the list keeps the name PostgreSQL gives its column. A list
+  that names more columns than its `SELECT` returns is rejected as
   `The column list of <name> names <m> columns, but its SELECT returns only
   <n>.`
 - A column list on a subquery alias, such as `(SELECT ...) AS s(n)`, is
@@ -552,8 +553,8 @@ configuration entry.
   sqlcj itself resolves an alias only in the projection; every other clause
   reaches the database as written.
 
-A read may aggregate its matching rows with an aliased `COUNT`, `MIN`, `MAX`,
-`SUM`, or `AVG`, none of which needs a cast:
+A read may aggregate its matching rows with a `COUNT`, `MIN`, `MAX`, `SUM`, or
+`AVG`, none of which needs a cast or an alias:
 
 ```sql
 -- name: CountAuthors :one
@@ -582,13 +583,28 @@ GROUP BY r.author_id;
   exactly one argument. `DISTINCT` or `ALL` may stand before the argument,
   except before `*`: `COUNT(DISTINCT *)` and `COUNT(ALL *)` are rejected,
   because PostgreSQL's grammar admits `*` alone.
-- The alias is required and may be written with or without `AS`, so both
-  `COUNT(*) AS total` and `COUNT(*) total` name the result column `total`,
-  which the `:one` read above, whose result is that non-null column alone,
-  returns as a `Long`. A missing alias is
-  rejected with `<aggregate> requires a result alias, such as <aggregate> AS
-  total.`, naming the aggregate as the query writes it, which for `COUNT(*)` is
-  `COUNT(*) requires a result alias, such as COUNT(*) AS total.`
+- An alias may be written with or without `AS`, so both `COUNT(*) AS total` and
+  `COUNT(*) total` name the result column `total`, which the `:one` read above,
+  whose result is that non-null column alone, returns as a `Long`.
+- An aggregate written without an alias takes the name PostgreSQL gives its
+  column: the function's own name in lower case, whatever case the query writes
+  and with or without `DISTINCT`, `ALL`, or `FILTER`, so `count`, `min`, `max`,
+  `sum`, or `avg`. That name is both the Java component name and the name
+  PostgreSQL stores, so `SELECT count(*) FROM users` is a `:one` read of one
+  non-null `Long` named `count`, `SELECT active, count(*) FROM users GROUP BY
+  active` returns an `active` and a `count` component in that order, and a
+  derived source exposes the column under that name, as
+  `SELECT s.count FROM (SELECT count(*) FROM users) s` and a wildcard of such a
+  source both read it.
+- An unaliased aggregate whose name another result column of the same
+  projection already takes, compared ignoring case and counting the columns a
+  wildcard expands, is rejected with `<aggregate> requires a result alias, such
+  as <aggregate> AS total.`, naming the first such aggregate the projection
+  writes as the query writes it, so `SELECT id AS count, COUNT(*) FROM users
+  GROUP BY id` is rejected as
+  `COUNT(*) requires a result alias, such as COUNT(*) AS total.` An alias on
+  either column resolves it, because PostgreSQL itself returns the repeated
+  name.
 - A `COUNT` is a non-null `Long` whatever it counts, because `count` returns
   `bigint` and counts `0` rows rather than none, so `COUNT(*)`,
   `COUNT(column)`, `COUNT(DISTINCT column)`, `COUNT(<source>.*)`, and
@@ -630,12 +646,22 @@ GROUP BY r.author_id;
   the grouping is valid.
 - An aggregate is accepted over any supported source, predicate, ordering, and
   pagination shape, and under any annotation.
+- A `COUNT` of one argument written with `FILTER (WHERE ...)` and without
+  `OVER` is the non-null `Long` a plain `COUNT` is, under the same argument
+  rules and the same naming, so `count(*) FILTER (WHERE active)` is a non-null
+  `Long` named `count` while `count(*) FILTER (WHERE active) AS n` names it
+  `n`, and `COUNT(DISTINCT name) FILTER (...)` and `COUNT(u.*) FILTER (...)`
+  are counted as their plain forms are. The condition is no result expression
+  and reaches the database as written, so PostgreSQL rather than sqlcj checks
+  it.
 - Every other aggregate is still an unsupported result expression, including a
   qualified `pg_catalog.count(*)` or `pg_catalog.max(id)`, an aggregate of two
   arguments, a subscripted argument such as `MIN(labels[1])`, a `SUM` or `AVG`
-  of a column of any other type or of an array column, and the `FILTER` and
-  `OVER` forms. A cast states the type of such a form, and a `COUNT` written
-  with `FILTER` is non-null as a plain one is, so
+  of a column of any other type or of an array column, a `FILTER` on anything
+  but a `COUNT` of one argument, such as `SUM(id) FILTER (WHERE active)` or
+  `COUNT(DISTINCT *) FILTER (WHERE active)`, and the `OVER` form, a filtered
+  `COUNT` written with `OVER` included. A cast states the type of such a form,
+  and a cast over a filtered `COUNT` is non-null as the count itself is, so
   `count(*) FILTER (WHERE active)::bigint AS n` is a non-null `Long`.
 
 A read may also project a call of the built-in PostgreSQL functions sqlcj holds
@@ -736,15 +762,17 @@ returns:
   every other mix is left untyped, because PostgreSQL resolves it by argument
   order, so `coalesce(nickname, name)` of a `varchar` and a `text` column needs
   a cast.
-- The alias is required wherever an aggregate's is and may be written with or
-  without `AS`, so both `lower(name) AS lowered` and `lower(name) lowered` name
-  the result column `lowered`. A missing alias is rejected with
+- The alias is required and may be written with or without `AS`, so both
+  `lower(name) AS lowered` and `lower(name) lowered` name the result column
+  `lowered`. A missing alias is rejected with
   `<call> requires a result alias, such as <call> AS <alias>.`, naming the call
   as the query writes it, and the type is resolved first, so a call the
-  catalogue types no result of says why instead. As an aggregate's alias is, it
-  is required only where the projection names the result columns, so a branch of
-  a set operation other than the leftmost and a position a column list on a
-  `WITH` name renames may write a catalogue call without one.
+  catalogue types no result of says why instead. As a cast's alias is, it is
+  required only where the projection names the result columns, so a branch of a
+  set operation other than the leftmost and a position a column list on a
+  `WITH` name renames may write a catalogue call without one. An aggregate
+  needs no alias at all, but a catalogue call still names no result column of
+  its own.
 - A cast over a catalogue call states the type and keeps the cast's own nullness
   rule, so `nextval('audit_log_id_seq')::bigint AS next_id` stays a nullable
   `Long` while `nextval('audit_log_id_seq') AS next_id` is a non-null `Long`.
@@ -822,10 +850,10 @@ WHERE u.name = :name;
   `EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id) ordered` is
   equivalent. An `EXISTS` projection without an alias is rejected with
   `An EXISTS projection requires a result alias, such as EXISTS (SELECT 1 FROM
-  ...) AS present.` As an aggregate's and a cast's alias is, it is required
-  only where the projection names the result columns, so a branch of a set
-  operation other than the leftmost and a position a column list on a `WITH`
-  name renames may write an `EXISTS` without one.
+  ...) AS present.` As a cast's alias is, it is required only where the
+  projection names the result columns, so a branch of a set operation other
+  than the leftmost and a position a column list on a `WITH` name renames may
+  write an `EXISTS` without one.
 - The subquery is analyzed exactly as the subquery of an `EXISTS` predicate is,
   as the level inside the level the projection stands in: its own `SELECT` list
   states no result column of the query, its references resolve through its own
@@ -1326,9 +1354,12 @@ LIMIT $1;
   `Every branch of a set operation must select the same number of columns; the
   first selects 2 and branch 2 selects 1.`
 - The result takes the **leftmost branch's column names**, so only that branch
-  must name every component of its own projection: a cast or an aggregate of
-  any other branch may be written without an alias, as in
+  must name every component of its own projection: a cast of any other branch
+  may be written without an alias, as in
   `SELECT name AS label FROM users UNION SELECT 'unknown'::text FROM profiles`.
+  An aggregate needs no alias in any branch, and one in the leftmost branch
+  names the result column after the name PostgreSQL gives it, so
+  `SELECT COUNT(*) FROM users UNION SELECT visits FROM users` names it `count`.
 - Each column's type is the type PostgreSQL resolves the branches' types to
   wherever sqlcj states it exactly:
 
@@ -3139,10 +3170,11 @@ header-line order, before the run exits with status `1` having written nothing.
   column types resolve to no single type, whose `ORDER BY` names no result
   column, or which is written with `MINUS`, each with the diagnostic
   [Set operations](#set-operations) states.
-- A result expression that is not a direct column, a wildcard, an aliased
-  `COUNT`, `MIN`, `MAX`, `SUM`, or `AVG` of one argument, an aliased call of
-  the function catalogue, an aliased cast, or an aliased `EXISTS` of a
-  subquery, including a function outside the catalogue and a literal. An aggregate without an alias, a cast projection without an alias,
+- A result expression that is not a direct column, a wildcard, a `COUNT`,
+  `MIN`, `MAX`, `SUM`, or `AVG` of one argument, a `COUNT` of one argument
+  written with `FILTER (WHERE ...)`, an aliased call of the function catalogue,
+  an aliased cast, or an aliased `EXISTS` of a subquery, including a function
+  outside the catalogue and a literal. A cast projection without an alias,
   an `EXISTS` projection without an alias, a cast projection whose type sqlcj
   does not map, and a `MIN`, `MAX`, `SUM`, or `AVG` of a column whose type
   sqlcj does not map each fail with their own diagnostic, while
@@ -3150,14 +3182,17 @@ header-line order, before the run exits with status `1` having written nothing.
   `pg_catalog.max(id)`, `MAX(id, name)`, `MIN(labels[1])`, `MAX(active)`,
   `MIN(external_id)`, `SUM(bio)`, `SUM(labels)`, `initcap(name) AS n`,
   `lower(visits) AS n`, `name || 'x' AS n`, `NOT EXISTS (SELECT 1 FROM users) AS missing`,
-  `EXISTS (SELECT 1 FROM users)::boolean AS present`, and the `FILTER` and
-  `OVER` forms are rejected as
+  `EXISTS (SELECT 1 FROM users)::boolean AS present`, a `FILTER` on anything
+  but a `COUNT` of one argument, and the `OVER` forms are rejected as
   `Cannot infer the type of COUNT(*) OVER () in SELECT; state it with a cast
   and an alias, such as (COUNT(*) OVER ())::<type> AS n`. A branch of a set
   operation other than the leftmost names no result column, and a position a
-  column list on a `WITH` name renames is named by that list, so an aggregate,
-  a cast, and an `EXISTS` in either place may omit the alias each requires
-  elsewhere.
+  column list on a `WITH` name renames is named by that list, so a cast and an
+  `EXISTS` in either place may omit the alias each requires elsewhere.
+- An unaliased aggregate whose column name another result column of the same
+  projection takes, rejected as
+  `<aggregate> requires a result alias, such as <aggregate> AS total.`, as
+  [Aggregates](#aggregates) states.
 - An `EXISTS` projection without a result alias, rejected as
   `An EXISTS projection requires a result alias, such as EXISTS (SELECT 1 FROM
   ...) AS present.`
@@ -3723,15 +3758,32 @@ Reads:
   `QueryAnalyzerTest.shouldTypeExtremumAggregateOfAnEnumColumn`,
   `QueryAnalyzerTest.shouldTypeExtremumAggregateOfAnArrayColumn`,
   `QueryAnalyzerTest.shouldTypeSumAndAverageByTheirColumnType`,
-  `QueryAnalyzerTest.shouldReadAnAggregateColumnThroughADerivedSource`,
-  `QueryAnalyzerTest.shouldRejectAnAggregateWithoutAResultAlias`, and
+  `QueryAnalyzerTest.shouldReadAnAggregateColumnThroughADerivedSource`, and
   `QueryAnalyzerTest.shouldRejectUnsupportedAggregateProjectionForm` cover a
   count of a column, a `DISTINCT`, an `ALL`, a qualified wildcard, an unmapped
   column, and an expression argument, a count of a left-joined column, every
   `MIN` and `MAX` input including an enum, an array, and a blank-padded
   column, every `SUM` and `AVG` mapping, an aggregate read through a `WITH`
-  body and through a subquery source, the missing-alias diagnostic in upper
-  and lower case, and the aggregate forms that stay rejected, and
+  body and through a subquery source, and the aggregate forms that stay
+  rejected,
+  `QueryAnalyzerTest.shouldNameAnUnaliasedAggregateAfterItsFunction`,
+  `QueryAnalyzerTest.shouldNameAnUnaliasedAggregateBesideAGroupedColumn`,
+  `QueryAnalyzerTest.shouldExposeAnUnaliasedAggregateUnderItsStoredName`,
+  `QueryAnalyzerTest.shouldNameAnUnaliasedAggregatePastAShorterColumnList`,
+  `QueryAnalyzerTest.shouldNameAnUnaliasedAggregateInTheLeftmostBranch`, and
+  `QueryAnalyzerTest.shouldRejectAnUnaliasedAggregateWhoseNameAnotherColumnTakes`
+  cover each unaliased aggregate's name, type, and nullness, its position
+  beside a grouped column, the stored name a subquery source and a `WITH`
+  wildcard read it under, a position past a shorter column list, the leftmost
+  branch of a set operation, and the name a direct column, another aggregate,
+  or a derived source's wildcard already takes, in either order and compared
+  ignoring case,
+  `QueryAnalyzerTest.shouldTypeAFilteredCountAsANonNullBigint` covers the
+  filtered `COUNT` with and without an alias, of a `DISTINCT` column, of a
+  column, and of a qualified wildcard, and
+  `SqlcjCompilerIntegrationTest.shouldGenerateCompilableJavaForUnaliasedAggregateProjections`
+  compiles a `:one` count, a `:one` filtered count, and a grouped count into
+  the `Long` return and the `count` component they name, while
   `PostgresIntegrationTest.shouldExecuteGeneratedScalarCountAgainstPostgres`
   compiles a `:one` count into a result record with one `Long` component and
   executes it against PostgreSQL 16 for a matching and a non-matching pattern,
@@ -3743,7 +3795,12 @@ Reads:
   executes an uncast `COUNT`, `COUNT(DISTINCT ...)`, `MIN`, `MAX`, `SUM`, and
   `AVG` read into its `Long`, `LocalDateTime`, and `BigDecimal` components and
   reads the counts as `0` and every other component as `null` over no matching
-  row.
+  row, and
+  `PostgresIntegrationTest.shouldExecuteGeneratedUnaliasedAggregatesAgainstPostgres`
+  executes an unaliased `count`, `max`, `avg`, and filtered count read through
+  a `WITH` body's wildcard, and a `:one` unaliased count of its own, against
+  PostgreSQL 16, so the names PostgreSQL gives those columns are the names the
+  statement reads them under.
 - `QueryAnalyzerTest.shouldTypeACatalogueCallOfAFixedResultType`,
   `QueryAnalyzerTest.shouldTypeATextCatalogueCallFromItsArguments`,
   `QueryAnalyzerTest.shouldTypeDateTruncFromItsValueAndItsTimeZone`,
@@ -4022,6 +4079,7 @@ Reads:
   `QueryAnalyzerTest.shouldAcceptMaterializedCommonTableExpression`,
   `QueryAnalyzerTest.shouldRenameCommonTableExpressionColumnsByItsColumnList`,
   `QueryAnalyzerTest.shouldRenameOnlyTheLeadingColumnsOfAShorterColumnList`,
+  `QueryAnalyzerTest.shouldNameAnUnaliasedAggregatePastAShorterColumnList`,
   `QueryAnalyzerTest.shouldNameAnUnaliasedAggregateAndCastFromTheColumnList`,
   `QueryAnalyzerTest.shouldResolveARepeatedBodyColumnNameWithAColumnList`,
   `QueryAnalyzerTest.shouldRejectAnOuterSourceReferenceInsideASubquerySource`, and
@@ -4035,12 +4093,12 @@ Reads:
   order across a `WITH` body, a subquery source, and the outer query, a clause
   read only inside a predicate subquery, the accepted `MATERIALIZED` spellings,
   a column list that renames a `WITH` name's columns by position, a shorter one
-  that renames the leading column alone, an unaliased aggregate and cast named
-  by the list, a repeated body name the list resolves, the outer source a
+  that renames the leading column alone, an unaliased aggregate past such a
+  list read under the name PostgreSQL gives it, an unaliased aggregate and cast
+  named by the list, a repeated body name the list resolves, the outer source a
   subquery body does not see, and every rejected derived-source and `WITH`
-  form, including a list longer than its body, an unaliased aggregate past a
-  list, a repeated name the list itself states, and a data-modifying body
-  reported without an internal error;
+  form, including a list longer than its body, a repeated name the list itself
+  states, and a data-modifying body reported without an internal error;
   `SqlcjCompilerIntegrationTest.shouldGenerateCompilableJavaForDerivedSources`
   compiles a repository over a left-joined `WITH` report and a paged subquery
   source, and
@@ -4135,6 +4193,7 @@ Reads:
   `QueryAnalyzerTest.shouldRejectDifferentSetOperationColumnCounts`,
   `QueryAnalyzerTest.shouldRejectMinus`,
   `QueryAnalyzerTest.shouldAcceptAnUnaliasedCastOrAggregateOutsideTheLeftmostBranch`,
+  `QueryAnalyzerTest.shouldNameAnUnaliasedAggregateInTheLeftmostBranch`,
   `QueryAnalyzerTest.shouldRequireAResultAliasInTheLeftmostBranch`,
   `QueryAnalyzerTest.shouldReturnTheSharedRowRecordWhenEveryBranchReturnsOneTablesRow`,
   `QueryAnalyzerTest.shouldReturnFlatColumnsWhenABranchReturnsItsOwnResult`,
@@ -4155,8 +4214,9 @@ Reads:
   own operator and of `INTERSECT` grouped before `UNION` and `EXCEPT`, every
   widening rule in both branch orders, one identical enum and array type, every
   type and column-count rejection with its spelled types, `MINUS`, the
-  unaliased cast and aggregate of a later branch beside the alias the leftmost
-  branch still requires, the shared row record of whole-row branches and the
+  unaliased cast and aggregate of a later branch beside the cast alias the
+  leftmost branch still requires and the name an unaliased aggregate takes
+  there, the shared row record of whole-row branches and the
   flat columns of every other result, the textual binding order across branches
   and the trailing page, the orderings named by column, by position, and by an
   unknown or qualified reference, the `WITH` clause every branch reads, a
