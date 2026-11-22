@@ -2787,6 +2787,83 @@ class PostgresIntegrationTest {
     }
 
     /**
+     * Covers a returned cast end to end: an upsert that returns
+     * {@code (xmax = 0)::boolean AS inserted}, the idiom that reports whether
+     * the row was inserted or updated, is typed by its cast and reads
+     * {@code true} on the first call and {@code false} on the conflicting one,
+     * beside a direct column and beside the target wildcard, whose component is
+     * the shared row record.
+     */
+    @Test
+    void shouldExecuteGeneratedCastReturningItemsAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile("""
+            -- name: UpsertUserFlag :one
+            INSERT INTO users (id, code, name)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (id) DO UPDATE
+            SET name = EXCLUDED.name
+            RETURNING id, (xmax = 0)::boolean AS inserted;
+
+            -- name: UpsertUserRowFlag :one
+            INSERT INTO users (id, code, name)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (id) DO UPDATE
+            SET name = EXCLUDED.name
+            RETURNING *, (xmax = 0)::boolean AS inserted;
+            """);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Method upsertFlag = repository.getClass().getMethod(
+                "upsertUserFlag",
+                Long.class,
+                Integer.class,
+                String.class
+            );
+
+            assertEquals("UpsertUserFlagResult", upsertFlag.getReturnType().getSimpleName());
+
+            Object created = upsertFlag.invoke(repository, 1L, 10, "First");
+
+            assertEquals(List.of("id", "inserted"), recordComponentNames(created));
+
+            assertEquals(1L, component(created, "id"));
+            assertEquals(true, component(created, "inserted"));
+
+            Object conflicted = upsertFlag.invoke(repository, 1L, 11, "Second");
+
+            assertEquals(1L, component(conflicted, "id"));
+            assertEquals(false, component(conflicted, "inserted"));
+
+            Method upsertRowFlag = repository.getClass().getMethod(
+                "upsertUserRowFlag",
+                Long.class,
+                Integer.class,
+                String.class
+            );
+
+            Object createdRow = upsertRowFlag.invoke(repository, 2L, 20, "Third");
+
+            assertEquals(List.of("users", "inserted"), recordComponentNames(createdRow));
+
+            Object row = component(createdRow, "users");
+
+            assertEquals("UsersRow", row.getClass().getSimpleName());
+            assertEquals(2L, component(row, "id"));
+            assertEquals(20, component(row, "code"));
+            assertEquals("Third", component(row, "name"));
+            assertEquals(true, component(createdRow, "inserted"));
+
+            Object conflictedRow = upsertRowFlag.invoke(repository, 2L, 21, "Fourth");
+
+            assertEquals("Fourth", component(component(conflictedRow, "users"), "name"));
+            assertEquals(20, component(component(conflictedRow, "users"), "code"));
+            assertEquals(false, component(conflictedRow, "inserted"));
+        }
+    }
+
+    /**
      * Covers the conflict clauses that name no column target end to end: a
      * {@code DO NOTHING} without a target, a named constraint with either
      * action, a conflict-target predicate selecting a partial unique index, and

@@ -3675,8 +3675,9 @@ class SqlcjCompilerIntegrationTest {
             Arguments.of(
                 ":one",
                 "DELETE FROM users WHERE id = $1 RETURNING lower(name)",
-                "Unsupported RETURNING item lower(name);"
-                    + " return columns of the target table or *"
+                "Cannot infer the type of lower(name) in RETURNING;"
+                    + " state it with a cast and an alias,"
+                    + " such as lower(name)::<type> AS <alias>"
             ),
             Arguments.of(
                 ":many",

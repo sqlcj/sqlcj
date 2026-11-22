@@ -1776,11 +1776,12 @@ collation or an operator class.
 ### `RETURNING`
 
 A supported `INSERT`, `UPDATE`, or `DELETE` declared `:one`, `:optional`, or
-`:many` may end with a `RETURNING` clause that lists either:
+`:many` may end with a `RETURNING` clause that lists any of:
 
 - direct columns of the write's sources — the target and, on a joined write,
   every source its `FROM` or `USING` clause adds — in the order they are
-  declared, or
+  declared,
+- an expression with a cast and a result alias, which the cast types, or
 - a wildcard of the target, which returns the target table's complete row: a
   bare `*` on a single-table write, and `<target>.*` on any write, written with
   the name the target exposes, which is its alias when the write declares one.
@@ -1795,6 +1796,27 @@ which names its result component exactly as a `SELECT` item's alias does, while
 its type comes from the schema column and its nullability from that column and
 its source, so a column of a null-extended source is nullable.
 
+A returned cast is typed and named exactly as a cast
+[projection](#projections) is: the result column takes the cast type, which may
+be a declared enum type or a one-dimensional array, its component is named after
+the required alias, and it is non-null only where the cast's operand is one
+sqlcj knows reads no `NULL`, resolved against the write's sources. So an
+upsert's `RETURNING id, (xmax = 0)::boolean AS inserted` returns a non-null
+`Long id` beside a nullable `Boolean inserted`, while `RETURNING id::text AS v`
+of a `NOT NULL` target column is non-null. The operand reaches the database as
+written, so PostgreSQL rather than sqlcj checks it, and a placeholder a cast
+inside the clause types binds in the statement's textual order like any other.
+A cast written beside a target wildcard is one result column after the embedded
+row, so `RETURNING *, (xmax = 0)::boolean AS inserted` returns `UsersRow users`
+beside `Boolean inserted`.
+
+A returned cast names one result component, so it requires an alias: written
+without one it is rejected as
+`<cast> requires a result alias, such as <cast> AS <alias>.`, naming the cast as
+the query writes it, and a cast type sqlcj does not map is rejected as
+`Result column '<name>' has unsupported cast type <T>`, exactly as a cast
+projection reports it.
+
 A returning write produces the same result shape, positional row mapper, and
 cardinality behavior as a read, so a database-generated `SERIAL` or `BIGSERIAL`
 value is read back with its declared type. A clause that is exactly a wildcard
@@ -1806,14 +1828,15 @@ column that cannot be NULL returns that column's value, so a `:one`
 `RETURNING id` of a `BIGSERIAL`, identity, or primary-key column returns
 `Long`, and of a `uuid` key returns `UUID`.
 
-An unknown column and `RETURNING` on `:exec` are rejected, and a computed
-`RETURNING` item, with or without an alias, is rejected as
-`Unsupported RETURNING item <expression>; return columns of the target table or *`,
-naming the expression as the query writes it, on one line. A cast does not make
-such an item supported, because a `RETURNING` clause returns columns of the
-write's sources. A reference written with an array subscript or slice, such as
-`RETURNING labels[1]` or `RETURNING labels[1:2] AS pair`, is not a direct
-column either, so it is rejected as a computed item, with or without an alias.
+An unknown column and `RETURNING` on `:exec` are rejected, and every other
+computed `RETURNING` item, with or without an alias, is rejected as
+`Cannot infer the type of <expression> in RETURNING; state it with a cast and an
+alias, such as <operand>::<type> AS <alias>`, naming the expression as the query
+writes it and the cast that states its type, under the query's own alias where
+it writes one, on one line. A reference written with an array subscript or
+slice, such as `RETURNING labels[1]` or `RETURNING labels[1:2] AS pair`, is not
+a direct column either, so it is rejected as a computed item, with or without an
+alias, and `RETURNING labels[1]::text AS first` states its type.
 
 A wildcard returns the complete row of the target alone, so:
 
@@ -3228,15 +3251,17 @@ header-line order, before the run exits with status `1` having written nothing.
   `DO UPDATE ... WHERE stages.labels[1] = $1`, `SET labels[1] = $1`, and
   `INSERT INTO stages (id, labels[1]) VALUES ($1, $2)` — as an unanalyzed
   placeholder location, where neither a cast nor another occurrence of the same
-  parameter states its type. A cast states the type in each of those locations,
-  as does another occurrence of the same parameter that a clause or a cast
+  parameter states its type. A cast states the type in each of those
+  locations — in a projection and in `RETURNING` with a result alias — as does
+  another occurrence of the same parameter that a clause or a cast
   types, so `WHERE labels[1] = :l AND name = :l` executes
   `labels[1] = ?::varchar`, and the array column of a subscripted write target
   must still exist.
 - A cast type sqlcj does not map, such as `$1::money` or a
   multi-dimensional `$1::int[][]`, which is rejected naming the placeholder and
   the declared type, or the result column and the declared type when the cast
-  is a projection such as `id::money AS i`.
+  names a result column, as the projection `id::money AS i` and the returned
+  `RETURNING id::money AS i` do.
 - A `LIKE`-family pattern placeholder that is negated, uses another keyword such
   as `SIMILAR TO`, carries an `ESCAPE` clause or a `BINARY` modifier, tests a
   non-text column, or stands as the tested value. These restrict the uncast
@@ -3275,7 +3300,8 @@ header-line order, before the run exits with status `1` having written nothing.
   `EXCLUDED` carry, or a predicate column qualified with a name its own
   predicate does not read, such as `EXCLUDED` in a conflict-target predicate.
 - An aliased or modified `RETURNING` wildcard, a wildcard of a source other
-  than the write target, a bare `*` on a joined write, and a computed or
+  than the write target, a bare `*` on a joined write, a returned cast without
+  a result alias or of a cast type sqlcj does not map, and a computed or
   unknown `RETURNING` item, and `RETURNING` on `:exec`; each is rejected as
   [`RETURNING`](#returning) states.
 - `RETURNING` on `:batchexec`, rejected as
@@ -4267,6 +4293,26 @@ Writes and `RETURNING`:
   `PostgresIntegrationTest.shouldExecuteGeneratedAliasedReturningWritesAgainstPostgres`
   executes the three aliased returning writes against PostgreSQL 16 and reads
   the aliased components.
+- `QueryAnalyzerTest.shouldTypeACastReturningItemByItsCast`,
+  `QueryAnalyzerTest.shouldEmbedTheTargetRowBesideACastReturningItem`,
+  `QueryAnalyzerTest.shouldResolveNullnessOfACastReturningItem`,
+  `QueryAnalyzerTest.shouldResolveEnumCastReturningItem`,
+  `QueryAnalyzerTest.shouldResolveArrayCastReturningItem`, and
+  `QueryAnalyzerTest.shouldRejectUnsupportedCastReturningItem` cover the
+  returned cast: both cast spellings and both alias spellings beside a direct
+  column, the target wildcard whose row is embedded before it, the nullness read
+  from a `NOT NULL` target column, an added source's column, a null-extended
+  source's column, and a nullable column, the enum and array cast types, and the
+  missing alias and unmapped cast type that are rejected, while
+  `QueryAnalyzerTest.shouldRejectUnsupportedReturningItem` and
+  `QueryAnalyzerTest.shouldRejectASubscriptedReturningItem` cover the
+  arithmetic, function-call, subscripted, and sliced items that are rejected
+  naming the cast that states their type, with and without an alias, and
+  `PostgresIntegrationTest.shouldExecuteGeneratedCastReturningItemsAgainstPostgres`
+  executes an upsert's `RETURNING id, (xmax = 0)::boolean AS inserted` and
+  `RETURNING *, (xmax = 0)::boolean AS inserted` against PostgreSQL 16, over a
+  new row and then a conflicting one, and reads the generated signature, the
+  embedded row record, and the flag.
 - `QueryAnalyzerTest.shouldAnalyzeInsertWithNonBindingValues`,
   `QueryAnalyzerTest.shouldAnalyzeNamedInsertWithNonBindingValues`,
   `QueryAnalyzerTest.shouldAnalyzeReturningInsertWithNonBindingValues`,
@@ -4550,8 +4596,9 @@ Parameters:
   `QueryAnalyzerTest.shouldRejectAnUnknownSubscriptedWriteTarget`, and
   `QueryAnalyzerTest.shouldAnalyzeALiteralAssignedToASubscriptedColumn` cover a
   subscripted and a sliced reference in qualified and unqualified spellings:
-  the projection and `RETURNING` rejections, the cast projection that states its
-  type, the untyped-placeholder diagnostic in each typing location, the name a
+  the projection and `RETURNING` rejections, each naming the cast that states
+  the type, the cast projection that states it,
+  the untyped-placeholder diagnostic in each typing location, the name a
   cast placeholder keeps beside one, the write target whose array column must
   exist, and the non-binding value assigned to one, and
   `PostgresIntegrationTest.shouldReadAndFilterASubscriptedArrayElement` executes
