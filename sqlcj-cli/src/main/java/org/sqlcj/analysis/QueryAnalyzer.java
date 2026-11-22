@@ -3626,6 +3626,10 @@ public final class QueryAnalyzer {
 
         List<Integer> bindingParameterIndexes = requireAccountedOccurrences(parsedSql, occurrences);
 
+        List<String> names = parsedSql.parameters().names();
+
+        List<QueryParameter> parameters = toParameters(occurrences, names);
+
         return new QueryModel(
             query.name(),
             query.type(),
@@ -3633,13 +3637,26 @@ public final class QueryAnalyzer {
             toExecutableSql(parsedSql, resolved, analysis.wildcards()),
             bindingParameterIndexes,
             columns,
-            toParameters(occurrences, parsedSql.parameters().names()),
+            parameters,
             rowTable,
             query.comment(),
             query.writtenSql(),
             query.line(),
-            query.parameterRecord()
+            query.parameterRecord(),
+            toPlaceholders(parameters, names)
         );
+    }
+
+    /**
+     * Writes the placeholder of each logical parameter of one query as the
+     * query source spells it, in logical parameter order, so that the generated
+     * documentation names the placeholder a method parameter or record
+     * component binds.
+     */
+    private List<String> toPlaceholders(List<QueryParameter> parameters, List<String> names) {
+        return parameters.stream()
+            .map(parameter -> describePlaceholder(parameter.index(), names))
+            .toList();
     }
 
     /**

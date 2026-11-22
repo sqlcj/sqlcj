@@ -39,6 +39,14 @@ import java.util.List;
  * @param parameterRecord          whether the query's header carries the
  *                                 {@code params} option, so that its
  *                                 parameters are one generated record
+ * @param placeholders             the placeholder of each logical parameter, in
+ *                                 the order of {@link #parameters()} and as the
+ *                                 query source writes it, such as {@code $1},
+ *                                 {@code :id}, and {@code :page.size}, which
+ *                                 the generated documentation names. A
+ *                                 {@code $N} parameter is named after its
+ *                                 column, so its placeholder cannot be
+ *                                 recovered from its name
  */
 public record QueryModel(
     String name,
@@ -52,8 +60,13 @@ public record QueryModel(
     List<String> comment,
     String writtenSql,
     int line,
-    boolean parameterRecord
+    boolean parameterRecord,
+    List<String> placeholders
 ) {
+
+    public QueryModel {
+        placeholders = List.copyOf(placeholders);
+    }
 
     /** A query documented by its executable SQL alone, at no known line. */
     public QueryModel(
@@ -109,5 +122,52 @@ public record QueryModel(
             line,
             false
         );
+    }
+
+    /**
+     * A query whose placeholders are the ones its parameters are written with
+     * by default: {@code :<group>.<name>} for a parameter of a group, which
+     * carries both, and {@code $<index>} for every other one.
+     */
+    public QueryModel(
+        String name,
+        QueryType type,
+        String table,
+        String executableSql,
+        List<Integer> bindingParameterIndexes,
+        List<QueryColumn> columns,
+        List<QueryParameter> parameters,
+        String rowTable,
+        List<String> comment,
+        String writtenSql,
+        int line,
+        boolean parameterRecord
+    ) {
+        this(
+            name,
+            type,
+            table,
+            executableSql,
+            bindingParameterIndexes,
+            columns,
+            parameters,
+            rowTable,
+            comment,
+            writtenSql,
+            line,
+            parameterRecord,
+            defaultPlaceholders(parameters)
+        );
+    }
+
+    /** The placeholder each parameter of a query is written with by default. */
+    private static List<String> defaultPlaceholders(List<QueryParameter> parameters) {
+        return parameters.stream()
+            .map(
+                parameter -> parameter.group() == null
+                    ? "$" + parameter.index()
+                    : ":" + parameter.group() + "." + parameter.name()
+            )
+            .toList();
     }
 }

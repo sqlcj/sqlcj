@@ -57,6 +57,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -7374,6 +7375,9 @@ class SqlcjCompilerIntegrationTest {
                          * </pre>
                          *
                          * <p>Defined at <code>sql/queries.sql:1</code>.
+                         *
+                         * @param page the values of <code>:page.term</code>, <code>:page.after</code>, and <code>:page.size</code>
+                         * @return every row the query returns, in the order the database returns them, or an empty list
                          */
                     """
                     .stripTrailing()
@@ -7392,6 +7396,11 @@ class SqlcjCompilerIntegrationTest {
                          * </pre>
                          *
                          * <p>Defined at <code>sql/queries.sql:12</code>.
+                         *
+                         * @param id the value of <code>:id</code>
+                         * @return the row the query returns, or empty when it returns none
+                         * @throws QueryCardinalityException if the query returns more than one row;
+                         *         the Spring Boot starter raises Spring's <code>IncorrectResultSizeDataAccessException</code> in its place
                          */
                     """
                     .stripTrailing()
@@ -7406,7 +7415,7 @@ class SqlcjCompilerIntegrationTest {
 
         Path documentation = tempDir.resolve("documentation");
 
-        assertJavadocReportsNoError(generatedDirectory, documentation);
+        assertJavadocReportsNoError(generatedDirectory, documentation, List.of());
 
         String page = decodeEntities(
             Files.readString(
@@ -7508,6 +7517,179 @@ class SqlcjCompilerIntegrationTest {
         new SqlcjCompiler().compile(new YamlConfigLoader().load(configFile), configFile);
     }
 
+    /**
+     * One project of a {@code :one}, an {@code :optional}, a {@code :many} with
+     * a parameter group and an alias a doc comment would read as markup, a
+     * single-value {@code :one}, an {@code :exec}, a {@code :batchexec}, and a
+     * query with the {@code params} option documents what each method binds,
+     * returns, and raises, and what each record component holds.
+     *
+     * <p>The generated tree compiles, {@code javadoc} reads it with every
+     * doclint check enabled and reports no error and no missing {@code @param}
+     * or {@code @return}, and the rendered pages show the parameters, the
+     * result, the cardinality failure, and the record components, with the
+     * escaped text as the query writes it.
+     */
+    @Test
+    void shouldDocumentTheParametersAndResultOfEachGeneratedMethod() throws Exception {
+        Path project = writeTaggedProject(tempDir.resolve("tagged"));
+
+        generateDocumentedProject(project);
+
+        Path generatedDirectory = project.resolve("generated");
+
+        assertCompiles(generatedDirectory, tempDir.resolve("tagged-classes"));
+
+        Path documentation = tempDir.resolve("tagged-documentation");
+
+        List<String> warnings = assertJavadocReportsNoError(
+            generatedDirectory,
+            documentation,
+            List.of("-Xdoclint:all", "-Xmaxwarns", "10000")
+        );
+
+        assertEquals(
+            List.of(),
+            warnings.stream()
+                .filter(warning -> warning.contains("no @param") || warning.contains("no @return"))
+                .toList()
+        );
+
+        String repositoryPage = Files.readString(
+            documentation.resolve("com/example/tags/repositories/NoteRepository.html")
+        );
+
+        assertTrue(repositoryPage.contains("Parameters:"), repositoryPage);
+        assertTrue(repositoryPage.contains("Returns:"), repositoryPage);
+        assertTrue(repositoryPage.contains("Throws:"), repositoryPage);
+
+        for (String rendered : TAGGED_RENDERED_TEXTS) {
+            assertTrue(repositoryPage.contains(rendered), rendered);
+        }
+
+        String resultPage = Files.readString(
+            documentation.resolve("com/example/tags/repositories/NoteRepository.ListNotesResult.html")
+        );
+
+        assertTrue(resultPage.contains("Record Components:"), resultPage);
+
+        assertTrue(
+            decodeEntities(resultPage).contains("the <code>a*/b</code> column"),
+            resultPage
+        );
+
+        String rowPage = Files.readString(
+            documentation.resolve("com/example/tags/rows/NotesRow.html")
+        );
+
+        assertTrue(rowPage.contains("Record Components:"), rowPage);
+        assertTrue(rowPage.contains("the <code>summary</code> column"), rowPage);
+    }
+
+    /** The tag texts the documentation of the tagged project renders. */
+    private static final List<String> TAGGED_RENDERED_TEXTS = List.of(
+        "the value of <code>:id</code>",
+        "the value of <code>$1</code>",
+        "the values of <code>:page.term</code>, <code>:page.after</code>, and <code>:page.size</code>",
+        "the values of every placeholder of the query, one component each",
+        "the parameters of each execution, run in the order of the list",
+        "the one row the query returns",
+        "the row the query returns, or empty when it returns none",
+        "every row the query returns, in the order the database returns them, or an empty list",
+        "the <code>total</code> value of the one row the query returns",
+        "the number of rows the statement affected",
+        "the count the driver reports for each element of <code>batch</code>, in the order of the list",
+        "if the query returns no row or more than one",
+        "if the query returns more than one row",
+        "the Spring Boot starter raises Spring's <code>EmptyResultDataAccessException</code>",
+        "<code>IncorrectResultSizeDataAccessException</code>"
+    );
+
+    /**
+     * Writes one sqlcj project into {@code root} whose queries cover every
+     * documented method and record form: the three result cardinalities, a
+     * single-value result, a write, a batch, a parameter group, and the
+     * {@code params} option.
+     */
+    private Path writeTaggedProject(Path root) throws IOException {
+        Files.createDirectories(root.resolve("sql"));
+
+        Files.writeString(
+            root.resolve("sqlcj.yaml"),
+            """
+                version: "1"
+
+                sql:
+                  - name: Note
+                    schema: sql/schema.sql
+                    queries: sql/queries.sql
+
+                java:
+                  package: com.example.tags
+                  out: generated
+                """
+        );
+
+        Files.writeString(
+            root.resolve("sql/schema.sql"),
+            """
+                CREATE TYPE note_state AS ENUM ('draft', 'published');
+
+                CREATE TABLE notes
+                (
+                    id      BIGINT     NOT NULL,
+                    body    TEXT       NOT NULL,
+                    state   note_state NOT NULL,
+                    summary TEXT
+                );
+                """
+        );
+
+        Files.writeString(
+            root.resolve("sql/queries.sql"),
+            """
+                -- name: GetNote :one
+                -- Reads one note by id.
+                SELECT *
+                FROM notes
+                WHERE id = :id;
+
+                -- name: FindNote :optional
+                SELECT *
+                FROM notes
+                WHERE id = $1;
+
+                -- name: ListNotes :many
+                SELECT id, upper(body) AS "a*/b"
+                FROM notes
+                WHERE body LIKE :page.term
+                  AND id > :page.after
+                ORDER BY id
+                LIMIT :page.size;
+
+                -- name: CountNotes :one
+                SELECT count(*) AS total
+                FROM notes;
+
+                -- name: DeleteNote :exec
+                DELETE
+                FROM notes
+                WHERE id = :id;
+
+                -- name: AddNotes :batchexec
+                INSERT INTO notes (id, body, state)
+                VALUES (:id, :body, :state);
+
+                -- name: CreateNote :one params
+                INSERT INTO notes (id, body, state, summary)
+                VALUES ($1, $2, $3, $4)
+                RETURNING *;
+                """
+        );
+
+        return root;
+    }
+
     /** Every generated file of one tree, by its relative path. */
     private Map<String, String> generatedSources(Path generatedDirectory) throws IOException {
         Map<String, String> sources = new TreeMap<>();
@@ -7529,9 +7711,10 @@ class SqlcjCompilerIntegrationTest {
      * own and against the test class path, and asserts that it reported no
      * error and documented the tree.
      */
-    private void assertJavadocReportsNoError(
+    private List<String> assertJavadocReportsNoError(
         Path generatedDirectory,
-        Path documentationDirectory
+        Path documentationDirectory,
+        List<String> options
     ) throws IOException {
         Files.createDirectories(documentationDirectory);
 
@@ -7560,18 +7743,24 @@ class SqlcjCompilerIntegrationTest {
 
             assertFalse(sources.isEmpty());
 
-            Boolean documented = javadoc.getTask(
-                null,
-                fileManager,
-                diagnostics,
-                null,
+            List<String> arguments = new ArrayList<>(
                 List.of(
                     "-d",
                     documentationDirectory.toString(),
                     "-classpath",
                     System.getProperty("java.class.path"),
                     "-quiet"
-                ),
+                )
+            );
+
+            arguments.addAll(options);
+
+            Boolean documented = javadoc.getTask(
+                null,
+                fileManager,
+                diagnostics,
+                null,
+                arguments,
                 fileManager.getJavaFileObjectsFromFiles(sources)
             ).call();
 
@@ -7585,6 +7774,12 @@ class SqlcjCompilerIntegrationTest {
             );
 
             assertEquals(Boolean.TRUE, documented);
+
+            return diagnostics.getDiagnostics()
+                .stream()
+                .filter(diagnostic -> diagnostic.getKind() == Diagnostic.Kind.WARNING)
+                .map(diagnostic -> diagnostic.getMessage(Locale.ROOT))
+                .toList();
         }
     }
 
