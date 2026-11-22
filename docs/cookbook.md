@@ -14,8 +14,8 @@ which `CookbookIntegrationTest` generates, compiles, and runs against
 PostgreSQL 16; each generated record and each generated method declaration is
 copied from the tree sqlcj generates from that fixture, a declaration written
 with a `;` in place of its Javadoc and body, and a record written without its
-compact constructor. [Verified by](#verified-by) names the test of each recipe
-and what it asserts.
+Javadoc and compact constructor. [Verified by](#verified-by) names the test of
+each recipe and what it asserts.
 
 Related documents:
 
