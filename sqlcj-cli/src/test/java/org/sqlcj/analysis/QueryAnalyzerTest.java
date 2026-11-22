@@ -890,6 +890,89 @@ class QueryAnalyzerTest {
         assertEquals(12, model.line());
     }
 
+    /**
+     * The analyzed model carries the placeholder of each logical parameter as
+     * the query writes it, in logical parameter order, so that the generated
+     * documentation names an indexed placeholder, a named one, and a parameter
+     * group field as the query source spells them.
+     */
+    @Test
+    void shouldCarryThePlaceholderOfEachParameterAsTheQueryWritesIt() {
+        Query indexed = new Query(
+            "ListUsersByIdAndName",
+            QueryType.MANY,
+            """
+                SELECT *
+                FROM users
+                WHERE id = $1
+                  AND name = $2;
+                """
+        );
+
+        assertEquals(
+            List.of("$1", "$2"),
+            analyzer.analyze(indexed, parser.parse(indexed.sql()), schema).placeholders()
+        );
+
+        Query named = new Query(
+            "FindUserByName",
+            QueryType.MANY,
+            """
+                SELECT *
+                FROM users
+                WHERE name = :name
+                  AND active = :active;
+                """
+        );
+
+        assertEquals(
+            List.of(":name", ":active"),
+            analyzer.analyze(named, parser.parse(named.sql()), schema).placeholders()
+        );
+
+        Query grouped = new Query(
+            "ListUserPage",
+            QueryType.MANY,
+            """
+                SELECT *
+                FROM users
+                WHERE name = :name
+                ORDER BY id
+                LIMIT :page.size OFFSET :page.offset;
+                """
+        );
+
+        assertEquals(
+            List.of(":name", ":page.size", ":page.offset"),
+            analyzer.analyze(grouped, parser.parse(grouped.sql()), schema).placeholders()
+        );
+    }
+
+    /**
+     * A query a caller analyzes without stating its placeholders names each
+     * parameter of a group by its group and field and every other one by its
+     * index, so a model built by hand documents the same placeholders.
+     */
+    @Test
+    void shouldDefaultThePlaceholderOfEachParameterToItsIndexOrGroupField() {
+        QueryModel model = new QueryModel(
+            "ListUserPage",
+            QueryType.MANY,
+            "users",
+            "SELECT * FROM users WHERE name = ? LIMIT ? OFFSET ?",
+            List.of(1, 2, 3),
+            List.of(),
+            List.of(
+                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "size", ColumnType.INTEGER, null, false, false, false, "page"),
+                new QueryParameter(3, "offset", ColumnType.INTEGER, null, false, false, false, "page")
+            ),
+            null
+        );
+
+        assertEquals(List.of("$1", ":page.size", ":page.offset"), model.placeholders());
+    }
+
     @Test
     void shouldAnalyzeSelectWithSingleParameter() {
         Query query = new Query(

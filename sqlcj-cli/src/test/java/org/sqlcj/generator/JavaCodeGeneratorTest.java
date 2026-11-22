@@ -169,7 +169,8 @@ class JavaCodeGeneratorTest {
 
     /**
      * A generated method documents the query's own comment lines, its SQL as
-     * the query source writes it, and where it is defined, and no longer its
+     * the query source writes it, where it is defined, and the placeholder, the
+     * result, and the cardinality failure of its own tags, and no longer its
      * name, table, or type.
      */
     @Test
@@ -188,7 +189,9 @@ class JavaCodeGeneratorTest {
                 SELECT id
                   FROM users
                  WHERE id = :id;""",
-            7
+            7,
+            false,
+            List.of(":id")
         );
 
         GeneratedFile file = generate(
@@ -212,6 +215,12 @@ class JavaCodeGeneratorTest {
                          * </pre>
                          *
                          * <p>Defined at <code>sql/queries.sql:7</code>.
+                         *
+                         * @param id the value of <code>:id</code>
+                         * @return the <code>id</code> value of the one row the query returns
+                         * @throws QueryCardinalityException if the query returns no row or more than one;
+                         *         the Spring Boot starter raises Spring's <code>EmptyResultDataAccessException</code>
+                         *         for no row and <code>IncorrectResultSizeDataAccessException</code> for several in its place
                          */
                         public Long getUser(Long id) {
                     """
@@ -228,7 +237,8 @@ class JavaCodeGeneratorTest {
 
     /**
      * A query without a comment documents its SQL alone, and a group whose
-     * query source is unknown documents no location.
+     * query source is unknown documents no location, so its tags follow the
+     * SQL block itself.
      */
     @Test
     void shouldGenerateJavaDocWithoutACommentOrAQuerySource() throws IOException {
@@ -254,6 +264,11 @@ class JavaCodeGeneratorTest {
                          * <pre>
                          * SELECT nextval('order_number_seq')::bigint AS next
                          * </pre>
+                         *
+                         * @return the one row the query returns
+                         * @throws QueryCardinalityException if the query returns no row or more than one;
+                         *         the Spring Boot starter raises Spring's <code>EmptyResultDataAccessException</code>
+                         *         for no row and <code>IncorrectResultSizeDataAccessException</code> for several in its place
                          */
                         public NextOrderNumberResult nextOrderNumber() {
                     """
@@ -313,6 +328,10 @@ class JavaCodeGeneratorTest {
                          * </pre>
                          *
                          * <p>Defined at <code>sql/a&amp;b/queries.sql:3</code>.
+                         *
+                         * @param body the value of <code>$1</code>
+                         * @return the <code>id</code> value of every row the query returns, in the order the database returns them, or an
+                         *         empty list
                          */
                         public List<Long> findNotes(String body) {
                     """
@@ -321,6 +340,378 @@ class JavaCodeGeneratorTest {
         );
 
         assertCompiles(file);
+    }
+
+    /**
+     * A write documents the count it returns, a batch the list it takes and
+     * the counts it reports, and a query with the {@code params} option the one
+     * record it takes, and each parameter record names the placeholder of every
+     * component it holds.
+     */
+    @Test
+    void shouldDocumentTheParametersAndResultOfAWriteABatchAndAParameterRecord() throws IOException {
+        QueryModel deleteUser = new QueryModel(
+            "DeleteUser",
+            QueryType.EXEC,
+            "users",
+            "DELETE FROM users WHERE id = ?",
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            null,
+            List.of(),
+            "DELETE FROM users WHERE id = :id",
+            1,
+            false,
+            List.of(":id")
+        );
+
+        QueryModel insertUsers = new QueryModel(
+            "InsertUsers",
+            QueryType.BATCH_EXEC,
+            "users",
+            "INSERT INTO users (name) VALUES (?)",
+            List.of(1),
+            List.of(),
+            List.of(new QueryParameter(1, "name", ColumnType.VARCHAR)),
+            null,
+            List.of(),
+            "INSERT INTO users (name) VALUES (:name)",
+            4,
+            false,
+            List.of(":name")
+        );
+
+        QueryModel createUser = new QueryModel(
+            "CreateUser",
+            QueryType.ONE,
+            "users",
+            "INSERT INTO users (name, bio) VALUES (?, ?) RETURNING *",
+            List.of(1, 2),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("name", ColumnType.VARCHAR, false)
+            ),
+            List.of(
+                new QueryParameter(1, "name", ColumnType.VARCHAR),
+                new QueryParameter(2, "bio", ColumnType.VARCHAR).asNullable()
+            ),
+            "users",
+            List.of(),
+            "INSERT INTO users (name, bio) VALUES ($1, $2) RETURNING *",
+            7,
+            true,
+            List.of("$1", "$2")
+        );
+
+        GeneratedFile file = codeGenerator.generate(
+            new QueryGroupModel(GROUP, List.of(deleteUser, insertUsers, createUser))
+        );
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                         * @param id the value of <code>:id</code>
+                         * @return the number of rows the statement affected
+                         */
+                        public int deleteUser(Long id) {
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                """
+                        /**
+                         * The parameters of one execution of <code>insertUsers</code>.
+                         *
+                         * @param name the value of <code>:name</code>
+                         */
+                        public record InsertUsersParams(
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                """
+                         * @param batch the parameters of each execution, run in the order of the list
+                         * @return the count the driver reports for each element of <code>batch</code>, in the order of the list
+                         */
+                        public int[] insertUsers(List<InsertUsersParams> batch) {
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                """
+                        /**
+                         * The parameters of <code>createUser</code>.
+                         *
+                         * @param name the value of <code>$1</code>
+                         * @param bio the value of <code>$2</code>
+                         */
+                        public record CreateUserParams(
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                """
+                         * @param params the values of every placeholder of the query, one component each
+                         * @return the one row the query returns
+                         * @throws QueryCardinalityException if the query returns no row or more than one;
+                         *         the Spring Boot starter raises Spring's <code>EmptyResultDataAccessException</code>
+                         *         for no row and <code>IncorrectResultSizeDataAccessException</code> for several in its place
+                         */
+                        public UsersRow createUser(CreateUserParams params) {
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertCompilesWithRows(file);
+    }
+
+    /**
+     * A result record names the column each of its components reads and the
+     * source whose row it holds, a group record the placeholder of each of its
+     * fields, and the method that takes the group every placeholder of it the
+     * query writes.
+     */
+    @Test
+    void shouldDocumentTheComponentsOfAResultAndAGroupRecord() throws IOException {
+        QueryModel listTasks = new QueryModel(
+            "ListTasks",
+            QueryType.MANY,
+            "tasks",
+            "SELECT tasks.id, teams.id, teams.name FROM tasks JOIN teams ON true LIMIT ? OFFSET ?",
+            List.of(1, 2),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                QueryColumn.row(
+                    "teams",
+                    "teams",
+                    List.of(
+                        new QueryColumn("id", ColumnType.BIGINT, false),
+                        new QueryColumn("name", ColumnType.VARCHAR, true)
+                    )
+                )
+            ),
+            List.of(
+                new QueryParameter(1, "size", ColumnType.INTEGER, null, false, false, false, "page"),
+                new QueryParameter(2, "offset", ColumnType.INTEGER, null, false, false, false, "page")
+            ),
+            null,
+            List.of(),
+            "SELECT tasks.id, teams.* FROM tasks JOIN teams ON true LIMIT :page.size OFFSET :page.offset",
+            1,
+            false,
+            List.of(":page.size", ":page.offset")
+        );
+
+        GeneratedFile file = generate(listTasks);
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        /**
+                         * The values of the <code>page</code> parameter group.
+                         *
+                         * @param size the value of <code>:page.size</code>
+                         * @param offset the value of <code>:page.offset</code>
+                         */
+                        public record Page(
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                """
+                        /**
+                         * A row that <code>listTasks</code> returns.
+                         *
+                         * @param id the <code>id</code> column
+                         * @param teams the row of <code>teams</code>
+                         */
+                        public record ListTasksResult(
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                """
+                         * @param page the values of <code>:page.size</code> and <code>:page.offset</code>
+                         * @return every row the query returns, in the order the database returns them, or an empty list
+                         */
+                        public List<ListTasksResult> listTasks(Page page) {
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertCompilesWithRows(file);
+    }
+
+    /**
+     * The parameter record of a batch that binds no parameter carries its
+     * description alone, because it has no component to document.
+     */
+    @Test
+    void shouldDocumentTheEmptyBatchRecordWithItsDescriptionAlone() throws IOException {
+        GeneratedFile file = generate(batchQueryWithoutParameters());
+
+        String source = file.content();
+
+        assertTrue(
+            source.contains(
+                """
+                        /**
+                         * The parameters of one execution of <code>touchUsers</code>.
+                         */
+                        public record TouchUsersParams() {
+                        }
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertTrue(
+            source.contains(
+                """
+                         * @param batch the parameters of each execution, run in the order of the list
+                         * @return the count the driver reports for each element of <code>batch</code>, in the order of the list
+                         */
+                        public int[] touchUsers(List<TouchUsersParams> batch) {
+                    """
+                    .stripTrailing()
+            ),
+            source
+        );
+
+        assertCompiles(file);
+    }
+
+    /**
+     * A column's name, a placeholder, and a parameter group's name are escaped
+     * inside the tag that names them, so that each renders as the query writes
+     * it and {@code javadoc} reports no error.
+     */
+    @Test
+    void shouldEscapeEveryNameOneTagNames() throws IOException {
+        QueryModel findTags = new QueryModel(
+            "FindTags",
+            QueryType.MANY,
+            "tags",
+            "SELECT upper(label) AS \"a*/b\", id FROM tags WHERE id = ?",
+            List.of(1),
+            List.of(
+                new QueryColumn("a*/b", ColumnType.VARCHAR, false),
+                new QueryColumn("id", ColumnType.BIGINT, false)
+            ),
+            List.of(
+                new QueryParameter(1, "x", ColumnType.BIGINT, null, false, false, false, "a&b")
+            ),
+            null,
+            List.of(),
+            "SELECT upper(label) AS \"a*/b\", id FROM tags WHERE id = :a&b.x",
+            1,
+            false,
+            List.of(":a&b.x")
+        );
+
+        String source = generate(findTags).content();
+
+        assertTrue(source.contains(" * @param ab the <code>a*&#47;b</code> column"), source);
+
+        assertTrue(
+            source.contains(" * The values of the <code>a&amp;b</code> parameter group."),
+            source
+        );
+
+        assertTrue(
+            source.contains(" * @param x the value of <code>:a&amp;b.x</code>"),
+            source
+        );
+
+        assertTrue(
+            source.contains(" * @param ab the value of <code>:a&amp;b.x</code>"),
+            source
+        );
+
+        assertCompiles(generate(findTags));
+    }
+
+    /**
+     * The {@code @throws} tag names the runtime failure in full where a
+     * generated enum of its simple name takes that name in the repository's own
+     * file, and the file imports the enum alone.
+     */
+    @Test
+    void shouldQualifyTheRuntimeFailureAGeneratedEnumOfThatNameTakes() throws IOException {
+        QueryModel getReading = new QueryModel(
+            "GetReading",
+            QueryType.ONE,
+            "readings",
+            "SELECT id, state FROM readings WHERE id = ?",
+            List.of(1),
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("state", ColumnType.ENUM, false, "query_cardinality_exception")
+            ),
+            List.of(new QueryParameter(1, "id", ColumnType.BIGINT)),
+            "readings"
+        );
+
+        GeneratedFile repository = codeGenerator.generate(
+            new QueryGroupModel(
+                GROUP,
+                List.of(getReading),
+                List.of(new EnumType("query_cardinality_exception", List.of("ok")))
+            )
+        );
+
+        String source = repository.content();
+
+        assertTrue(
+            source.contains(
+                " * @throws org.sqlcj.runtime.QueryCardinalityException"
+                    + " if the query returns no row or more than one;"
+            ),
+            source
+        );
+
+        assertTrue(source.contains("import generated.enums.QueryCardinalityException;"), source);
+        assertFalse(source.contains("import org.sqlcj.runtime.QueryCardinalityException;"), source);
+
+        assertCompiles(
+            repository,
+            codeGenerator.generateRows().get(0),
+            codeGenerator.generateEnums().get(0)
+        );
     }
 
     @Test
@@ -5009,7 +5400,13 @@ class JavaCodeGeneratorTest {
                 .count()
         );
 
-        assertFalse(source.contains("Result"));
+        assertEquals(
+            List.of(),
+            source.lines()
+                .filter(line -> !line.strip().startsWith("*"))
+                .filter(line -> line.contains("Result"))
+                .toList()
+        );
 
         assertTrue(source.contains("public UsersRow createUser(String name)"));
         assertTrue(source.contains("public UsersRow getUser(Long id)"));
@@ -5052,6 +5449,10 @@ class JavaCodeGeneratorTest {
                  * Generated by sqlcj.
                  *
                  * <p>Table: users
+                 *
+                 * @param id the <code>id</code> column
+                 * @param name the <code>name</code> column
+                 * @param createdAt the <code>created_at</code> column
                  */
                 @NullMarked
                 public record UsersRow(
@@ -5610,7 +6011,7 @@ class JavaCodeGeneratorTest {
         assertTrue(
             row.content().contains(
                 """
-                     * <p>Table: users
+                     * @param name the <code>name</code> column
                      */
                     @NullMarked
                     public record UsersRow(
@@ -5676,6 +6077,7 @@ class JavaCodeGeneratorTest {
                 "import org.jspecify.annotations.Nullable;",
                 "import org.sqlcj.runtime.GeneratedRepository;",
                 "import org.sqlcj.runtime.NotNullColumn;",
+                "import org.sqlcj.runtime.QueryCardinalityException;",
                 "import org.sqlcj.runtime.QueryExecutor;",
                 "import org.sqlcj.runtime.RowMapper;",
                 "import org.sqlcj.runtime.UntypedText;",
@@ -7393,6 +7795,10 @@ class JavaCodeGeneratorTest {
                  * Generated by sqlcj.
                  *
                  * <p>Table: stages
+                 *
+                 * @param openedOn the <code>opened_on</code> column
+                 * @param tags the <code>tags</code> column
+                 * @param closedOn the <code>closed_on</code> column
                  */
                 @NullMarked
                 public record StagesRow(
@@ -7444,6 +7850,7 @@ class JavaCodeGeneratorTest {
                 import org.jspecify.annotations.NullMarked;
                 import org.sqlcj.runtime.GeneratedRepository;
                 import org.sqlcj.runtime.NotNullColumn;
+                import org.sqlcj.runtime.QueryCardinalityException;
                 import org.sqlcj.runtime.QueryExecutor;
                 import org.sqlcj.runtime.RowMapper;
                 import org.sqlcj.runtime.UntypedText;
@@ -7566,6 +7973,9 @@ class JavaCodeGeneratorTest {
                  * Generated by sqlcj.
                  *
                  * <p>Table: stages
+                 *
+                 * @param setting the <code>setting</code> column
+                 * @param pastSettings the <code>past_settings</code> column
                  */
                 @NullMarked
                 public record StagesRow(
@@ -7704,6 +8114,7 @@ class JavaCodeGeneratorTest {
                 "import org.jspecify.annotations.NullMarked;",
                 "import org.sqlcj.runtime.GeneratedRepository;",
                 "import org.sqlcj.runtime.NotNullColumn;",
+                "import org.sqlcj.runtime.QueryCardinalityException;",
                 "import org.sqlcj.runtime.QueryExecutor;",
                 "import org.sqlcj.runtime.RowMapper;",
                 "import java.util.Collections;"
