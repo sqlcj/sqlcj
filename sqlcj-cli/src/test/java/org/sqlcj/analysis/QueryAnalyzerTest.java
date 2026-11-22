@@ -2645,39 +2645,192 @@ class QueryAnalyzerTest {
     }
 
     /**
-     * An aggregate names no result column of its own, so a missing alias is
-     * rejected naming the aggregate as the query writes it, in upper and in
-     * lower case.
+     * An aggregate written without an alias names its own result column after
+     * the name PostgreSQL gives it, which is the function's name in lower case
+     * whatever case the query writes and with or without {@code DISTINCT}, and
+     * keeps the type and the nullability its aliased form has.
      */
     @ParameterizedTest
     @CsvSource(
         delimiter = '|',
-        quoteCharacter = '"',
         value = {
-            "SELECT COUNT(id) FROM users"
-                + "|COUNT(id) requires a result alias, such as COUNT(id) AS total.",
-            "SELECT count(DISTINCT id) FROM users"
-                + "|count(DISTINCT id) requires a result alias,"
-                + " such as count(DISTINCT id) AS total.",
-            "SELECT MAX(created_at) FROM users"
-                + "|MAX(created_at) requires a result alias,"
-                + " such as MAX(created_at) AS total.",
-            "SELECT sum(balance) FROM users"
-                + "|sum(balance) requires a result alias, such as sum(balance) AS total.",
-            "SELECT AVG(score) FROM users"
-                + "|AVG(score) requires a result alias, such as AVG(score) AS total."
+            "SELECT COUNT(*) FROM users|count|BIGINT|false",
+            "SELECT COUNT(id) FROM users|count|BIGINT|false",
+            "SELECT count(DISTINCT id) FROM users|count|BIGINT|false",
+            "SELECT MIN(code) FROM users|min|VARCHAR|true",
+            "SELECT MAX(created_at) FROM users|max|TIMESTAMP|true",
+            "SELECT sum(balance) FROM users|sum|DECIMAL|true",
+            "SELECT AVG(score) FROM users|avg|DECIMAL|true"
         }
     )
-    void shouldRejectAnAggregateWithoutAResultAlias(String sql, String message) {
-        Query query = new Query("ReadUserTotal", QueryType.ONE, sql);
-        ParsedSql parsedSql = parser.parse(sql);
-
-        UnsupportedOperationException exception = assertThrows(
-            UnsupportedOperationException.class,
-            () -> analyzer.analyze(query, parsedSql, aggregateSchema)
+    void shouldNameAnUnaliasedAggregateAfterItsFunction(
+        String sql,
+        String name,
+        ColumnType type,
+        boolean nullable
+    ) {
+        QueryModel model = analyzer.analyze(
+            new Query("ReadUserTotal", QueryType.ONE, sql),
+            parser.parse(sql),
+            aggregateSchema
         );
 
-        assertEquals(message, exception.getMessage());
+        assertEquals(
+            List.of(new QueryColumn(name, type, nullable)),
+            model.columns()
+        );
+
+        assertNull(model.rowTable());
+    }
+
+    /**
+     * An unaliased aggregate is one result column in its own position, so it
+     * stands beside a grouped direct column in projection order and the
+     * executed statement keeps the aggregate as the query writes it.
+     */
+    @Test
+    void shouldNameAnUnaliasedAggregateBesideAGroupedColumn() {
+        String sql = "SELECT active, COUNT(*) FROM users GROUP BY active";
+
+        QueryModel model = analyzer.analyze(
+            new Query("CountUsersByActive", QueryType.MANY, sql),
+            parser.parse(sql),
+            aggregateSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("active", ColumnType.BOOLEAN, true),
+                new QueryColumn("count", ColumnType.BIGINT, false)
+            ),
+            model.columns()
+        );
+
+        assertEquals(sql, model.executableSql());
+    }
+
+    /**
+     * A {@code COUNT} written with {@code FILTER (WHERE ...)}, which the
+     * parser reports as a filtered analytic expression, counts the rows its
+     * condition keeps, so it is the non-null {@code BIGINT} a plain
+     * {@code COUNT} is, named by its alias or by the name PostgreSQL gives it
+     * and taking the arguments a plain {@code COUNT} takes. The condition
+     * itself reaches the database as written.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT count(*) FILTER (WHERE active) FROM users|count",
+            "SELECT count(*) FILTER (WHERE active) AS n FROM users|n",
+            "SELECT COUNT(*) FILTER (WHERE active) n FROM users|n",
+            "SELECT COUNT(DISTINCT name) FILTER (WHERE active) FROM users|count",
+            "SELECT COUNT(DISTINCT name) FILTER (WHERE active) AS n FROM users|n",
+            "SELECT COUNT(id) FILTER (WHERE active) AS n FROM users|n",
+            "SELECT COUNT(u.*) FILTER (WHERE u.active) AS n FROM users u|n"
+        }
+    )
+    void shouldTypeAFilteredCountAsANonNullBigint(String sql, String name) {
+        QueryModel model = analyzer.analyze(
+            new Query("CountActiveUsers", QueryType.ONE, sql),
+            parser.parse(sql),
+            aggregateSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn(name, ColumnType.BIGINT, false)),
+            model.columns()
+        );
+
+        assertEquals(sql, model.executableSql());
+    }
+
+    /**
+     * An unaliased aggregate takes the name PostgreSQL gives its column, so a
+     * projection another of whose result columns already takes that name,
+     * compared ignoring case and through the columns a wildcard expands, is
+     * rejected naming the first such aggregate it writes, which an alias
+     * fixes.
+     */
+    @Test
+    void shouldRejectAnUnaliasedAggregateWhoseNameAnotherColumnTakes() {
+        assertEquals(
+            "count(*) requires a result alias, such as count(*) AS total.",
+            aggregateRejection("SELECT count(*), count(DISTINCT name) FROM users")
+        );
+
+        assertEquals(
+            "COUNT(*) requires a result alias, such as COUNT(*) AS total.",
+            aggregateRejection("SELECT id AS count, COUNT(*) FROM users GROUP BY id")
+        );
+
+        assertEquals(
+            "COUNT(*) requires a result alias, such as COUNT(*) AS total.",
+            aggregateRejection("SELECT COUNT(*), id AS count FROM users GROUP BY id")
+        );
+
+        assertEquals(
+            "count(*) requires a result alias, such as count(*) AS total.",
+            aggregateRejection("SELECT id AS \"Count\", count(*) FROM users GROUP BY id")
+        );
+
+        assertEquals(
+            "count(*) requires a result alias, such as count(*) AS total.",
+            aggregateRejection(
+                "SELECT s.*, count(*) FROM (SELECT count(*) FROM users) s GROUP BY s.count"
+            )
+        );
+    }
+
+    /**
+     * The name PostgreSQL gives an unaliased aggregate is the name it stores
+     * for the column, so a derived source exposes it under that name: the
+     * outer query reads it as a column of its own, and a wildcard of the
+     * source writes it as a delimited identifier.
+     */
+    @Test
+    void shouldExposeAnUnaliasedAggregateUnderItsStoredName() {
+        String subquerySource = "SELECT s.count FROM (SELECT count(*) FROM users) s";
+
+        QueryModel read = analyzer.analyze(
+            new Query("ReadUserCount", QueryType.ONE, subquerySource),
+            parser.parse(subquerySource),
+            aggregateSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("count", ColumnType.BIGINT, false)),
+            read.columns()
+        );
+
+        assertEquals(subquerySource, read.executableSql());
+
+        String commonTableExpression = """
+            WITH c AS (SELECT user_id, count(*)
+                       FROM orders
+                       GROUP BY user_id)
+            SELECT *
+            FROM c
+            """;
+
+        QueryModel expanded = analyzer.analyze(
+            new Query("ListOrderCounts", QueryType.MANY, commonTableExpression),
+            parser.parse(commonTableExpression),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("user_id", ColumnType.BIGINT, false),
+                new QueryColumn("count", ColumnType.BIGINT, false)
+            ),
+            expanded.columns()
+        );
+
+        assertTrue(
+            expanded.executableSql().contains("SELECT \"c\".\"user_id\", \"c\".\"count\""),
+            expanded.executableSql()
+        );
     }
 
     /**
@@ -2932,19 +3085,17 @@ class QueryAnalyzerTest {
      * or {@code ALL}, which PostgreSQL's grammar admits no such {@code *} for,
      * a column type PostgreSQL defines the aggregate for none of, a
      * subscripted argument, a qualified name, two arguments, another function,
-     * and the {@code FILTER} and {@code OVER} forms. A column of a type sqlcj
-     * does not map keeps the unsupported-type rejection instead, and a
-     * {@code COUNT(*)} without an alias keeps its own.
+     * and the {@code OVER} form. A {@code FILTER} is typed for a {@code COUNT}
+     * of one argument alone, so a {@code FILTER} on another aggregate, on a
+     * qualified name, on two arguments, on a {@code DISTINCT *}, and beside an
+     * {@code OVER} keeps the rejection too. A column of a type sqlcj does not
+     * map keeps the unsupported-type rejection instead.
      */
     @ParameterizedTest
     @CsvSource(
         delimiter = '|',
         quoteCharacter = '"',
         value = {
-            "SELECT COUNT(*) FROM users"
-                + "|COUNT(*) requires a result alias, such as COUNT(*) AS total.",
-            "SELECT name, COUNT(*) FROM users GROUP BY name"
-                + "|COUNT(*) requires a result alias, such as COUNT(*) AS total.",
             "SELECT COUNT(DISTINCT *) AS n FROM users"
                 + "|Cannot infer the type of COUNT(DISTINCT *) in SELECT;"
                 + " state it with a cast and an alias,"
@@ -2989,10 +3140,26 @@ class QueryAnalyzerTest {
                 + "|Cannot infer the type of initcap(name) in SELECT;"
                 + " state it with a cast and an alias,"
                 + " such as initcap(name)::<type> AS n",
-            "SELECT COUNT(*) FILTER (WHERE id > 1) AS n FROM users"
-                + "|Cannot infer the type of COUNT(*) FILTER (WHERE id > 1) in SELECT;"
+            "SELECT COUNT(DISTINCT *) FILTER (WHERE id > 1) AS n FROM users"
+                + "|Cannot infer the type of COUNT(DISTINCT *) FILTER (WHERE id > 1) in SELECT;"
                 + " state it with a cast and an alias,"
-                + " such as (COUNT(*) FILTER (WHERE id > 1))::<type> AS n",
+                + " such as (COUNT(DISTINCT *) FILTER (WHERE id > 1))::<type> AS n",
+            "SELECT pg_catalog.count(*) FILTER (WHERE id > 1) AS n FROM users"
+                + "|Cannot infer the type of pg_catalog.count(*) FILTER (WHERE id > 1) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (pg_catalog.count(*) FILTER (WHERE id > 1))::<type> AS n",
+            "SELECT count(id, name) FILTER (WHERE id > 1) AS n FROM users"
+                + "|Cannot infer the type of count(id, name) FILTER (WHERE id > 1) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (count(id, name) FILTER (WHERE id > 1))::<type> AS n",
+            "SELECT SUM(id) FILTER (WHERE id > 1) AS n FROM users"
+                + "|Cannot infer the type of SUM(id) FILTER (WHERE id > 1) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (SUM(id) FILTER (WHERE id > 1))::<type> AS n",
+            "SELECT count(*) FILTER (WHERE id > 1) OVER () AS n FROM users"
+                + "|Cannot infer the type of count(*) FILTER (WHERE id > 1) OVER () in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (count(*) FILTER (WHERE id > 1) OVER ())::<type> AS n",
             "SELECT COUNT(*) OVER () AS n FROM users"
                 + "|Cannot infer the type of COUNT(*) OVER () in SELECT;"
                 + " state it with a cast and an alias,"
@@ -14335,6 +14502,41 @@ class QueryAnalyzerTest {
     }
 
     /**
+     * A column list names no position past its own length, so an unaliased
+     * aggregate written there takes the name PostgreSQL gives its column and a
+     * wildcard over the source reads it under that name.
+     */
+    @Test
+    void shouldNameAnUnaliasedAggregatePastAShorterColumnList() {
+        String sql = """
+            WITH recent (uid) AS (SELECT user_id, COUNT(*)
+                                  FROM orders
+                                  GROUP BY user_id)
+            SELECT *
+            FROM recent
+            """;
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListOrderCounts", QueryType.MANY, sql),
+            parser.parse(sql),
+            joinSchema
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("uid", ColumnType.BIGINT, false),
+                new QueryColumn("count", ColumnType.BIGINT, false)
+            ),
+            model.columns()
+        );
+
+        assertTrue(
+            model.executableSql().contains("SELECT \"recent\".\"uid\", \"recent\".\"count\""),
+            model.executableSql()
+        );
+    }
+
+    /**
      * A position a column list names takes its name from the list, so an
      * aggregate and a cast written there need no alias of their own and are
      * read under the listed name.
@@ -14455,9 +14657,8 @@ class QueryAnalyzerTest {
      * its own parentheses,
      * a doubly parenthesized source, which states a source kind of its own, a
      * column list on a {@code WITH} name that names more columns than its body
-     * returns, an aggregate past such a list, which the list names no column
-     * of, and a derived source whose columns repeat a name, whether its body or
-     * its column list states that name.
+     * returns, and a derived source whose columns repeat a name, whether its
+     * body or its column list states that name.
      */
     @ParameterizedTest
     @CsvSource(
@@ -14493,9 +14694,6 @@ class QueryAnalyzerTest {
             "MANY|WITH recent (a, b, c) AS (SELECT id, total FROM orders) SELECT * FROM recent"
                 + "|The column list of recent names 3 columns,"
                 + " but its SELECT returns only 2.",
-            "MANY|WITH recent (uid) AS (SELECT user_id, COUNT(*) FROM orders GROUP BY user_id)"
-                + " SELECT * FROM recent"
-                + "|COUNT(*) requires a result alias, such as COUNT(*) AS total.",
             "MANY|WITH pairs AS (SELECT u.id, p.id FROM users u JOIN profiles p"
                 + " ON p.user_id = u.id) SELECT * FROM pairs"
                 + "|Derived source pairs has more than one column named id;"
@@ -16221,8 +16419,29 @@ class QueryAnalyzerTest {
     }
 
     /**
-     * The leftmost branch names the result columns, so its own cast and
-     * aggregate still require an alias.
+     * The leftmost branch names the result columns, so its own cast still
+     * requires an alias, while its aggregate names the result column after the
+     * name PostgreSQL gives it.
+     */
+    @Test
+    void shouldNameAnUnaliasedAggregateInTheLeftmostBranch() {
+        String sql = "SELECT COUNT(*) FROM users UNION SELECT visits AS total FROM users";
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListValues", QueryType.MANY, sql),
+            parser.parse(sql),
+            setOperationSchema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("count", ColumnType.BIGINT, true)),
+            model.columns()
+        );
+    }
+
+    /**
+     * The leftmost branch names the result columns, so its own cast still
+     * requires an alias.
      */
     @ParameterizedTest
     @CsvSource(
@@ -16231,9 +16450,7 @@ class QueryAnalyzerTest {
         value = {
             "SELECT 'anonymous'::text FROM users UNION SELECT name AS label FROM users"
                 + "|A cast projection requires a result alias,"
-                + " such as SUM(amount)::numeric AS total.",
-            "SELECT COUNT(*) FROM users UNION SELECT visits AS total FROM users"
-                + "|COUNT(*) requires a result alias, such as COUNT(*) AS total."
+                + " such as SUM(amount)::numeric AS total."
         }
     )
     void shouldRequireAResultAliasInTheLeftmostBranch(String sql, String message) {

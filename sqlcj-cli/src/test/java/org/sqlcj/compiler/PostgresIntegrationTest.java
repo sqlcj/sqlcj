@@ -2444,6 +2444,84 @@ class PostgresIntegrationTest {
     }
 
     /**
+     * Covers the unaliased aggregates end to end: a {@code :one} read of a
+     * count, a maximum, an average, and a filtered count, none of them aliased
+     * or cast, is generated, compiled, and executed against PostgreSQL through
+     * a {@code WITH} body's wildcard, so each component carries the name
+     * PostgreSQL gives the column, the Java type its aggregate produces, and
+     * its value, which proves that the wildcard reads the columns the body
+     * exposes. A single unaliased count returns the {@code Long} itself.
+     */
+    @Test
+    void shouldExecuteGeneratedUnaliasedAggregatesAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile("""
+            -- name: SummarizeUsers :one
+            WITH summary AS (SELECT count(*),
+                                    max(created_at),
+                                    avg(balance),
+                                    count(*) FILTER (WHERE active) AS active_users
+                             FROM users)
+            SELECT *
+            FROM summary;
+
+            -- name: CountUsersByName :one
+            SELECT count(*)
+            FROM users
+            WHERE name LIKE $1;
+            """);
+
+        execute("""
+            INSERT INTO users (id, code, name, active, created_at, balance)
+            VALUES
+                (1, 1, 'Alice', TRUE, TIMESTAMP '2026-01-01 10:00:00', 10.50),
+                (2, 2, 'Amy', FALSE, TIMESTAMP '2026-02-02 11:00:00', 2.25),
+                (3, 3, 'Bob', TRUE, TIMESTAMP '2026-03-03 12:00:00', 99.75)
+            """);
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            Object summary = repository
+                .getClass()
+                .getMethod("summarizeUsers")
+                .invoke(repository);
+
+            assertEquals(
+                List.of("count", "max", "avg", "activeUsers"),
+                recordComponentNames(summary)
+            );
+
+            assertEquals(
+                List.of(Long.class, LocalDateTime.class, BigDecimal.class, Long.class),
+                recordComponentTypes(summary)
+            );
+
+            assertEquals(3L, component(summary, "count"));
+
+            assertEquals(
+                LocalDateTime.of(2026, 3, 3, 12, 0),
+                component(summary, "max")
+            );
+
+            assertEquals(
+                new BigDecimal("37.5"),
+                ((BigDecimal) component(summary, "avg")).stripTrailingZeros()
+            );
+
+            assertEquals(2L, component(summary, "activeUsers"));
+
+            Method count = repository.getClass().getMethod(
+                "countUsersByName",
+                String.class
+            );
+
+            assertEquals(Long.class, count.getReturnType());
+
+            assertEquals(2L, count.invoke(repository, "A%"));
+        }
+    }
+
+    /**
      * Covers a cast projection end to end: a {@code :one} read whose single
      * projection is a cast aggregate is generated, compiled, and executed
      * against PostgreSQL, so its result record exposes one nullable

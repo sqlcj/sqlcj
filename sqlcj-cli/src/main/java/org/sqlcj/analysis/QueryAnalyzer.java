@@ -208,10 +208,12 @@ public final class QueryAnalyzer {
         such as %s::<type> AS %s""";
 
     /**
-     * The rejection of a typed aggregate projection without a result alias,
-     * which names one result component. Both the rejected item and the example
-     * are the aggregate as the query writes it, so the named fix is the
-     * query's own aggregate followed by an alias.
+     * The rejection of a typed aggregate projection whose own column name,
+     * which is the name PostgreSQL gives it, another result column of the same
+     * projection already takes, because such a name names no component of its
+     * own. Both the rejected item and the example are the aggregate as the
+     * query writes it, so the named fix is the query's own aggregate followed
+     * by an alias.
      */
     private static final String AGGREGATE_ALIAS_REJECTION = """
         %s requires a result alias, such as %s AS total.""";
@@ -982,6 +984,15 @@ public final class QueryAnalyzer {
 
     /** One column reference resolved against the ordered query sources. */
     private record ResolvedColumn(Source source, org.sqlcj.schema.Column column) {
+    }
+
+    /**
+     * One projected aggregate that took the name PostgreSQL gives its column
+     * instead of an alias: the {@code name} it took, and {@code written}, the
+     * aggregate as the query writes it, which names the rejection of a name
+     * another result column of the same projection already takes.
+     */
+    private record ImplicitAggregate(String name, String written) {
     }
 
     /**
@@ -6833,13 +6844,19 @@ public final class QueryAnalyzer {
      * columns flat instead, as PostgreSQL lists them, so a merged column
      * stands once and in its own position in both.
      *
-     * <p>An aggregate, a cast, and an {@code EXISTS} of a subquery name their
-     * column with an alias, which is required only of a projection that names
-     * the result columns, so a branch of a set operation other than the
-     * leftmost may write any of them without one. A column list on the derived
-     * source this projection is the body of names its own
-     * {@code listedColumns} leading columns, so none of them needs an alias in
-     * one of those positions either.
+     * <p>A cast and an {@code EXISTS} of a subquery name their column with an
+     * alias, which is required only of a projection that names the result
+     * columns, so a branch of a set operation other than the leftmost may
+     * write either of them without one. A column list on the derived source
+     * this projection is the body of names its own {@code listedColumns}
+     * leading columns, so neither needs an alias in one of those positions
+     * either.
+     *
+     * <p>An aggregate needs no alias at all, because it takes the name
+     * PostgreSQL gives its column. That name is checked once every item has
+     * resolved, so an aggregate whose name another column of this projection
+     * takes, a column a wildcard expanded included, is rejected naming the
+     * first such aggregate the projection writes.
      */
     private ResolvedProjection resolveProjection(
         PlainSelect plainSelect,
@@ -6852,6 +6869,7 @@ public final class QueryAnalyzer {
 
         List<org.sqlcj.schema.Column> columns = new ArrayList<>();
         List<QueryColumn> resultColumns = new ArrayList<>();
+        List<ImplicitAggregate> implicitAggregates = new ArrayList<>();
 
         for (SelectItem<?> selectItem : plainSelect.getSelectItems()) {
             Expression expression = selectItem.getExpression();
@@ -6900,14 +6918,47 @@ public final class QueryAnalyzer {
                 selectItem,
                 analysis,
                 scope,
-                namesResultColumns && columns.size() >= listedColumns
+                namesResultColumns && columns.size() >= listedColumns,
+                implicitAggregates
             );
 
             columns.add(column);
             resultColumns.add(toQueryColumn(column));
         }
 
+        requireDistinctAggregateNames(columns, implicitAggregates);
+
         return new ResolvedProjection(columns, resultColumns);
+    }
+
+    /**
+     * Requires every aggregate that took the name PostgreSQL gives its column
+     * to be the only result column of this projection under that name,
+     * compared ignoring case as a derived source's column names are, because a
+     * name another column already takes names no component of its own. Every
+     * column the projection resolved is compared, a column a wildcard expanded
+     * included, and the aggregates are checked in the order the projection
+     * writes them, so the first one whose name is taken is the one an alias is
+     * asked for.
+     */
+    private void requireDistinctAggregateNames(
+        List<org.sqlcj.schema.Column> columns,
+        List<ImplicitAggregate> implicitAggregates
+    ) {
+        for (ImplicitAggregate aggregate : implicitAggregates) {
+            long named = columns.stream()
+                .filter(column -> column.name().equalsIgnoreCase(aggregate.name()))
+                .count();
+
+            if (named > 1) {
+                throw new UnsupportedOperationException(
+                    AGGREGATE_ALIAS_REJECTION.formatted(
+                        aggregate.written(),
+                        aggregate.written()
+                    )
+                );
+            }
+        }
     }
 
     /**
@@ -7101,10 +7152,15 @@ public final class QueryAnalyzer {
 
     /**
      * Resolves one projection item that is not a wildcard into its single
-     * column: a direct column, an aliased aggregate this subset types, an
-     * aliased call the function catalogue types, an aliased cast, or an aliased
+     * column: a direct column, an aggregate this subset types, an aliased call
+     * the function catalogue types, an aliased cast, or an aliased
      * {@code EXISTS} of a subquery. Every other item is a computed projection,
      * which a cast states the type of.
+     *
+     * <p>A {@code COUNT} written with {@code FILTER (WHERE ...)}, which the
+     * parser reports as a filtered analytic expression rather than a function
+     * call, is the aggregate it counts as, so it is typed here beside the
+     * plain call.
      *
      * <p>A call of the function catalogue is typed by the catalogue from the
      * facts its arguments state, so a cast is not needed; a call the catalogue
@@ -7125,16 +7181,20 @@ public final class QueryAnalyzer {
      * operand is one this analysis knows to read no {@code NULL}, which it
      * resolves a direct operand against the levels in scope for.
      *
-     * <p>An aggregate, a cast, and an {@code EXISTS} require their alias only
-     * where {@code namesResultColumns} states that this item names its own
+     * <p>A catalogue call, a cast, and an {@code EXISTS} require their alias
+     * only where {@code namesResultColumns} states that this item names its own
      * column, which a projection that names no result column and a position a
-     * column list renames both state it does not.
+     * column list renames both state it does not. An aggregate takes the name
+     * PostgreSQL gives its column there instead, and is recorded in
+     * {@code implicitAggregates} for the projection to check that name once
+     * every item of it has resolved.
      */
     private org.sqlcj.schema.Column resolveColumnItem(
         SelectItem<?> selectItem,
         Analysis analysis,
         Scope scope,
-        boolean namesResultColumns
+        boolean namesResultColumns,
+        List<ImplicitAggregate> implicitAggregates
     ) {
         Expression expression = selectItem.getExpression();
 
@@ -7165,7 +7225,34 @@ public final class QueryAnalyzer {
             );
 
             if (aggregate != null) {
+                recordImplicitAggregate(
+                    implicitAggregates,
+                    selectItem,
+                    aggregate,
+                    namesResultColumns
+                );
+
                 return aggregate;
+            }
+        }
+
+        if (expression instanceof AnalyticExpression analytic) {
+            org.sqlcj.schema.Column filtered = filteredCountColumn(
+                analytic,
+                selectItem.getAlias(),
+                scope,
+                namesResultColumns
+            );
+
+            if (filtered != null) {
+                recordImplicitAggregate(
+                    implicitAggregates,
+                    selectItem,
+                    filtered,
+                    namesResultColumns
+                );
+
+                return filtered;
             }
         }
 
@@ -7231,6 +7318,28 @@ public final class QueryAnalyzer {
     }
 
     /**
+     * Records one resolved aggregate that took the name PostgreSQL gives its
+     * column, which is every typed aggregate a projection that names the
+     * result columns writes no alias on, so that the projection checks that
+     * name against its other result columns.
+     */
+    private void recordImplicitAggregate(
+        List<ImplicitAggregate> implicitAggregates,
+        SelectItem<?> selectItem,
+        org.sqlcj.schema.Column aggregate,
+        boolean namesResultColumns
+    ) {
+        if (selectItem.getAlias() == null && namesResultColumns) {
+            implicitAggregates.add(
+                new ImplicitAggregate(
+                    aggregate.name(),
+                    written(selectItem.getExpression())
+                )
+            );
+        }
+    }
+
+    /**
      * One computed projection as the cast that states its type writes its
      * operand: the expression as the query writes it, which a function call is
      * cast directly, and every other expression in parentheses, because
@@ -7265,9 +7374,13 @@ public final class QueryAnalyzer {
      * argument, written with or without {@code DISTINCT} or {@code ALL}, so a
      * qualified name such as {@code pg_catalog.count(*)}, another function, and
      * the {@code FILTER} and {@code OVER} forms, which the parser reports as
-     * expressions of their own, are typed by no rule here. The shape and the
-     * argument are checked before the alias is required, so an aggregate this
-     * rule types no result of says why rather than that it is unnamed.
+     * expressions of their own, are typed by no rule here; a filtered
+     * {@code COUNT} is typed by {@link #filteredCountColumn} instead.
+     *
+     * <p>A typed aggregate names its own result column, so it needs no alias:
+     * the column takes the alias the query writes, and the name PostgreSQL
+     * gives it, which is the aggregate's function name in lower case, where
+     * the query writes none.
      *
      * <p>A {@code COUNT} is a non-null {@code BIGINT} of any argument, because
      * {@code count} returns {@code bigint} and counts {@code 0} rows rather
@@ -7301,9 +7414,16 @@ public final class QueryAnalyzer {
 
         String aggregate = name.get(0).toLowerCase(Locale.ROOT);
         Expression argument = arguments.get(0);
+        String implicitName = implicitAggregateName(aggregate, function, namesResultColumns);
 
         if (aggregate.equals("count")) {
-            return countedColumn(function, alias, argument, scope, namesResultColumns);
+            return countedColumn(
+                argument,
+                function.isDistinct() || function.isAllColumns(),
+                alias,
+                implicitName,
+                scope
+            );
         }
 
         boolean extremum = aggregate.equals("min") || aggregate.equals("max");
@@ -7330,14 +7450,14 @@ public final class QueryAnalyzer {
         if (extremum) {
             return column.array() || !UNORDERED_TYPES.contains(type)
                 ? new org.sqlcj.schema.Column(
-                    aggregateName(function, alias, namesResultColumns),
+                    aggregateName(alias, implicitName),
                     extremumType(type, column.array()),
                     true,
                     null,
                     column.enumType(),
                     column.array(),
                     column.blankPadded(),
-                    aliasSqlName(alias, written(function))
+                    aliasSqlName(alias, implicitName)
                 )
                 : null;
         }
@@ -7349,14 +7469,14 @@ public final class QueryAnalyzer {
         return aggregated == null
             ? null
             : new org.sqlcj.schema.Column(
-                aggregateName(function, alias, namesResultColumns),
+                aggregateName(alias, implicitName),
                 aggregated,
                 true,
                 null,
                 null,
                 false,
                 false,
-                aliasSqlName(alias, written(function))
+                aliasSqlName(alias, implicitName)
             );
     }
 
@@ -7384,18 +7504,23 @@ public final class QueryAnalyzer {
      * while the type of a counted column is never read, so a column of an
      * unmapped type is counted too. Every other argument reaches the database
      * as written, as the operand of a cast projection does.
+     *
+     * <p>{@code quantified} states that the query writes {@code DISTINCT} or
+     * {@code ALL} before the argument, and {@code implicitName} the name the
+     * column takes where the query writes no alias, so a plain and a filtered
+     * {@code COUNT} count one argument by the same rules.
      */
     private org.sqlcj.schema.Column countedColumn(
-        Function function,
-        Alias alias,
         Expression argument,
-        Scope scope,
-        boolean namesResultColumns
+        boolean quantified,
+        Alias alias,
+        String implicitName,
+        Scope scope
     ) {
         net.sf.jsqlparser.schema.Column counted = directColumn(argument);
 
         if (argument.getClass() == AllColumns.class) {
-            if (function.isDistinct() || function.isAllColumns()) {
+            if (quantified) {
                 return null;
             }
         } else if (argument instanceof AllTableColumns qualified) {
@@ -7405,39 +7530,96 @@ public final class QueryAnalyzer {
         }
 
         return new org.sqlcj.schema.Column(
-            aggregateName(function, alias, namesResultColumns),
+            aggregateName(alias, implicitName),
             ColumnType.BIGINT,
             false,
             null,
             null,
             false,
             false,
-            aliasSqlName(alias, written(function))
+            aliasSqlName(alias, implicitName)
+        );
+    }
+
+    /**
+     * Resolves a projected {@code COUNT} written with {@code FILTER (WHERE
+     * ...)}, which the parser reports as a filtered analytic expression rather
+     * than a function call, into its single result column, and reports
+     * {@code null} for every other analytic expression, which the
+     * computed-projection rejection then names as the query writes it.
+     *
+     * <p>The counted rows are the ones the condition keeps, so the column is
+     * the non-null {@code BIGINT} a plain {@code COUNT} is, under its argument
+     * rules and under its naming, while the condition itself is no result
+     * expression and reaches the database as written.
+     *
+     * <p>Only an unqualified case-insensitive {@code count} of exactly one
+     * argument is counted here, so a qualified name such as
+     * {@code pg_catalog.count(*) FILTER (...)}, a second argument, which the
+     * parser reports as the offset, a {@code FILTER} on another aggregate, and
+     * the {@code OVER} forms are typed by no rule here.
+     */
+    private org.sqlcj.schema.Column filteredCountColumn(
+        AnalyticExpression analytic,
+        Alias alias,
+        Scope scope,
+        boolean namesResultColumns
+    ) {
+        String name = analytic.getName();
+        Expression argument = analytic.getExpression();
+
+        if (
+            analytic.getType() != AnalyticType.FILTER_ONLY
+                || name == null
+                || !name.equalsIgnoreCase("count")
+                || argument == null
+                || analytic.getOffset() != null
+                || analytic.getDefaultValue() != null
+        ) {
+            return null;
+        }
+
+        return countedColumn(
+            argument,
+            analytic.isDistinct() || analytic.isAllColumns(),
+            alias,
+            implicitAggregateName("count", analytic, namesResultColumns),
+            scope
         );
     }
 
     /**
      * The name a typed aggregate's result column takes, which is its alias,
-     * written with or without {@code AS}. The aggregate itself names no column,
-     * so a missing alias is rejected naming the aggregate as the query writes
-     * it, wherever the projection names the result columns.
-     *
-     * <p>A branch of a set operation other than the leftmost names no result
-     * column, so an aggregate there may omit its alias and takes the aggregate
-     * as the query writes it as a name of its own.
+     * written with or without {@code AS}, and {@code implicitName} where the
+     * query writes no alias at all.
      */
-    private String aggregateName(Function function, Alias alias, boolean namesResultColumns) {
-        if (alias != null) {
-            return alias.getUnquotedName();
-        }
+    private String aggregateName(Alias alias, String implicitName) {
+        return alias == null
+            ? implicitName
+            : alias.getUnquotedName();
+    }
 
-        if (namesResultColumns) {
-            throw new UnsupportedOperationException(
-                AGGREGATE_ALIAS_REJECTION.formatted(written(function), written(function))
-            );
-        }
-
-        return written(function);
+    /**
+     * The name a typed aggregate's result column takes where the query writes
+     * no alias on it, which is also the name PostgreSQL stores for it, so a
+     * derived source exposes the column and a wildcard of that source reads it
+     * under this name.
+     *
+     * <p>Wherever the projection names the result columns, it is the name
+     * PostgreSQL gives the column: the aggregate's own function name in lower
+     * case, such as {@code count}. A projection that names no result column —
+     * a branch of a set operation other than the leftmost, and a position a
+     * column list on a {@code WITH} name renames — keeps the aggregate as the
+     * query writes it as a name of its own.
+     */
+    private String implicitAggregateName(
+        String aggregate,
+        Expression expression,
+        boolean namesResultColumns
+    ) {
+        return namesResultColumns
+            ? aggregate
+            : written(expression);
     }
 
     /**

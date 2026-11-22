@@ -4526,6 +4526,54 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
+     * An aggregate written without an alias names its result component after
+     * the name PostgreSQL gives its column, so a {@code :one} count of one
+     * aggregate returns the {@code Long} itself, a filtered count included,
+     * while a grouped read exposes the grouped column beside the {@code count}
+     * component the aggregate names.
+     */
+    @Test
+    void shouldGenerateCompilableJavaForUnaliasedAggregateProjections() throws IOException {
+        Path classesDirectory = generateAndCompile(
+            """
+                -- name: CountUsers :one
+                SELECT count(*)
+                FROM users;
+
+                -- name: CountActiveUsers :one
+                SELECT count(*) FILTER (WHERE active)
+                FROM users;
+
+                -- name: CountUsersByActive :many
+                SELECT active, count(*)
+                FROM users
+                GROUP BY active;
+                """
+        );
+
+        String repository = Files.readString(
+            tempDir
+                .resolve("generated")
+                .resolve("generated")
+                .resolve("repositories/UsersRepository.java")
+        );
+
+        assertTrue(repository.contains("public Long countUsers()"), repository);
+        assertTrue(repository.contains("public Long countActiveUsers()"), repository);
+        assertFalse(repository.contains("CountUsersResult"), repository);
+        assertFalse(repository.contains("CountActiveUsersResult"), repository);
+
+        assertEquals(
+            List.of("@Nullable Boolean active", "Long count"),
+            recordComponents(repository, "CountUsersByActiveResult")
+        );
+
+        assertTrue(
+            Files.exists(classesDirectory.resolve("generated/repositories/UsersRepository.class"))
+        );
+    }
+
+    /**
      * An alias on a returned column names the result record's component, for
      * every returning write kind, and the executed SQL keeps the alias.
      */
