@@ -1111,6 +1111,14 @@ public final class QueryAnalyzer {
         /** The occurrences a clause typed, by their placeholder expression. */
         private final Map<Expression, QueryParameter> typedOccurrences = new IdentityHashMap<>();
 
+        /**
+         * The occurrences a clause typed only where no other clause and no cast
+         * states a type for their parameter, by their placeholder expression,
+         * which are the occurrences a {@code HAVING} comparison types from the
+         * aggregate it compares.
+         */
+        private final Map<Expression, QueryParameter> deferredOccurrences = new IdentityHashMap<>();
+
         private Placeholders(
             List<String> names,
             Schema schema,
@@ -1228,11 +1236,36 @@ public final class QueryAnalyzer {
         }
 
         /**
+         * Records the parameter occurrence one {@code HAVING} comparison typed
+         * from the aggregate it compares, which types its parameter only where
+         * no other clause and no cast states a type for it. Each placeholder
+         * occurrence stands in one comparison, so typing one twice is a defect
+         * of this analyzer.
+         */
+        private void recordDeferred(Placeholder placeholder, QueryParameter occurrence) {
+            if (deferredOccurrences.put(placeholder.expression(), occurrence) != null) {
+                throw new IllegalStateException(
+                    "Placeholder %s was typed twice in HAVING.".formatted(placeholder.spelled())
+                );
+            }
+        }
+
+        /**
          * Takes the occurrence a clause typed for one placeholder, and
          * {@code null} when no clause typed it.
          */
         private QueryParameter typed(Expression placeholder) {
             return typedOccurrences.remove(placeholder);
+        }
+
+        /**
+         * The occurrence a {@code HAVING} comparison typed for one placeholder,
+         * and {@code null} when none did. A deferred occurrence is read where
+         * no clause and no cast typed the parameter, so one the parameter does
+         * not need is left unread.
+         */
+        private QueryParameter deferred(Expression placeholder) {
+            return deferredOccurrences.get(placeholder);
         }
 
         /**
@@ -3736,9 +3769,12 @@ public final class QueryAnalyzer {
      * own placeholder. An occurrence neither of them typed, of a parameter
      * neither of them typed anywhere in the query, is typed by the catalogue
      * call it is a direct argument of, where that position states a placeholder
-     * type, and is named after its own placeholder as a cast-typed one is.
+     * type, and is named after its own placeholder as a cast-typed one is; and
+     * an occurrence of a parameter no such position typed either is typed by
+     * the aggregate a {@code HAVING} comparison compares it with, and is named
+     * after that aggregate's own column.
      * Every remaining occurrence takes the parameter of the first occurrence of
-     * its own logical parameter, in textual order, that one of the three typed,
+     * its own logical parameter, in textual order, that one of the four typed,
      * wherever both stand, and sqlcj writes that parameter's type at it. A
      * logical parameter no occurrence types has no type to write, so the first
      * occurrence of such a parameter, in textual order, is rejected naming
@@ -3775,6 +3811,7 @@ public final class QueryAnalyzer {
         placeholders.requireReportedOccurrences();
 
         typeCallArguments(reported, placeholders, occurrences, firstTyped);
+        typeHavingComparisons(reported, placeholders, occurrences, firstTyped);
 
         List<Integer> writtenTypes = new ArrayList<>();
 
@@ -3853,6 +3890,52 @@ public final class QueryAnalyzer {
                 false,
                 false
             );
+
+            occurrences.set(position, typed);
+            firstTyped.putIfAbsent(placeholder.index(), typed);
+        }
+    }
+
+    /**
+     * Types each remaining occurrence one {@code HAVING} comparison typed from
+     * the aggregate it compares, which executes as a bare {@code ?}, because
+     * the comparison itself states the type to PostgreSQL.
+     *
+     * <p>Such a comparison types a parameter only where no clause, no cast, and
+     * no catalogue argument position typed any occurrence of it, so it is read
+     * after every one of them and a query that compiles without this rule keeps
+     * the parameter it has: the occurrence standing in {@code HAVING} takes that
+     * parameter, as it does today, with its type written at it. The first
+     * comparison in textual order is the one a later uncast occurrence
+     * elsewhere takes, and two comparisons of one parameter that state
+     * different types are rejected as conflicting, as two catalogue positions
+     * are.
+     */
+    private void typeHavingComparisons(
+        List<PlaceholderOccurrence> reported,
+        Placeholders placeholders,
+        List<QueryParameter> occurrences,
+        Map<Integer, QueryParameter> firstTyped
+    ) {
+        Set<Integer> stated = new HashSet<>(firstTyped.keySet());
+
+        for (int position = 0; position < reported.size(); position++) {
+            if (occurrences.get(position) != null) {
+                continue;
+            }
+
+            PlaceholderOccurrence occurrence = reported.get(position);
+            Placeholder placeholder = placeholders.of(occurrence.placeholder());
+
+            if (stated.contains(placeholder.index())) {
+                continue;
+            }
+
+            QueryParameter typed = placeholders.deferred(occurrence.placeholder());
+
+            if (typed == null) {
+                continue;
+            }
 
             occurrences.set(position, typed);
             firstTyped.putIfAbsent(placeholder.index(), typed);
@@ -5581,11 +5664,11 @@ public final class QueryAnalyzer {
 
     /**
      * Resolves the parameters the clauses of a read type over its whole level,
-     * which are the {@code WHERE} parameters and the pagination parameters.
-     * Each join condition types its own placeholders over its join group where
-     * its sources are resolved, and binding order comes from the textual
-     * placeholder order the parser reported, not from the order the clauses are
-     * analyzed in.
+     * which are the {@code WHERE} parameters, the {@code HAVING} parameters,
+     * and the pagination parameters. Each join condition types its own
+     * placeholders over its join group where its sources are resolved, and
+     * binding order comes from the textual placeholder order the parser
+     * reported, not from the order the clauses are analyzed in.
      */
     private void resolveBindingParameters(
         PlainSelect plainSelect,
@@ -5600,7 +5683,189 @@ public final class QueryAnalyzer {
             );
         }
 
+        if (plainSelect.getHaving() != null) {
+            resolveHavingParameters(
+                plainSelect.getHaving(),
+                scope,
+                analysis
+            );
+        }
+
         resolvePaginationParameters(plainSelect, analysis.placeholders());
+    }
+
+    /**
+     * Resolves the parameters a {@code HAVING} predicate types from the
+     * aggregates it compares, over the level the predicate stands in. The rules
+     * descend through {@code AND}, {@code OR}, {@code NOT}, and parentheses as
+     * the predicate rules of a {@code WHERE} clause do, and every other
+     * expression of the clause reaches the database as written, so PostgreSQL
+     * rather than sqlcj checks it.
+     */
+    private void resolveHavingParameters(
+        Expression expression,
+        Scope scope,
+        Analysis analysis
+    ) {
+        if (expression instanceof AndExpression and) {
+            resolveHavingParameters(and.getLeftExpression(), scope, analysis);
+            resolveHavingParameters(and.getRightExpression(), scope, analysis);
+            return;
+        }
+
+        if (expression instanceof OrExpression or) {
+            resolveHavingParameters(or.getLeftExpression(), scope, analysis);
+            resolveHavingParameters(or.getRightExpression(), scope, analysis);
+            return;
+        }
+
+        if (expression instanceof NotExpression not) {
+            resolveHavingParameters(not.getExpression(), scope, analysis);
+            return;
+        }
+
+        if (expression instanceof ParenthesedExpressionList<?> parentheses) {
+            for (Expression nestedExpression : parentheses) {
+                resolveHavingParameters(nestedExpression, scope, analysis);
+            }
+            return;
+        }
+
+        if (
+            expression instanceof ComparisonOperator comparison
+                && isColumnTypedComparison(comparison)
+        ) {
+            resolveHavingComparison(comparison, scope, analysis);
+        }
+    }
+
+    /**
+     * Resolves the parameter one {@code HAVING} comparison types, which is an
+     * uncast placeholder written on either side of a typed aggregate: it takes
+     * that aggregate's type and its column name, as a placeholder compared with
+     * a column does, and is non-null for the same reason. The six comparisons
+     * {@link #isColumnTypedComparison} names that the parser reports as
+     * comparison operators compare one aggregated value this way; every other
+     * operator of the clause states no such value.
+     *
+     * <p>The parameter is deferred rather than recorded, because a clause or a
+     * cast elsewhere in the query may state the type sqlcj writes at every
+     * occurrence of it, as a catalogue argument position is deferred.
+     */
+    private void resolveHavingComparison(
+        ComparisonOperator comparison,
+        Scope scope,
+        Analysis analysis
+    ) {
+        Placeholders placeholders = analysis.placeholders();
+
+        Expression left = comparison.getLeftExpression();
+        Expression right = comparison.getRightExpression();
+
+        Placeholder leftPlaceholder = placeholders.of(left);
+
+        if (leftPlaceholder != null) {
+            deferHavingAggregateParameter(leftPlaceholder, right, scope, placeholders);
+            return;
+        }
+
+        Placeholder rightPlaceholder = placeholders.of(right);
+
+        if (rightPlaceholder != null) {
+            deferHavingAggregateParameter(rightPlaceholder, left, scope, placeholders);
+        }
+    }
+
+    /**
+     * Defers the parameter of one uncast placeholder compared with an
+     * aggregate in {@code HAVING}, where that aggregate is one the projection
+     * rules type a result column of. An aggregate they type none of — a
+     * {@code MIN} or {@code MAX} of a type PostgreSQL defines neither for, an
+     * {@code array_agg}, a grouped column, and arithmetic — states no type, so
+     * such a placeholder keeps needing a cast.
+     */
+    private void deferHavingAggregateParameter(
+        Placeholder placeholder,
+        Expression aggregate,
+        Scope scope,
+        Placeholders placeholders
+    ) {
+        org.sqlcj.schema.Column column = havingAggregateColumn(aggregate, scope);
+
+        if (column == null) {
+            return;
+        }
+
+        placeholders.recordDeferred(
+            placeholder,
+            toParameter(
+                placeholder,
+                column.name(),
+                column.type(),
+                column.enumType(),
+                column.array(),
+                column.blankPadded(),
+                false
+            )
+        );
+    }
+
+    /**
+     * The result column one compared aggregate of a {@code HAVING} predicate
+     * states, and {@code null} for every expression the projection rules type
+     * none of.
+     *
+     * <p>The aggregate's own references are read as the operand of a cast is,
+     * not as a projection's are: the clause reaches the database as written, so
+     * nothing in it is required to resolve. A reference the level in scope has
+     * states its column, while one no source of it exposes — a whole-row
+     * reference such as {@code count(u)}, a system column such as
+     * {@code count(xmin)}, an ambiguous reference, and the qualifier of
+     * {@code count(x.*)} no source exposes — states no type, as a column the
+     * schema recorded without a mapped type does. Such a comparison therefore
+     * types nothing rather than rejecting a query PostgreSQL itself accepts.
+     *
+     * <p>The aggregate is read without an alias and as a projection that names
+     * its result columns reads it, so the column it states carries the name
+     * PostgreSQL gives it, which an indexed placeholder takes as its parameter
+     * name.
+     */
+    private org.sqlcj.schema.Column havingAggregateColumn(Expression aggregate, Scope scope) {
+        if (aggregate instanceof Function function) {
+            return leavesAggregateUntyped(function, scope, false)
+                ? null
+                : aggregateColumn(function, null, scope, true);
+        }
+
+        if (aggregate instanceof AnalyticExpression analytic) {
+            return leavesFilteredCountUntyped(analytic, scope)
+                ? null
+                : filteredCountColumn(analytic, null, scope, true);
+        }
+
+        return null;
+    }
+
+    /**
+     * Reports whether the filtered-{@code COUNT} rule states no type for one
+     * compared analytic expression, which is a count of a reference the level
+     * in scope does not have, read as {@link #leavesAggregateUntyped} reads the
+     * same reference of a plain call written where nothing must resolve.
+     *
+     * <p>A {@code COUNT} never reads its argument's type, so only the reference
+     * decides here, and an argument that is no reference at all reaches the
+     * database as written, as a plain {@code COUNT}'s does.
+     */
+    private boolean leavesFilteredCountUntyped(AnalyticExpression analytic, Scope scope) {
+        Expression argument = analytic.getExpression();
+
+        if (argument instanceof AllTableColumns qualified) {
+            return lookupSource(scope, qualified.getTable().getUnquotedName()).isEmpty();
+        }
+
+        net.sf.jsqlparser.schema.Column column = directColumn(argument);
+
+        return column != null && lookupColumn(column, scope).isEmpty();
     }
 
     /**
@@ -7153,14 +7418,22 @@ public final class QueryAnalyzer {
     /**
      * Resolves one projection item that is not a wildcard into its single
      * column: a direct column, an aggregate this subset types, an aliased call
-     * the function catalogue types, an aliased cast, or an aliased
-     * {@code EXISTS} of a subquery. Every other item is a computed projection,
-     * which a cast states the type of.
+     * the function catalogue types, an aliased cast, an aliased
+     * {@code EXISTS} of a subquery, or an aliased JSON path that reads
+     * {@code text}. Every other item is a computed projection, which a cast
+     * states the type of.
      *
      * <p>A {@code COUNT} written with {@code FILTER (WHERE ...)}, which the
      * parser reports as a filtered analytic expression rather than a function
      * call, is the aggregate it counts as, so it is typed here beside the
-     * plain call.
+     * plain call, and an {@code array_agg} of one column is the array
+     * aggregate it collects, typed where no other aggregate rule types the
+     * call.
+     *
+     * <p>A JSON path whose last step reads {@code text} is a nullable
+     * {@code TEXT} column, because both text operators always return
+     * {@code text}, and requires its alias exactly where a catalogue call
+     * does, because PostgreSQL names such a column {@code ?column?}.
      *
      * <p>A call of the function catalogue is typed by the catalogue from the
      * facts its arguments state, so a cast is not needed; a call the catalogue
@@ -7223,6 +7496,15 @@ public final class QueryAnalyzer {
                 scope,
                 namesResultColumns
             );
+
+            if (aggregate == null) {
+                aggregate = arrayAggregateColumn(
+                    function,
+                    selectItem.getAlias(),
+                    scope,
+                    namesResultColumns
+                );
+            }
 
             if (aggregate != null) {
                 recordImplicitAggregate(
@@ -7302,6 +7584,10 @@ public final class QueryAnalyzer {
                 false,
                 aliasSqlName(alias, written(exists))
             );
+        }
+
+        if (expression instanceof JsonExpression json && readsJsonText(json)) {
+            return jsonTextColumn(json, selectItem.getAlias(), scope, namesResultColumns);
         }
 
         if (expression instanceof JdbcParameter || expression instanceof JdbcNamedParameter) {
@@ -7478,6 +7764,74 @@ public final class QueryAnalyzer {
                 false,
                 aliasSqlName(alias, implicitName)
             );
+    }
+
+    /**
+     * Resolves a projected {@code array_agg} of one column into its single
+     * result column, and reports {@code null} for every other call, which the
+     * computed-projection rejection then names as the query writes it.
+     *
+     * <p>The column is a nullable one-dimensional array of the collected
+     * column's own type, its enum type and its blank-padded spelling included,
+     * because {@code array_agg} reads {@code NULL} over no row, and it is named
+     * as every other typed aggregate is: by its alias, and by the name
+     * PostgreSQL gives it, {@code array_agg}, where the query writes none.
+     *
+     * <p>Only an unqualified case-insensitive {@code array_agg} of exactly one
+     * direct, unsubscripted, non-array column is collected, written with or
+     * without {@code DISTINCT}, {@code ALL}, or an {@code ORDER BY} inside the
+     * call. An array column, which PostgreSQL collects into a multidimensional
+     * array, a {@code BYTEA}, {@code JSON}, or {@code JSONB} column, an array
+     * of which sqlcj maps no type of, a qualified name, another argument, and
+     * the {@code FILTER} and {@code OVER} forms, which the parser reports as
+     * expressions of their own, stay computed projections; a column of a type
+     * the schema recorded without a mapping is rejected as a {@code MIN} of one
+     * is, because the result takes its type from the column.
+     */
+    private org.sqlcj.schema.Column arrayAggregateColumn(
+        Function function,
+        Alias alias,
+        Scope scope,
+        boolean namesResultColumns
+    ) {
+        List<String> name = function.getMultipartName();
+        ExpressionList<?> arguments = function.getParameters();
+
+        if (
+            name == null
+                || name.size() != 1
+                || !name.get(0).equalsIgnoreCase("array_agg")
+                || arguments == null
+                || arguments.size() != 1
+        ) {
+            return null;
+        }
+
+        net.sf.jsqlparser.schema.Column argumentColumn = directColumn(arguments.get(0));
+
+        if (argumentColumn == null) {
+            return null;
+        }
+
+        org.sqlcj.schema.Column column = resolveColumn(argumentColumn, scope).column();
+        ColumnType type = requireSupportedType(column);
+
+        if (column.array() || !columnTypeMapping.isArrayElementType(type)) {
+            return null;
+        }
+
+        String implicitName = implicitAggregateName("array_agg", function, namesResultColumns);
+
+        return new org.sqlcj.schema.Column(
+            aggregateName(alias, implicitName),
+            type,
+            true,
+            null,
+            column.enumType(),
+            true,
+            column.blankPadded(),
+            aliasSqlName(alias, implicitName)
+        );
     }
 
     /**
@@ -7675,6 +8029,56 @@ public final class QueryAnalyzer {
             type.enumType(),
             type.array(),
             type.blankPadded(),
+            aliasSqlName(alias, written)
+        );
+    }
+
+    /**
+     * Resolves one projected JSON path whose last step reads {@code text} into
+     * its single result column, which is a nullable {@code TEXT}, because
+     * {@code ->>} and {@code #>>} always return {@code text} and either may
+     * read a key the document does not hold.
+     *
+     * <p>A direct column the path reads resolves against the query's sources as
+     * a selected column does, so a reference no source exposes is rejected,
+     * while its type is not read, because PostgreSQL rather than sqlcj checks
+     * that the operator applies to it. Every other base and every key reaches
+     * the database as written.
+     *
+     * <p>PostgreSQL names such a column {@code ?column?}, so the alias is
+     * required exactly where a catalogue call's is and is rejected with the
+     * same diagnostic, naming the path as the query writes it.
+     */
+    private org.sqlcj.schema.Column jsonTextColumn(
+        JsonExpression json,
+        Alias alias,
+        Scope scope,
+        boolean namesResultColumns
+    ) {
+        net.sf.jsqlparser.schema.Column base = directColumn(json.getExpression());
+
+        if (base != null) {
+            resolveColumn(base, scope);
+        }
+
+        String written = written(json);
+
+        if (alias == null && namesResultColumns) {
+            throw new UnsupportedOperationException(
+                FUNCTION_ALIAS_REJECTION.formatted(written, written)
+            );
+        }
+
+        return new org.sqlcj.schema.Column(
+            alias == null
+                ? written
+                : alias.getUnquotedName(),
+            ColumnType.TEXT,
+            true,
+            null,
+            null,
+            false,
+            false,
             aliasSqlName(alias, written)
         );
     }

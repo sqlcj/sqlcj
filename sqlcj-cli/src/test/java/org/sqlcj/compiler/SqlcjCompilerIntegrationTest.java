@@ -4574,6 +4574,104 @@ class SqlcjCompilerIntegrationTest {
     }
 
     /**
+     * An uncast placeholder compared with an aggregate in {@code HAVING} is one
+     * typed method parameter named after that aggregate's column, an
+     * {@code array_agg} of one column is a nullable list of that column's own
+     * Java type, an enum included, and a projected text path is a nullable
+     * {@code String} component.
+     */
+    @Test
+    void shouldGenerateCompilableJavaForHavingAggregatesArraysAndJsonText() throws IOException {
+        Path schemaFile = tempDir.resolve("schema.sql");
+        Path queriesFile = tempDir.resolve("queries.sql");
+        Path generatedDirectory = tempDir.resolve("generated");
+        Path classesDirectory = tempDir.resolve("classes");
+
+        Files.writeString(
+            schemaFile,
+            """
+                CREATE TYPE order_status AS ENUM ('new', 'paid');
+
+                CREATE TABLE orders
+                (
+                    id       BIGINT NOT NULL,
+                    user_id  BIGINT NOT NULL,
+                    total    DECIMAL(10, 2),
+                    status   order_status,
+                    metadata JSONB
+                );
+                """
+        );
+
+        Files.writeString(
+            queriesFile,
+            """
+                -- name: ListBusyUsers :many
+                SELECT o.user_id, count(o.id) AS orders
+                FROM orders o
+                GROUP BY o.user_id
+                HAVING count(o.id) > $1;
+
+                -- name: ListPayingUsers :many
+                SELECT o.user_id
+                FROM orders o
+                GROUP BY o.user_id
+                HAVING :least < sum(o.total);
+
+                -- name: ListUserStatuses :many
+                SELECT o.user_id, array_agg(DISTINCT o.status ORDER BY o.status) AS statuses
+                FROM orders o
+                GROUP BY o.user_id;
+
+                -- name: ListOrderLabels :many
+                SELECT o.id,
+                       o.metadata ->> 'label'            AS label,
+                       o.metadata -> 'extra' #>> '{tag}' AS tag
+                FROM orders o;
+                """
+        );
+
+        String repository = Files.readString(
+            generateUsersRepository(
+                List.of(schemaFile.toString()),
+                queriesFile,
+                generatedDirectory
+            )
+        );
+
+        assertTrue(
+            repository.contains("public List<ListBusyUsersResult> listBusyUsers(Long count) {"),
+            repository
+        );
+
+        assertTrue(
+            repository.contains("public List<Long> listPayingUsers(BigDecimal least) {"),
+            repository
+        );
+
+        assertEquals(
+            List.of("Long userId", "Long orders"),
+            recordComponents(repository, "ListBusyUsersResult")
+        );
+
+        assertEquals(
+            List.of("Long userId", "@Nullable List<@Nullable OrderStatus> statuses"),
+            recordComponents(repository, "ListUserStatusesResult")
+        );
+
+        assertEquals(
+            List.of("Long id", "@Nullable String label", "@Nullable String tag"),
+            recordComponents(repository, "ListOrderLabelsResult")
+        );
+
+        assertCompiles(generatedDirectory, classesDirectory);
+
+        assertTrue(
+            Files.exists(classesDirectory.resolve("generated/repositories/UsersRepository.class"))
+        );
+    }
+
+    /**
      * An alias on a returned column names the result record's component, for
      * every returning write kind, and the executed SQL keeps the alias.
      */
