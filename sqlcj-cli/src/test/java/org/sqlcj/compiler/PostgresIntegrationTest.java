@@ -419,6 +419,26 @@ class PostgresIntegrationTest {
         """;
 
     /**
+     * A snapshot declaring the columns an aggregate-typed {@code HAVING}
+     * comparison, an {@code array_agg}, and a projected JSON text path read:
+     * a grouping key, a numeric column, an enum column, and a nullable
+     * {@code JSONB} column, so that one row can carry a JSON object, one a
+     * JSON {@code null} key, and one no document at all.
+     */
+    private static final String SHIPMENT_SCHEMA = """
+        CREATE TYPE shipment_state AS ENUM ('packed', 'shipped');
+
+        CREATE TABLE shipments
+        (
+            id       BIGINT PRIMARY KEY,
+            route_id BIGINT NOT NULL,
+            weight   DECIMAL(10, 2),
+            state    shipment_state,
+            metadata JSONB
+        );
+        """;
+
+    /**
      * A snapshot declaring a nullable scalar and a nullable one-dimensional
      * array column of {@code citext} and of each network address type, so that
      * one row can carry values of every one of them and another can carry
@@ -1078,6 +1098,8 @@ class PostgresIntegrationTest {
         execute("DROP TABLE IF EXISTS readings");
         execute("DROP TABLE IF EXISTS categories");
         execute("DROP TABLE IF EXISTS documents");
+        execute("DROP TABLE IF EXISTS shipments");
+        execute("DROP TYPE IF EXISTS shipment_state");
         execute("DROP TABLE IF EXISTS probes");
         execute("DROP TABLE IF EXISTS network_values");
         execute("DROP TABLE IF EXISTS duration_values");
@@ -2518,6 +2540,153 @@ class PostgresIntegrationTest {
             assertEquals(Long.class, count.getReturnType());
 
             assertEquals(2L, count.invoke(repository, "A%"));
+        }
+    }
+
+    /**
+     * Covers the three forms typed from an aggregate, a collected column, and
+     * a JSON text path end to end: an uncast placeholder compared with a
+     * {@code COUNT} and with a {@code SUM} in {@code HAVING} binds the value
+     * PostgreSQL compares there, an {@code array_agg} of an enum column reads
+     * a list of the generated enum, and a projected {@code ->>} and
+     * {@code #>>} path each read a {@code String}. A JSON {@code null} key, an
+     * absent document, and a group no row of which is counted read
+     * {@code null}.
+     */
+    @Test
+    void shouldExecuteGeneratedHavingAggregatesArraysAndJsonTextAgainstPostgres()
+        throws Exception {
+        execute(SHIPMENT_SCHEMA);
+
+        Path classesDirectory = generateAndCompile(
+            SHIPMENT_SCHEMA,
+            """
+                -- name: InsertShipment :exec
+                INSERT INTO shipments (id, route_id, weight, state, metadata)
+                VALUES ($1, $2, $3, $4, $5);
+
+                -- name: ListBusyRoutes :many
+                SELECT route_id, count(id) AS shipped
+                FROM shipments
+                GROUP BY route_id
+                HAVING count(id) > :least
+                ORDER BY route_id;
+
+                -- name: ListHeavyRoutes :many
+                SELECT route_id
+                FROM shipments
+                GROUP BY route_id
+                HAVING $1 < sum(weight)
+                ORDER BY route_id;
+
+                -- name: ListRouteStates :many
+                SELECT route_id, array_agg(DISTINCT state ORDER BY state) AS states
+                FROM shipments
+                GROUP BY route_id
+                ORDER BY route_id;
+
+                -- name: CollectRouteStates :one
+                SELECT array_agg(state ORDER BY id) AS states
+                FROM shipments
+                WHERE route_id = :routeId;
+
+                -- name: ListShipmentLabels :many
+                SELECT id,
+                       metadata ->> 'label'            AS label,
+                       metadata -> 'extra' #>> '{tag}' AS tag
+                FROM shipments
+                ORDER BY id;
+                """
+        );
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Class<?> stateEnum = enumClass(classLoader, "ShipmentState");
+
+            Object packed = constant(stateEnum, "PACKED");
+            Object shipped = constant(stateEnum, "SHIPPED");
+
+            Object repository = newRepository(classLoader);
+
+            Method insert = repository.getClass().getMethod(
+                "insertShipment",
+                Long.class,
+                Long.class,
+                BigDecimal.class,
+                stateEnum,
+                String.class
+            );
+
+            insert.invoke(
+                repository,
+                1L,
+                10L,
+                new BigDecimal("5.00"),
+                packed,
+                "{\"label\": \"fast\", \"extra\": {\"tag\": \"air\"}}"
+            );
+
+            insert.invoke(
+                repository,
+                2L,
+                10L,
+                new BigDecimal("7.50"),
+                shipped,
+                "{\"label\": null}"
+            );
+
+            insert.invoke(repository, 3L, 20L, new BigDecimal("1.25"), packed, null);
+
+            Method listBusyRoutes = repository.getClass().getMethod(
+                "listBusyRoutes",
+                Long.class
+            );
+
+            List<?> busy = (List<?>) listBusyRoutes.invoke(repository, 1L);
+
+            assertEquals(1, busy.size());
+            assertEquals(10L, component(busy.get(0), "routeId"));
+            assertEquals(2L, component(busy.get(0), "shipped"));
+
+            assertEquals(List.of(), listBusyRoutes.invoke(repository, 5L));
+
+            assertEquals(
+                List.of(10L),
+                repository.getClass()
+                    .getMethod("listHeavyRoutes", BigDecimal.class)
+                    .invoke(repository, new BigDecimal("10.00"))
+            );
+
+            List<?> states = (List<?>) repository.getClass()
+                .getMethod("listRouteStates")
+                .invoke(repository);
+
+            assertEquals(2, states.size());
+            assertEquals(List.of(packed, shipped), component(states.get(0), "states"));
+            assertEquals(List.of(packed), component(states.get(1), "states"));
+
+            Method collectRouteStates = repository.getClass().getMethod(
+                "collectRouteStates",
+                Long.class
+            );
+
+            assertEquals(
+                List.of(packed, shipped),
+                component(collectRouteStates.invoke(repository, 10L), "states")
+            );
+
+            assertNull(component(collectRouteStates.invoke(repository, 99L), "states"));
+
+            List<?> labels = (List<?>) repository.getClass()
+                .getMethod("listShipmentLabels")
+                .invoke(repository);
+
+            assertEquals(3, labels.size());
+            assertEquals("fast", component(labels.get(0), "label"));
+            assertEquals("air", component(labels.get(0), "tag"));
+            assertNull(component(labels.get(1), "label"));
+            assertNull(component(labels.get(1), "tag"));
+            assertNull(component(labels.get(2), "label"));
+            assertNull(component(labels.get(2), "tag"));
         }
     }
 

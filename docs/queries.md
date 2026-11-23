@@ -538,8 +538,9 @@ configuration entry.
   unknown column is rejected.
 - A result expression that is not a direct column, a wildcard, one of the
   aggregates below, one of the catalogue functions below, the cast projection
-  below, or the `EXISTS` projection below — such as a function outside the
-  catalogue, an arithmetic expression, or a literal — is rejected as
+  below, the `EXISTS` projection below, or the aliased JSON text path
+  [Predicates](#predicates) states — such as a function outside the catalogue,
+  an arithmetic expression, or a literal — is rejected as
   `Cannot infer the type of <expression> in SELECT; state it with a cast and an
   alias, such as <expression>::<type> AS <alias>`, naming the expression as the
   query writes it, on one line, twice: once as the rejected item and once as the
@@ -654,6 +655,66 @@ GROUP BY r.author_id;
   are counted as their plain forms are. The condition is no result expression
   and reaches the database as written, so PostgreSQL rather than sqlcj checks
   it.
+- `array_agg` collects one column's values into an array and needs no cast or
+  alias either, so
+  `SELECT r.author_id, array_agg(DISTINCT r.period ORDER BY r.period) AS periods
+  FROM royalties r GROUP BY r.author_id` is a nullable array result column:
+  - the name is case-insensitive and must be written unqualified, with exactly
+    one argument that is one direct column written without a subscript, with or
+    without `DISTINCT`, `ALL`, or an `ORDER BY` inside the call;
+  - the column is a nullable array of the collected column's own type, its enum
+    type and its blank-padded spelling included, so it generates a list of that
+    column's Java type and reads `null` over no row;
+  - it names its own result column as every other aggregate does: by its alias,
+    and by `array_agg`, the name PostgreSQL gives it, where the query writes
+    none, under the same collision rule, so a second unaliased `array_agg` of
+    one projection is rejected;
+  - an array column stays a computed projection, because PostgreSQL collects it
+    into a multidimensional array, and so do a `BYTEA`, `JSON`, or `JSONB`
+    column, an array of which sqlcj maps no type of, another argument such as
+    `array_agg(lower(name))` or `array_agg(name, ',')`, a qualified
+    `pg_catalog.array_agg(name)`, and the `FILTER` and `OVER` forms. A column of
+    a type sqlcj does not map is rejected as a `MIN` of one is;
+  - it is typed as a projection item only, as the filtered `COUNT` is, so
+    `coalesce(array_agg(name), ...)` and an `array_agg` compared in `HAVING`
+    still need a cast.
+- An uncast placeholder compared with one of the aggregates above in `HAVING`
+  takes that aggregate's type, so it needs no cast, as in
+  `SELECT r.author_id, COUNT(r.id) AS payments FROM royalties r
+  GROUP BY r.author_id HAVING COUNT(r.id) > :least`:
+  - the aggregate may stand on either side of `=`, `<>`, `<`, `<=`, `>`, or
+    `>=`, and the rule reads through `AND`, `OR`, `NOT`, and parentheses, in the
+    `HAVING` of every analyzed `SELECT` level: the top level, a branch of a set
+    operation, a `WITH` body, a subquery source, a predicate subquery, and an
+    insert's `SELECT`;
+  - the parameter takes the aggregate's type and is non-null, as a placeholder
+    compared with a column is. A named placeholder keeps its own name and an
+    indexed one is named after the aggregate's own column, so `$1` compared with
+    a `SUM` is `sum`;
+  - the aggregates are the ones a projection types — `COUNT`, `MIN`, `MAX`,
+    `SUM`, `AVG`, and the filtered `COUNT`. An aggregate no result type is
+    known for states none, so a `MIN(active)` of a `BOOLEAN` column, an
+    aggregate of a column whose type sqlcj does not map, an `array_agg`, a
+    grouped column, and arithmetic such as `COUNT(*) > :n * 2` each keep
+    needing a cast;
+  - the clause itself is never rejected for what it reads, because it reaches
+    the database as written: a reference the level in scope has states its
+    column, while one no source of it exposes — a whole-row reference such as
+    `COUNT(u)`, a system column such as `COUNT(xmin)`, an ambiguous reference,
+    and the qualifier of a `COUNT(x.*)` no source exposes — states no type, as
+    the operand of a cast does, so such a comparison types nothing and
+    PostgreSQL rather than sqlcj checks the aggregate;
+  - the comparison types the parameter only where no other clause, no cast, and
+    no catalogue argument position types an occurrence of it, so a query that
+    compiles without this rule keeps the parameter and the written type it has:
+    in `HAVING COUNT(*) > :n LIMIT :n` the parameter stays the `INTEGER` its
+    `LIMIT` states, in `WHERE code = :n ... HAVING COUNT(*) > :n` the one its
+    `WHERE` states, and in
+    `SELECT upper(:s) AS u ... HAVING MAX(name) = :s` the `TEXT` its catalogue
+    position states, each written at the occurrence standing in `HAVING`. Where
+    the comparison does type it, the executed statement writes nothing at the
+    `?`, because the comparison itself states the type;
+  - everything else in `HAVING` still reaches the database as written.
 - Every other aggregate is still an unsupported result expression, including a
   qualified `pg_catalog.count(*)` or `pg_catalog.max(id)`, an aggregate of two
   arguments, a subscripted argument such as `MIN(labels[1])`, a `SUM` or `AVG`
@@ -1050,6 +1111,21 @@ not. A path that ends in `->` or `#>` returns `json` or `jsonb`, which sqlcj
 infers no parameter type from, a parenthesized path is another expression, and
 `LIKE`, `IN`, `BETWEEN`, and `= ANY` read no such result, so a placeholder in
 any of those positions keeps needing a cast.
+
+Such a path is also a projection of its own, so a read may select it without a
+cast, as in `SELECT meta ->> 'k' AS k` and
+`SELECT meta -> 'a' #>> '{b}' AS p`. The result column is a nullable `TEXT`,
+because both operators always return `text` and either may read a key the
+document does not hold, and a direct column the path reads resolves against the
+query's sources as a selected column does, while its type is not read.
+PostgreSQL names such a column `?column?`, so the alias is required exactly
+where a catalogue call's is, with or without `AS`, and a path without one is
+rejected as
+`<path> requires a result alias, such as <path> AS <alias>.`; a branch of a set
+operation other than the leftmost and a position a column list on a `WITH` name
+renames may omit it, as they may for a catalogue call. The last step decides
+here too, so a path that ends in `->` or `#>` and a parenthesized path each stay
+computed projections.
 
 A placeholder written as a direct operand of `+`, `-`, `*`, or `/` beside a
 direct column of one of the numeric types `SMALLINT`, `INTEGER`, `BIGINT`,
@@ -3172,17 +3248,21 @@ header-line order, before the run exits with status `1` having written nothing.
   [Set operations](#set-operations) states.
 - A result expression that is not a direct column, a wildcard, a `COUNT`,
   `MIN`, `MAX`, `SUM`, or `AVG` of one argument, a `COUNT` of one argument
-  written with `FILTER (WHERE ...)`, an aliased call of the function catalogue,
-  an aliased cast, or an aliased `EXISTS` of a subquery, including a function
+  written with `FILTER (WHERE ...)`, an `array_agg` of one collected column, an
+  aliased call of the function catalogue, an aliased cast, an aliased `EXISTS`
+  of a subquery, or an aliased JSON path that reads `text`, including a function
   outside the catalogue and a literal. A cast projection without an alias,
-  an `EXISTS` projection without an alias, a cast projection whose type sqlcj
-  does not map, and a `MIN`, `MAX`, `SUM`, or `AVG` of a column whose type
+  an `EXISTS` projection without an alias, a JSON text path without an alias, a
+  cast projection whose type sqlcj does not map, and a `MIN`, `MAX`, `SUM`,
+  `AVG`, or `array_agg` of a column whose type
   sqlcj does not map each fail with their own diagnostic, while
   `COUNT(DISTINCT *)`, `COUNT(ALL *)`, `pg_catalog.count(*)`,
   `pg_catalog.max(id)`, `MAX(id, name)`, `MIN(labels[1])`, `MAX(active)`,
   `MIN(external_id)`, `SUM(bio)`, `SUM(labels)`, `initcap(name) AS n`,
   `lower(visits) AS n`, `name || 'x' AS n`, `NOT EXISTS (SELECT 1 FROM users) AS missing`,
-  `EXISTS (SELECT 1 FROM users)::boolean AS present`, a `FILTER` on anything
+  `EXISTS (SELECT 1 FROM users)::boolean AS present`,
+  `array_agg(labels) AS l`, `array_agg(document) AS d`,
+  `metadata -> 'k' AS k`, `(metadata ->> 'k') AS k`, a `FILTER` on anything
   but a `COUNT` of one argument, and the `OVER` forms are rejected as
   `Cannot infer the type of COUNT(*) OVER () in SELECT; state it with a cast
   and an alias, such as (COUNT(*) OVER ())::<type> AS n`. A branch of a set
@@ -3244,8 +3324,10 @@ header-line order, before the run exits with status `1` having written nothing.
   catalogue position, nor
   another occurrence of the same parameter states its type, including
   `ORDER BY $1`, a projection such as `SELECT $1 AS x`, a grouping list, a
-  `HAVING` predicate, a subquery outside the analyzed predicate forms, such as
-  the query of an `= ANY`, a
+  `HAVING` predicate other than a comparison with a typed aggregate, such as
+  `HAVING array_agg(name) > :n`, `HAVING MIN(active) > :n`,
+  `HAVING country > :n`, or `HAVING COUNT(*) > :n * 2`, a subquery outside the
+  analyzed predicate forms, such as the query of an `= ANY`, a
   named placeholder under a function such as `lower(name) = :name` or
   `initcap(:name)`, where the placeholder is no argument of a catalogue call or
   stands at a position that states no type, a computed
@@ -3370,7 +3452,10 @@ models nor rejects them, so a statement that uses one may still compile while
 the generated Java describes only the part sqlcj did analyze. Do not rely on
 them:
 
-- `DISTINCT`, `GROUP BY`, and `HAVING`,
+- `DISTINCT` and `GROUP BY`, and every part of `HAVING` other than the
+  aggregate a comparison there types a placeholder from, which
+  [Aggregates](#aggregates) states: the grouping the clause reads and the
+  condition it writes reach the database as written,
 - predicate forms other than the listed comparisons, `AND`/`OR`/`NOT`, fixed
   `IN` lists, pattern placeholders, null tests, ranges, list predicates, and
   the analyzed subquery forms, such as `LIKE` with a literal pattern or a range
@@ -3389,7 +3474,9 @@ A clause that is not analyzed still binds the placeholders a cast types inside
 it, in textual order, and nothing else of it is checked. A cast placeholder in a
 `GROUP BY`, `HAVING`, `ORDER BY`, or unanalyzed subquery therefore generates one
 typed method parameter while PostgreSQL rather than sqlcj checks the surrounding
-expression, including its tables and columns.
+expression, including its tables and columns, and a `HAVING` placeholder the
+aggregate beside it types is the one exception, which
+[Aggregates](#aggregates) states.
 
 sqlcj itself provides no macros, dynamic `IN` expansion, or query-building API.
 The `= ANY` list predicate is the only analyzed array operator. An array
@@ -3780,7 +3867,32 @@ Reads:
   ignoring case,
   `QueryAnalyzerTest.shouldTypeAFilteredCountAsANonNullBigint` covers the
   filtered `COUNT` with and without an alias, of a `DISTINCT` column, of a
-  column, and of a qualified wildcard, and
+  column, and of a qualified wildcard,
+  `QueryAnalyzerTest.shouldTypeAProjectedArrayAggregateAsANullableArray`,
+  `QueryAnalyzerTest.shouldCarryTheEnumTypeAndTheModifiersOfAProjectedArrayAggregate`,
+  `QueryAnalyzerTest.shouldRejectUnsupportedArrayAggregateForm`, and
+  `QueryAnalyzerTest.shouldNameAnUnaliasedArrayAggregateAfterItsFunction` cover
+  an `array_agg`'s type, nullness, name, and alias forms, its enum type and its
+  `DISTINCT`, `ALL`, and inner `ORDER BY` spellings, the array, `BYTEA`,
+  `JSON`, `JSONB`, subscripted, computed, two-argument, qualified, `FILTER`,
+  and `OVER` forms that stay computed, the unmapped column it rejects, a second
+  unaliased one of the same projection, and the stored name a `WITH` wildcard
+  reads it under,
+  `QueryAnalyzerTest.shouldTypeAHavingPlaceholderFromTheAggregateItIsComparedWith`,
+  `QueryAnalyzerTest.shouldCarryTheAggregateSpellingInAHavingPlaceholder`,
+  `QueryAnalyzerTest.shouldTypeAHavingPlaceholderThroughConnectivesAndEveryLevel`,
+  `QueryAnalyzerTest.shouldKeepTheParameterAnotherClauseOrACastStatesBesideAHavingComparison`,
+  `QueryAnalyzerTest.shouldKeepTheParameterACataloguePositionStatesBesideAHavingComparison`,
+  `QueryAnalyzerTest.shouldTypeNothingFromAHavingAggregateOfAnUnresolvedReference`,
+  and `QueryAnalyzerTest.shouldRejectAHavingPlaceholderNoAggregateTypes` cover
+  an uncast placeholder compared with each typed aggregate and with the
+  filtered `COUNT` in `HAVING`, on either side, named and indexed, the enum,
+  blank-padded, and array spellings it carries, the boolean connectives,
+  parentheses, and every `SELECT` level it is read in, the parameter another
+  clause, a cast, or a catalogue argument position keeps together with the type
+  written at the `HAVING` occurrence, a whole-row reference, a system column,
+  and a counted wildcard of an unexposed qualifier that state no type on both
+  the plain and the filtered path, and the comparisons that stay rejected, and
   `SqlcjCompilerIntegrationTest.shouldGenerateCompilableJavaForUnaliasedAggregateProjections`
   compiles a `:one` count, a `:one` filtered count, and a grouped count into
   the `Long` return and the `count` component they name, while
@@ -3800,7 +3912,16 @@ Reads:
   executes an unaliased `count`, `max`, `avg`, and filtered count read through
   a `WITH` body's wildcard, and a `:one` unaliased count of its own, against
   PostgreSQL 16, so the names PostgreSQL gives those columns are the names the
-  statement reads them under.
+  statement reads them under, and
+  `SqlcjCompilerIntegrationTest.shouldGenerateCompilableJavaForHavingAggregatesArraysAndJsonText`
+  and
+  `PostgresIntegrationTest.shouldExecuteGeneratedHavingAggregatesArraysAndJsonTextAgainstPostgres`
+  compile and then execute, against PostgreSQL 16 and a schema of their own
+  with an enum and a `JSONB` column, a `HAVING` comparison with a `COUNT` and
+  with a `SUM`, an `array_agg` of the enum column, and a projected `->>` and
+  `#>>` path, so each binds its typed argument and reads its list, its
+  `String`, and the `null` a JSON `null` key, an absent document, and a group
+  of no row produce.
 - `QueryAnalyzerTest.shouldTypeACatalogueCallOfAFixedResultType`,
   `QueryAnalyzerTest.shouldTypeATextCatalogueCallFromItsArguments`,
   `QueryAnalyzerTest.shouldTypeDateTruncFromItsValueAndItsTimeZone`,
@@ -3887,6 +4008,14 @@ Reads:
   `PostgresIntegrationTest.shouldExecuteGeneratedCastProjectionAgainstPostgres`
   executes a `:one` cast `SUM` against PostgreSQL 16 whose `BigDecimal`
   component is the sum and `null` when no row matches.
+- `QueryAnalyzerTest.shouldTypeAProjectedJsonTextPathAsNullableText`,
+  `QueryAnalyzerTest.shouldRejectAProjectedJsonTextPathWithoutAResultAlias`,
+  and `QueryAnalyzerTest.shouldRejectAProjectedJsonPathThatReadsNoText` cover a
+  projected `->>` and `#>>` path as a nullable `TEXT` column, both alias
+  spellings, the path written beside a direct column, the unknown base column
+  it rejects, the missing-alias diagnostic and the set-operation branch that
+  needs none, and the `->`, `#>`, chained, and parenthesized paths that stay
+  computed projections.
 - `QueryAnalyzerTest.shouldAnalyzeLeftJoinWithNullableJoinedColumns`,
   `QueryAnalyzerTest.shouldEmbedTheRowOfALeftJoinedSourceAsNullable`,
   `QueryAnalyzerTest.shouldEmbedTheRowOfAQualifiedLeftJoinedWildcardAsNullable`,

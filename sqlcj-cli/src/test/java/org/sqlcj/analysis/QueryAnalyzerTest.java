@@ -2834,6 +2834,637 @@ class QueryAnalyzerTest {
     }
 
     /**
+     * An uncast placeholder compared with a typed aggregate in {@code HAVING}
+     * takes that aggregate's type, under each of the six comparisons and on
+     * either side of them, and is non-null as a placeholder compared with a
+     * column is. A named placeholder keeps its own name and an indexed one
+     * takes the name PostgreSQL gives the aggregate's column, so the statement
+     * executes the placeholder as a bare {@code ?} and adds no cast.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT active, count(id) AS n FROM users GROUP BY active"
+                + " HAVING count(id) > :min|min|BIGINT",
+            "SELECT active FROM users GROUP BY active HAVING count(*) >= :min|min|BIGINT",
+            "SELECT active FROM users GROUP BY active HAVING $1 < count(*)|count|BIGINT",
+            "SELECT active FROM users GROUP BY active HAVING sum(balance) <> :total|total|DECIMAL",
+            "SELECT active FROM users GROUP BY active HAVING $1 = sum(balance)|sum|DECIMAL",
+            "SELECT active FROM users GROUP BY active HAVING avg(score) <= :average"
+                + "|average|DECIMAL",
+            "SELECT active FROM users GROUP BY active HAVING max(created_at) > :at|at|TIMESTAMP",
+            "SELECT active FROM users GROUP BY active HAVING $1 > min(created_at)|min|TIMESTAMP",
+            "SELECT active FROM users GROUP BY active"
+                + " HAVING count(*) FILTER (WHERE active) > :kept|kept|BIGINT",
+            "SELECT active FROM users GROUP BY active"
+                + " HAVING $1 < count(*) FILTER (WHERE active)|count|BIGINT"
+        }
+    )
+    void shouldTypeAHavingPlaceholderFromTheAggregateItIsComparedWith(
+        String sql,
+        String name,
+        ColumnType type
+    ) {
+        ParsedSql parsedSql = parser.parse(sql);
+
+        QueryModel model = analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parsedSql,
+            aggregateSchema
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, name, type)),
+            model.parameters()
+        );
+
+        assertEquals(List.of(1), model.bindingParameterIndexes());
+
+        assertEquals(parsedSql.parameters().executableSql(), model.executableSql());
+    }
+
+    /**
+     * Such a placeholder carries the whole spelling of the aggregate's column,
+     * so a {@code MAX} of an enum, of a blank-padded character, and of an array
+     * column each bind the value that column's own aggregate reads.
+     */
+    @Test
+    void shouldCarryTheAggregateSpellingInAHavingPlaceholder() {
+        assertEquals(
+            List.of(new QueryParameter(1, "r", ColumnType.ENUM, "user_role", false, false)),
+            analyzeAggregates(
+                "SELECT active FROM users GROUP BY active HAVING max(role) = :r"
+            )
+                .parameters()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "c", ColumnType.VARCHAR, null, false, true)),
+            analyzeAggregates(
+                "SELECT active FROM users GROUP BY active HAVING min(code) = :c"
+            )
+                .parameters()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "l", ColumnType.VARCHAR, null, true, false)),
+            analyzeAggregates(
+                "SELECT active FROM users GROUP BY active HAVING max(labels) = :l"
+            )
+                .parameters()
+        );
+    }
+
+    /**
+     * The rule reads through {@code AND}, {@code OR}, {@code NOT}, and
+     * parentheses, as the predicate rules of a {@code WHERE} clause do, and
+     * types a placeholder in the {@code HAVING} of every plain {@code SELECT}
+     * level: a branch of a set operation, a {@code WITH} body, a subquery
+     * source, and a predicate subquery.
+     */
+    @Test
+    void shouldTypeAHavingPlaceholderThroughConnectivesAndEveryLevel() {
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "n", ColumnType.BIGINT),
+                new QueryParameter(2, "at", ColumnType.TIMESTAMP)
+            ),
+            analyzeAggregates(
+                "SELECT active FROM users GROUP BY active"
+                    + " HAVING NOT (count(*) > :n OR min(created_at) < :at)"
+            )
+                .parameters()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "n", ColumnType.BIGINT)),
+            analyzeAggregates(
+                "SELECT active FROM users GROUP BY active HAVING (count(*) > :n)"
+            )
+                .parameters()
+        );
+
+        assertEquals(
+            List.of(
+                new QueryParameter(1, "n", ColumnType.BIGINT),
+                new QueryParameter(2, "total", ColumnType.DECIMAL)
+            ),
+            analyzeAggregates(
+                "SELECT active FROM users GROUP BY active HAVING count(*) > :n"
+                    + " UNION SELECT active FROM users GROUP BY active HAVING sum(balance) > :total"
+            )
+                .parameters()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "n", ColumnType.BIGINT)),
+            analyzeAggregates(
+                "WITH grouped AS (SELECT active FROM users GROUP BY active"
+                    + " HAVING count(*) > :n)"
+                    + " SELECT grouped.active FROM grouped"
+            )
+                .parameters()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "total", ColumnType.DECIMAL)),
+            analyzeAggregates(
+                "SELECT grouped.active FROM (SELECT active FROM users GROUP BY active"
+                    + " HAVING sum(balance) > :total) grouped"
+            )
+                .parameters()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "n", ColumnType.BIGINT)),
+            analyzeAggregates(
+                "SELECT id FROM users WHERE EXISTS (SELECT 1 FROM users u2"
+                    + " GROUP BY u2.active HAVING count(u2.id) > :n)"
+            )
+                .parameters()
+        );
+    }
+
+    /**
+     * A {@code HAVING} comparison types a parameter only where no other clause
+     * and no cast states a type for it, so a query that compiles without this
+     * rule keeps the parameter it has and keeps the type sqlcj writes at the
+     * occurrence standing in {@code HAVING}.
+     */
+    @Test
+    void shouldKeepTheParameterAnotherClauseOrACastStatesBesideAHavingComparison() {
+        QueryModel compared = analyzeAggregates(
+            "SELECT active FROM users WHERE visits = $1 GROUP BY active HAVING count(*) > $1"
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "visits", ColumnType.INTEGER)),
+            compared.parameters()
+        );
+
+        assertEquals(
+            "SELECT active FROM users WHERE visits = ? GROUP BY active"
+                + " HAVING count(*) > ?::int4",
+            compared.executableSql()
+        );
+
+        QueryModel paged = analyzeAggregates(
+            "SELECT active FROM users GROUP BY active HAVING count(*) > :n LIMIT :n"
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "n", ColumnType.INTEGER)),
+            paged.parameters()
+        );
+
+        assertEquals(
+            "SELECT active FROM users GROUP BY active HAVING count(*) > ?::int4 LIMIT ?",
+            paged.executableSql()
+        );
+
+        QueryModel cast = analyzeAggregates(
+            "SELECT active FROM users GROUP BY active HAVING count(*) > $1::int"
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "param1", ColumnType.INTEGER)),
+            cast.parameters()
+        );
+
+        assertEquals(
+            "SELECT active FROM users GROUP BY active HAVING count(*) > ?::int",
+            cast.executableSql()
+        );
+    }
+
+    /**
+     * A catalogue argument position states a type before a {@code HAVING}
+     * comparison does, so a query that compiles without the comparison keeps
+     * the parameter that position states and keeps the type sqlcj writes at
+     * the occurrence standing in {@code HAVING}.
+     */
+    @Test
+    void shouldKeepTheParameterACataloguePositionStatesBesideAHavingComparison() {
+        QueryModel text = analyzeAggregates(
+            "SELECT active, upper(:s) AS u FROM users GROUP BY active HAVING max(name) = :s"
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "s", ColumnType.TEXT)),
+            text.parameters()
+        );
+
+        assertEquals(
+            "SELECT active, upper(?) AS u FROM users GROUP BY active"
+                + " HAVING max(name) = ?::text",
+            text.executableSql()
+        );
+
+        QueryModel lock = analyzeAggregates(
+            "SELECT active FROM users GROUP BY active"
+                + " HAVING count(*) > :k AND pg_try_advisory_xact_lock(:k)"
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "k", ColumnType.BIGINT)),
+            lock.parameters()
+        );
+
+        assertEquals(
+            "SELECT active FROM users GROUP BY active"
+                + " HAVING count(*) > ?::int8 AND pg_try_advisory_xact_lock(?)",
+            lock.executableSql()
+        );
+
+        QueryModel offset = analyzeAggregates(
+            "SELECT active, lag(active, :k) OVER (ORDER BY active) AS l FROM users"
+                + " GROUP BY active HAVING count(*) > :k"
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "k", ColumnType.INTEGER)),
+            offset.parameters()
+        );
+
+        assertEquals(
+            "SELECT active, lag(active, ?) OVER (ORDER BY active) AS l FROM users"
+                + " GROUP BY active HAVING count(*) > ?::int4",
+            offset.executableSql()
+        );
+    }
+
+    /**
+     * The clause reaches the database as written, so a reference inside a
+     * compared aggregate that the level in scope does not have — a whole-row
+     * reference, a system column, and the qualifier of a counted wildcard no
+     * source exposes — states no type instead of being rejected, on the plain
+     * and on the filtered-{@code COUNT} path alike. Such a comparison types
+     * nothing, so the parameter and the executable SQL stay the ones the rest
+     * of the query states.
+     */
+    @Test
+    void shouldTypeNothingFromAHavingAggregateOfAnUnresolvedReference() {
+        QueryModel paged = analyzeAggregates(
+            "SELECT u.active FROM users u GROUP BY u.active HAVING count(u) > :n LIMIT :n"
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "n", ColumnType.INTEGER)),
+            paged.parameters()
+        );
+
+        assertEquals(
+            "SELECT u.active FROM users u GROUP BY u.active"
+                + " HAVING count(u) > ?::int4 LIMIT ?",
+            paged.executableSql()
+        );
+
+        QueryModel compared = analyzeAggregates(
+            "SELECT active FROM users WHERE id = :n GROUP BY active HAVING count(xmin) > :n"
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "n", ColumnType.BIGINT)),
+            compared.parameters()
+        );
+
+        assertEquals(
+            "SELECT active FROM users WHERE id = ? GROUP BY active"
+                + " HAVING count(xmin) > ?::int8",
+            compared.executableSql()
+        );
+
+        QueryModel catalogued = analyzeAggregates(
+            "SELECT u.active, upper(:s) AS x FROM users u GROUP BY u.active"
+                + " HAVING max(xmin) = :s"
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "s", ColumnType.TEXT)),
+            catalogued.parameters()
+        );
+
+        assertEquals(
+            "SELECT u.active, upper(?) AS x FROM users u GROUP BY u.active"
+                + " HAVING max(xmin) = ?::text",
+            catalogued.executableSql()
+        );
+
+        QueryModel filtered = analyzeAggregates(
+            "SELECT u.active FROM users u WHERE u.id = :n GROUP BY u.active"
+                + " HAVING count(u) FILTER (WHERE u.active) > :n"
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "n", ColumnType.BIGINT)),
+            filtered.parameters()
+        );
+
+        assertEquals(
+            "SELECT u.active FROM users u WHERE u.id = ? GROUP BY u.active"
+                + " HAVING count(u) FILTER (WHERE u.active) > ?::int8",
+            filtered.executableSql()
+        );
+
+        assertEquals(
+            "Cannot infer the type of :n in count(u) > :n;"
+                + " state it with a cast, such as :n::<type>",
+            aggregateRejection(
+                "SELECT u.active FROM users u GROUP BY u.active HAVING count(u) > :n"
+            )
+        );
+
+        assertEquals(
+            "Cannot infer the type of :n in count(x.*) > :n;"
+                + " state it with a cast, such as :n::<type>",
+            aggregateRejection(
+                "SELECT u.active FROM users u GROUP BY u.active HAVING count(x.*) > :n"
+            )
+        );
+
+        assertEquals(
+            "Cannot infer the type of :n in count(x.*) FILTER (WHERE u.active) > :n;"
+                + " state it with a cast, such as :n::<type>",
+            aggregateRejection(
+                "SELECT u.active FROM users u GROUP BY u.active"
+                    + " HAVING count(x.*) FILTER (WHERE u.active) > :n"
+            )
+        );
+    }
+
+    /**
+     * A {@code HAVING} comparison this rule types no aggregate of keeps the
+     * unanalyzed-placeholder rejection: an {@code array_agg}, an aggregate
+     * PostgreSQL defines no result type of, one of a column the schema
+     * recorded without a mapped type, a grouped column, and arithmetic over an
+     * aggregate each leave the placeholder to the cast that states its type.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT active FROM users GROUP BY active HAVING array_agg(name) > :n"
+                + "|array_agg(name) > :n",
+            "SELECT active FROM users GROUP BY active HAVING min(active) > :n|min(active) > :n",
+            "SELECT active FROM users GROUP BY active HAVING max(tags) > :n|max(tags) > :n",
+            "SELECT active FROM users GROUP BY active HAVING active > :n|active > :n",
+            "SELECT active FROM users GROUP BY active HAVING count(*) > :n * 2"
+                + "|count(*) > :n * 2"
+        }
+    )
+    void shouldRejectAHavingPlaceholderNoAggregateTypes(String sql, String written) {
+        assertEquals(
+            "Cannot infer the type of :n in %s; state it with a cast, such as :n::<type>"
+                .formatted(written),
+            aggregateRejection(sql)
+        );
+    }
+
+    /**
+     * An {@code array_agg} of one column collects a nullable array of that
+     * column's own type, named by its alias, written with or without
+     * {@code AS}, and by the name PostgreSQL gives it, {@code array_agg},
+     * where the query writes none. The call reaches the database as written.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT array_agg(name) FROM users|array_agg|VARCHAR",
+            "SELECT array_agg(name) AS names FROM users|names|VARCHAR",
+            "SELECT ARRAY_AGG(name) names FROM users|names|VARCHAR",
+            "SELECT array_agg(u.name) AS names FROM users u|names|VARCHAR",
+            "SELECT array_agg(code) AS codes FROM users|codes|VARCHAR",
+            "SELECT array_agg(created_at) AS days FROM users|days|TIMESTAMP"
+        }
+    )
+    void shouldTypeAProjectedArrayAggregateAsANullableArray(
+        String sql,
+        String name,
+        ColumnType type
+    ) {
+        QueryModel model = analyzeAggregates(sql);
+
+        assertEquals(
+            List.of(new QueryColumn(name, type, true, null, true)),
+            model.columns()
+        );
+
+        assertEquals(sql, model.executableSql());
+    }
+
+    /**
+     * The collected column's enum type is carried too, and {@code DISTINCT},
+     * {@code ALL}, and an {@code ORDER BY} inside the call leave the collected
+     * column as it is, so each form is the same nullable array.
+     */
+    @ParameterizedTest
+    @ValueSource(
+        strings = {
+            "SELECT array_agg(role) AS roles FROM users",
+            "SELECT array_agg(DISTINCT role) AS roles FROM users",
+            "SELECT array_agg(ALL role) AS roles FROM users",
+            "SELECT array_agg(DISTINCT role ORDER BY role) AS roles FROM users"
+        }
+    )
+    void shouldCarryTheEnumTypeAndTheModifiersOfAProjectedArrayAggregate(String sql) {
+        QueryModel model = analyzeAggregates(sql);
+
+        assertEquals(
+            List.of(new QueryColumn("roles", ColumnType.ENUM, true, "user_role", true)),
+            model.columns()
+        );
+
+        assertEquals(sql, model.executableSql());
+    }
+
+    /**
+     * Only an {@code array_agg} of one direct, unsubscripted, non-array column
+     * an array of whose type sqlcj maps is collected, so an array column, a
+     * {@code BYTEA}, {@code JSON}, or {@code JSONB} column, another argument, a
+     * qualified name, and the {@code FILTER} and {@code OVER} forms stay
+     * computed projections, while a column the schema recorded without a mapped
+     * type is rejected as a {@code MIN} of one is.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT array_agg(labels) AS l FROM users"
+                + "|Cannot infer the type of array_agg(labels) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as array_agg(labels)::<type> AS l",
+            "SELECT array_agg(avatar) AS a FROM users"
+                + "|Cannot infer the type of array_agg(avatar) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as array_agg(avatar)::<type> AS a",
+            "SELECT array_agg(payload) AS p FROM users"
+                + "|Cannot infer the type of array_agg(payload) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as array_agg(payload)::<type> AS p",
+            "SELECT array_agg(document) AS d FROM users"
+                + "|Cannot infer the type of array_agg(document) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as array_agg(document)::<type> AS d",
+            "SELECT array_agg(labels[1]) AS l FROM users"
+                + "|Cannot infer the type of array_agg(labels[1]) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as array_agg(labels[1])::<type> AS l",
+            "SELECT array_agg(lower(name)) AS n FROM users"
+                + "|Cannot infer the type of array_agg(lower(name)) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as array_agg(lower(name))::<type> AS n",
+            "SELECT array_agg(name, bio) AS n FROM users"
+                + "|Cannot infer the type of array_agg(name, bio) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as array_agg(name, bio)::<type> AS n",
+            "SELECT pg_catalog.array_agg(name) AS n FROM users"
+                + "|Cannot infer the type of pg_catalog.array_agg(name) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as pg_catalog.array_agg(name)::<type> AS n",
+            "SELECT array_agg(name) FILTER (WHERE active) AS n FROM users"
+                + "|Cannot infer the type of array_agg(name) FILTER (WHERE active) in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (array_agg(name) FILTER (WHERE active))::<type> AS n",
+            "SELECT array_agg(name) OVER () AS n FROM users"
+                + "|Cannot infer the type of array_agg(name) OVER () in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (array_agg(name) OVER ())::<type> AS n",
+            "SELECT array_agg(tags) AS t FROM users"
+                + "|Column 'tags' has unsupported type JSONB[]"
+        }
+    )
+    void shouldRejectUnsupportedArrayAggregateForm(String sql, String message) {
+        assertEquals(message, aggregateRejection(sql));
+    }
+
+    /**
+     * An unaliased {@code array_agg} takes the name PostgreSQL gives it as its
+     * own column name, so a second one of the same projection is rejected as
+     * every other colliding aggregate is, and a derived source exposes it under
+     * that name, which a wildcard of the source reads.
+     */
+    @Test
+    void shouldNameAnUnaliasedArrayAggregateAfterItsFunction() {
+        assertEquals(
+            "array_agg(name) requires a result alias, such as array_agg(name) AS total.",
+            aggregateRejection("SELECT array_agg(name), array_agg(code) FROM users")
+        );
+
+        QueryModel expanded = analyzeAggregates(
+            "WITH collected AS (SELECT array_agg(role) FROM users) SELECT * FROM collected"
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("array_agg", ColumnType.ENUM, true, "user_role", true)),
+            expanded.columns()
+        );
+
+        assertEquals(
+            "WITH collected AS (SELECT array_agg(role) FROM users)"
+                + " SELECT \"collected\".\"array_agg\" FROM collected",
+            expanded.executableSql()
+        );
+    }
+
+    /**
+     * A projected JSON path whose last step is {@code ->>} or {@code #>>} is a
+     * nullable {@code TEXT} column, because both operators always return
+     * {@code text} and either may read a key the document does not hold, and
+     * the path reaches the database as written.
+     */
+    @Test
+    void shouldTypeAProjectedJsonTextPathAsNullableText() {
+        QueryModel key = analyzeUntyped("SELECT metadata ->> 'k' AS k FROM users");
+
+        assertEquals(
+            List.of(new QueryColumn("k", ColumnType.TEXT, true)),
+            key.columns()
+        );
+
+        assertEquals("SELECT metadata ->> 'k' AS k FROM users", key.executableSql());
+
+        assertEquals(
+            List.of(new QueryColumn("p", ColumnType.TEXT, true)),
+            analyzeUntyped("SELECT metadata -> 'a' #>> '{b}' AS p FROM users").columns()
+        );
+
+        assertEquals(
+            List.of(
+                new QueryColumn("id", ColumnType.BIGINT, false),
+                new QueryColumn("k", ColumnType.TEXT, true)
+            ),
+            analyzeUntyped("SELECT id, metadata #>> '{a,b}' k FROM users").columns()
+        );
+
+        assertEquals(
+            "Column not found in sources users: missing",
+            assertThrows(
+                IllegalArgumentException.class,
+                () -> analyzeUntyped("SELECT missing ->> 'k' AS k FROM users")
+            )
+                .getMessage()
+        );
+    }
+
+    /**
+     * PostgreSQL names such a column {@code ?column?}, so the alias is required
+     * exactly where a catalogue call's is: a projection that names the result
+     * columns rejects a path without one, and a branch of a set operation other
+     * than the leftmost takes the path as written instead.
+     */
+    @Test
+    void shouldRejectAProjectedJsonTextPathWithoutAResultAlias() {
+        assertEquals(
+            "metadata ->> 'k' requires a result alias,"
+                + " such as metadata ->> 'k' AS <alias>.",
+            untypedRejection("SELECT metadata ->> 'k' FROM users")
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("k", ColumnType.TEXT, true)),
+            analyzeUntyped(
+                "SELECT metadata ->> 'k' AS k FROM users"
+                    + " UNION SELECT metadata ->> 'j' FROM users"
+            )
+                .columns()
+        );
+    }
+
+    /**
+     * Only a path whose last step reads {@code text} is this projection: one
+     * that ends in {@code ->} or {@code #>} returns {@code jsonb}, and a
+     * parenthesized path is another expression, so each stays a computed
+     * projection a cast states the type of.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "SELECT metadata -> 'k' AS k FROM users"
+                + "|Cannot infer the type of metadata -> 'k' in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (metadata -> 'k')::<type> AS k",
+            "SELECT metadata #> '{a,b}' AS k FROM users"
+                + "|Cannot infer the type of metadata #> '{a,b}' in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (metadata #> '{a,b}')::<type> AS k",
+            "SELECT metadata ->> 'a' -> 'b' AS k FROM users"
+                + "|Cannot infer the type of metadata ->> 'a' -> 'b' in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as (metadata ->> 'a' -> 'b')::<type> AS k",
+            "SELECT (metadata ->> 'k') AS k FROM users"
+                + "|Cannot infer the type of (metadata ->> 'k') in SELECT;"
+                + " state it with a cast and an alias,"
+                + " such as ((metadata ->> 'k'))::<type> AS k"
+        }
+    )
+    void shouldRejectAProjectedJsonPathThatReadsNoText(String sql, String message) {
+        assertEquals(message, untypedRejection(sql));
+    }
+
+    /**
      * An aliased cast projection is a result column of the cast type, in either
      * cast spelling and with or without {@code AS}. A {@code SUM} is no operand
      * sqlcj knows to read no {@code NULL}, so the column is nullable, and the
@@ -3240,6 +3871,15 @@ class QueryAnalyzerTest {
                 aggregateSchema
             )
                 .columns()
+        );
+    }
+
+    /** One analyzed read of the schema whose columns a projected aggregate reads. */
+    private QueryModel analyzeAggregates(String sql) {
+        return analyzer.analyze(
+            new Query("ListUsers", QueryType.MANY, sql),
+            parser.parse(sql),
+            aggregateSchema
         );
     }
 
@@ -8369,6 +9009,15 @@ class QueryAnalyzerTest {
             parser.parse(sql),
             untypedSchema
         );
+    }
+
+    /** The rejection one read of that same schema reports. */
+    private String untypedRejection(String sql) {
+        return assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzeUntyped(sql)
+        )
+            .getMessage();
     }
 
     @Test
