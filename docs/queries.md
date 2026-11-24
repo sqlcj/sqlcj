@@ -137,6 +137,32 @@ The annotation and the statement must agree:
 - a write with `RETURNING` must be `:one`, `:optional`, or `:many`; a batch
   returns no row, so `:batchexec` must not carry `RETURNING`.
 
+A top-level `SELECT` that projects an unqualified, unquoted, uncast call of one
+of the built-in functions PostgreSQL declares as returning `void` —
+`pg_advisory_lock`, `pg_advisory_lock_shared`, `pg_advisory_xact_lock`,
+`pg_advisory_xact_lock_shared`, `pg_advisory_unlock_all`, `pg_notify`, and
+`pg_sleep` — is rejected before that agreement is checked, so the same
+diagnostic holds under every annotation:
+
+```text
+<call> returns void, which no result column holds; declare the query :one and select the call as text, such as <call>::text AS <alias>
+```
+
+It names the first such item the projection writes, the call as the query writes
+it, and the query's own alias, or `<alias>` where it writes none. The rule reads
+the top-level statement's own projection, at any parenthesis depth and with or
+without `WITH` and `FROM`, so a set operation, a `WITH` body, a subquery, and a
+call that is cast, nested in an expression, qualified, or quoted keep the
+diagnostics their own forms state. The named read works:
+
+```sql
+-- name: LockOrder :one
+SELECT pg_advisory_xact_lock(:key::bigint)::text AS locked;
+```
+
+PostgreSQL reads a `void` result as the empty string, so the caller ignores the
+value and the lock is taken for the transaction.
+
 The three result annotations differ only in how many rows they accept:
 
 - `:one` returns exactly one row. It raises
@@ -215,18 +241,34 @@ configuration entry.
   `Only table join sources are supported.` where a join states it.
 - A source that calls a function, such as `FROM unnest(:ids::bigint[]) AS u(id)`
   or `FROM pg_catalog.generate_series(1, 3) AS g(n)`, is no modeled source at
-  all and is rejected as
-  `<f>(...) is a function source, which sqlcj does not model; insert many rows
-  with a :batchexec INSERT ... VALUES query, or match a list with
-  id = ANY(:ids).`, naming the function as the query writes it, qualifier
-  included. The rule holds in every source position: a read's `FROM`, a `JOIN`,
-  a `LATERAL` call, a `ROWS FROM (...)` list, which names its first function, an
-  `UPDATE ... FROM`, a `DELETE ... USING`, and the `FROM` of an
+  all and is rejected. The rule holds in every source position: a read's `FROM`,
+  a `JOIN`, a `LATERAL` call, a `ROWS FROM (...)` list, which names its first
+  function, an `UPDATE ... FROM`, a `DELETE ... USING`, and the `FROM` of an
   `INSERT ... SELECT`, inside a `WITH` body and a subquery source as well as at
-  the top level. To insert many rows, write a `:batchexec` `INSERT` of `VALUES`,
-  as [Batch writes](#batch-writes) states; to match a list, write
-  `id = ANY(:ids)`, as [Predicates](#predicates) states. An `unnest(...)` call
-  written in the projection of an `INSERT ... SELECT`, as
+  the top level. The diagnostic names the function as the query writes it,
+  qualifier included, and its advice follows that name, which it recognizes only
+  as an unquoted, unqualified name compared ignoring case:
+
+  - `unnest` is rejected as
+    `<f>(...) is a function source, which sqlcj does not model; insert many rows
+    with a :batchexec INSERT ... VALUES query, or match a list with
+    id = ANY(:ids).` To insert many rows, write a `:batchexec` `INSERT` of
+    `VALUES`, as [Batch writes](#batch-writes) states; to match a list, write
+    `id = ANY(:ids)`, as [Predicates](#predicates) states.
+  - `generate_series` is rejected as
+    `<f>(...) is a function source, which sqlcj does not model; write the series
+    as a recursive WITH query, such as WITH RECURSIVE series (n) AS (SELECT
+    1::integer UNION ALL SELECT (n + 1)::integer FROM series WHERE n < 10)
+    SELECT n FROM series.` Both terms of that example state `integer`, which
+    PostgreSQL requires of a recursive term and sqlcj reads the column's type
+    from, so it analyzes and runs as written, as
+    [Recursive CTEs](#recursive-ctes) states.
+  - Every other function, a qualified or quoted name such as
+    `pg_catalog.generate_series` or `"unnest"` included, is rejected as
+    `<f>(...) is a function source, which sqlcj does not model; a source must be
+    a table, a view, a WITH query, or a subquery.`
+
+  An `unnest(...)` call written in the projection of an `INSERT ... SELECT`, as
   [Writes](#writes) documents for `CreateTeamMemberships`, is no source and
   stays accepted.
 - A `FROM` or `JOIN` source whose unqualified name matches a `WITH` clause in
@@ -3276,13 +3318,27 @@ header-line order, before the run exits with status `1` having written nothing.
 - An `EXISTS` projection without a result alias, rejected as
   `An EXISTS projection requires a result alias, such as EXISTS (SELECT 1 FROM
   ...) AS present.`
+- A top-level `SELECT` that projects an unqualified, unquoted, uncast call of a
+  built-in function PostgreSQL declares as returning `void`, under every
+  annotation, rejected as
+  `<call> returns void, which no result column holds; declare the query :one and
+  select the call as text, such as <call>::text AS <alias>`, as
+  [Annotations and Cardinality](#annotations-and-cardinality) states.
 - A source that calls a function, in every position a source is resolved — a
   read's `FROM`, a `JOIN`, a `LATERAL` call, a `ROWS FROM (...)` list, an
   `UPDATE ... FROM`, a `DELETE ... USING`, and the `FROM` of an
-  `INSERT ... SELECT` — rejected as
+  `INSERT ... SELECT` — rejected with the advice the named function has, as
+  [Sources](#sources) states: `unnest` as
   `<f>(...) is a function source, which sqlcj does not model; insert many rows
   with a :batchexec INSERT ... VALUES query, or match a list with
-  id = ANY(:ids).`, as [Sources](#sources) states.
+  id = ANY(:ids).`, `generate_series` as
+  `<f>(...) is a function source, which sqlcj does not model; write the series
+  as a recursive WITH query, such as WITH RECURSIVE series (n) AS (SELECT
+  1::integer UNION ALL SELECT (n + 1)::integer FROM series WHERE n < 10) SELECT
+  n FROM series.`, and every other function, a qualified or quoted name
+  included, as
+  `<f>(...) is a function source, which sqlcj does not model; a source must be a
+  table, a view, a WITH query, or a subquery.`
 - A `FROM` or `JOIN` source otherwise outside the subset: a doubly
   parenthesized source, a subquery source without an alias, a column list on a
   subquery alias, a column list on a `WITH` name that names more columns than
@@ -3573,6 +3629,17 @@ Query sources and annotations:
   `QueryAnalyzerTest.shouldAnalyzeReturningWriteForEveryResultQueryType` cover
   annotation and statement agreement, including the two diagnostics of a write
   without and with `RETURNING`.
+- `QueryAnalyzerTest.shouldRejectAProjectedVoidCall` covers the projected
+  `void` call rejected before the annotation check, under every annotation, for
+  several of the seven functions including a zero-argument and an upper-case
+  call, aliased and unaliased, with and without `FROM`, inside parentheses,
+  beside a `WITH` list, and named at the first matching item of a projection of
+  two; `QueryAnalyzerTest.shouldKeepTheDiagnosticOfEveryOtherVoidCallForm`
+  covers the qualified call and the set operation that keep the annotation
+  diagnostic and the `WITH` body that keeps the computed-projection one; and
+  `QueryAnalyzerTest.shouldAnalyzeTheTextReadTheVoidCallRejectionNames` covers
+  the named `::text` read analyzing as one `TEXT` column and one `BIGINT`
+  parameter.
 - `JdbcQueryExecutorTest.shouldReturnTheRowWhenQueryOneFindsExactlyOneRow`,
   `JdbcQueryExecutorTest.shouldFailWhenQueryOneFindsNoRow`,
   `JdbcQueryExecutorTest.shouldFailWhenQueryOneFindsMoreThanOneRow`,
@@ -4238,6 +4305,19 @@ Reads:
   executes a joined `WITH` clause whose column list renames its grouped column
   and names an unaliased `count(*)`, and a shorter list, where a column the
   list does not name keeps its body's name.
+- `QueryAnalyzerTest.shouldRejectAFunctionSource` covers the three
+  function-source texts per position: `unnest` in a read's `FROM`, a join, a
+  `LATERAL` call, a `ROWS FROM` list, an `INSERT ... SELECT`, and an
+  `UPDATE ... FROM`, `generate_series` in a `FROM`, a `LATERAL` call, and at
+  the head of a `ROWS FROM` list, upper-cased as well, and `jsonb_each` and
+  `pg_catalog.generate_series`, which name only what a source may be;
+  `QueryAnalyzerTest.shouldAnalyzeTheSeriesTheFunctionSourceRejectionNames`
+  takes the example out of the `generate_series` diagnostic itself and covers
+  it analyzing as one nullable `INTEGER` column `n`; and
+  `PostgresIntegrationTest.shouldExecuteTheGeneratedFormsTheRejectionsNameAgainstPostgres`
+  generates, compiles, and executes that series against PostgreSQL 16, reading
+  `1` through `10`, beside the `::text` read of the `void`-call rejection, whose
+  advisory lock reads back as the empty string.
 - `QueryAnalyzerTest.shouldAnalyzeARecursiveCommonTableExpression`,
   `QueryAnalyzerTest.shouldNameRecursiveCommonTableExpressionColumnsByItsColumnList`,
   `QueryAnalyzerTest.shouldAnalyzeARecursiveFirstTermWithoutFrom`,
