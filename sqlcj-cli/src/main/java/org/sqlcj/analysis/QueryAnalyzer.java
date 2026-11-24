@@ -425,16 +425,51 @@ public final class QueryAnalyzer {
         instead.""";
 
     /**
-     * The rejection of a source that calls a function, which names the function
-     * as the query writes it and, for a {@code ROWS FROM} list, its first
-     * function. sqlcj models no function source at all, so the named fixes are
-     * the two shapes a set of rows is written in instead: a batch of
-     * {@code VALUES} rows for a write, and {@code = ANY} for a read that
-     * matches a list.
+     * The rejection of a source that calls {@code unnest}, which names the
+     * function as the query writes it. sqlcj models no function source at all,
+     * so the named fixes are the two shapes a set of rows is written in
+     * instead: a batch of {@code VALUES} rows for a write, and {@code = ANY}
+     * for a read that matches a list.
      */
     private static final String FUNCTION_SOURCE_REJECTION = """
         %s(...) is a function source, which sqlcj does not model; insert many rows with a \
         :batchexec INSERT ... VALUES query, or match a list with id = ANY(:ids).""";
+
+    /**
+     * The rejection of a source that calls {@code generate_series}, which names
+     * the function as the query writes it. sqlcj models no function source at
+     * all, so the named fix is the recursive {@code WITH} query that produces
+     * the same series: both of its terms state {@code integer}, which
+     * PostgreSQL requires of a recursive term and sqlcj reads the column's type
+     * from, and its bounds are literals, so the example analyzes and runs as
+     * the diagnostic writes it.
+     */
+    private static final String SERIES_FUNCTION_SOURCE_REJECTION = """
+        %s(...) is a function source, which sqlcj does not model; write the series as a \
+        recursive WITH query, such as WITH RECURSIVE series (n) AS (SELECT 1::integer UNION ALL \
+        SELECT (n + 1)::integer FROM series WHERE n < 10) SELECT n FROM series.""";
+
+    /**
+     * The rejection of a source that calls any other function, which names the
+     * function as the query writes it. sqlcj models no function source at all,
+     * and the two rejections above name the fix of the one function each of
+     * them states, so this one states only what a source may be instead.
+     */
+    private static final String UNMODELED_FUNCTION_SOURCE_REJECTION = """
+        %s(...) is a function source, which sqlcj does not model; a source must be a table, a \
+        view, a WITH query, or a subquery.""";
+
+    /**
+     * The rejection of a top-level {@code SELECT} that projects a call of a
+     * built-in function PostgreSQL declares as returning {@code void}, which no
+     * result column holds. An {@code :exec} query is a write, so the form that
+     * works is a read of the call as text: both the rejected item and the
+     * example are the call as the query writes it, under the query's own alias
+     * or {@code <alias>} where it writes none.
+     */
+    private static final String VOID_CALL_REJECTION = """
+        %s returns void, which no result column holds; declare the query :one and select the \
+        call as text, such as %s::text AS %s""";
 
     /** The rejection of a source of a write's {@code FROM} or {@code USING}. */
     private static final String WRITE_SOURCE_REJECTION = "Only table sources are supported.";
@@ -686,6 +721,21 @@ public final class QueryAnalyzer {
     private static final Set<ColumnType> CHARACTER_TYPES = Set.of(
         ColumnType.VARCHAR,
         ColumnType.TEXT
+    );
+
+    /**
+     * The built-in functions PostgreSQL 16 declares as returning {@code void},
+     * which no result column of a projection holds. Each name is unqualified
+     * and in lower case, as {@link #builtinFunction} reports one.
+     */
+    private static final Set<String> VOID_FUNCTIONS = Set.of(
+        "pg_advisory_lock",
+        "pg_advisory_lock_shared",
+        "pg_advisory_xact_lock",
+        "pg_advisory_xact_lock_shared",
+        "pg_advisory_unlock_all",
+        "pg_notify",
+        "pg_sleep"
     );
 
     /**
@@ -1357,6 +1407,9 @@ public final class QueryAnalyzer {
      * annotation and the query model are decided here, while the sources, the
      * result columns, the row table, and the clause placeholders follow the
      * rules every analyzed query shares.
+     *
+     * <p>A projected {@code void} call is rejected before the annotation, so
+     * the diagnostic names the read that works under every annotation alike.
      */
     private QueryModel analyzeSelectStatement(
         Query query,
@@ -1371,6 +1424,8 @@ public final class QueryAnalyzer {
         }
 
         PlainSelect plainSelect = requirePlainSelect(selects);
+
+        requireNonVoidProjection(plainSelect);
 
         requireResultQueryType(query);
 
@@ -1388,6 +1443,54 @@ public final class QueryAnalyzer {
                 null
             )
         );
+    }
+
+    /**
+     * Rejects a top-level {@code SELECT} whose projection writes a call of a
+     * built-in function PostgreSQL declares as returning {@code void}, which no
+     * result column holds, naming the first such item in the order the
+     * projection writes them. The rejection states the read that works, so it
+     * runs before the annotation check and before any source or projection
+     * resolves, under every annotation and whether or not the statement writes
+     * {@code WITH} or {@code FROM}.
+     *
+     * <p>Only a call the projection writes directly, unqualified and unquoted,
+     * is named here: a cast of such a call is the form this rejection names,
+     * and a call nested in another expression, a qualified call, and a quoted
+     * call keep the diagnostics their own forms state. A set operation, a
+     * {@code WITH} body, and a subquery keep theirs too, because this rule
+     * reads the top-level statement's own projection alone.
+     */
+    private void requireNonVoidProjection(PlainSelect plainSelect) {
+        for (SelectItem<?> selectItem : plainSelect.getSelectItems()) {
+            if (
+                !(selectItem.getExpression() instanceof Function function)
+                    || !VOID_FUNCTIONS.contains(builtinFunction(function))
+            ) {
+                continue;
+            }
+
+            String call = written(function);
+
+            throw new UnsupportedOperationException(
+                VOID_CALL_REJECTION.formatted(call, call, hintAlias(selectItem.getAlias()))
+            );
+        }
+    }
+
+    /**
+     * The built-in function one call names, in lower case, for a rule here to
+     * recognize by name: an unquoted, unqualified name compared ignoring case.
+     * A qualified call reports the empty string, and a quoted call reports its
+     * name with the SQL identifier delimiters the parser keeps, so neither
+     * names a built-in of any such rule.
+     */
+    private String builtinFunction(Function function) {
+        List<String> name = function.getMultipartName();
+
+        return name == null || name.size() != 1
+            ? ""
+            : name.get(0).toLowerCase(Locale.ROOT);
     }
 
     /**
@@ -4285,6 +4388,21 @@ public final class QueryAnalyzer {
     }
 
     /**
+     * The rejection one function source states, which follows the function the
+     * diagnostic names, the first of a {@code ROWS FROM} list: {@code unnest}
+     * and {@code generate_series} each name a fix of their own, and every other
+     * function, a qualified or quoted name included, states what a source may
+     * be instead.
+     */
+    private String functionSourceRejection(Function function) {
+        return switch (builtinFunction(function)) {
+            case "unnest" -> FUNCTION_SOURCE_REJECTION;
+            case "generate_series" -> SERIES_FUNCTION_SOURCE_REJECTION;
+            default -> UNMODELED_FUNCTION_SOURCE_REJECTION;
+        };
+    }
+
+    /**
      * Resolves one query source: a subquery in the clause, a source that names
      * a common table expression in scope, which reads that expression rather
      * than the schema table of the same name as PostgreSQL resolves it, a
@@ -4297,9 +4415,9 @@ public final class QueryAnalyzer {
      * is analyzed with no enclosing level at all.
      *
      * <p>Every source position reaches this method, so a source that calls a
-     * function is rejected here with a message of its own, naming the function;
-     * every other source outside the subset keeps the rejection its clause
-     * states.
+     * function is rejected here with a message of its own, naming the function
+     * and the fix that function has; every other source outside the subset
+     * keeps the rejection its clause states.
      */
     private Source resolveSource(
         FromItem fromItem,
@@ -4322,10 +4440,10 @@ public final class QueryAnalyzer {
         }
 
         if (fromItem instanceof TableFunction tableFunction) {
+            Function function = tableFunction.getFunctions().get(0);
+
             throw new UnsupportedOperationException(
-                FUNCTION_SOURCE_REJECTION.formatted(
-                    tableFunction.getFunctions().get(0).getName()
-                )
+                functionSourceRejection(function).formatted(function.getName())
             );
         }
 

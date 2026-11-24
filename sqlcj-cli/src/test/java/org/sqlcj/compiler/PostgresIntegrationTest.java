@@ -6569,6 +6569,60 @@ class PostgresIntegrationTest {
     }
 
     /**
+     * Covers against PostgreSQL the two forms sqlcj's rejections name: the
+     * recursive {@code WITH} query of the {@code generate_series}
+     * function-source rejection, written across lines here and word for word in
+     * {@code QueryAnalyzerTest}, which reads the series {@code 1} through
+     * {@code 10} as {@code Integer} rows, and the {@code ::text} read of the
+     * {@code void}-call rejection, which takes the advisory lock and reads
+     * PostgreSQL's text of {@code void}, the empty string.
+     */
+    @Test
+    void shouldExecuteTheGeneratedFormsTheRejectionsNameAgainstPostgres() throws Exception {
+        Path classesDirectory = generateAndCompile(
+            """
+                -- name: ListSeries :many
+                WITH RECURSIVE series (n) AS (SELECT 1::integer
+                                              UNION ALL
+                                              SELECT (n + 1)::integer
+                                              FROM series
+                                              WHERE n < 10)
+                SELECT n
+                FROM series;
+
+                -- name: LockKey :one
+                SELECT pg_advisory_xact_lock(:key::bigint)::text AS locked;
+                """
+        );
+
+        try (URLClassLoader classLoader = classLoader(classesDirectory)) {
+            Object repository = newRepository(classLoader);
+
+            List<?> series = (List<?>) repository.getClass()
+                .getMethod("listSeries")
+                .invoke(repository);
+
+            assertEquals(List.of("n"), recordComponentNames(series.get(0)));
+
+            assertEquals(
+                List.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10),
+                components(series, "n"),
+                "the recursive query the function-source rejection names reads the series"
+            );
+
+            Object locked = repository.getClass()
+                .getMethod("lockKey", Long.class)
+                .invoke(repository, 42L);
+
+            assertEquals(
+                "",
+                component(locked, "locked"),
+                "PostgreSQL reads the void result of the taken lock as the empty text"
+            );
+        }
+    }
+
+    /**
      * Covers against PostgreSQL the column a wildcard's table gains after
      * generation: the probe reads the row of the joined table through the
      * wildcard and the email of the other source after it, and still reads

@@ -14553,30 +14553,51 @@ class QueryAnalyzerTest {
 
     /**
      * A source that calls a function states the function, that sqlcj does not
-     * model a function source, and the two shapes that replace it, in every
+     * model a function source, and the advice that function has, in every
      * position a source is resolved: a read's {@code FROM}, a join, a
      * {@code LATERAL} call, a {@code ROWS FROM} list, which names its first
      * function, an {@code INSERT ... SELECT}, and an {@code UPDATE ... FROM}.
      * The name is the query's own, qualifier included.
+     *
+     * <p>The advice follows the name the diagnostic states, compared ignoring
+     * case: {@code unnest} names the two shapes a set of rows is written in,
+     * {@code generate_series} names the recursive {@code WITH} query that
+     * writes the series, and every other function, a qualified name such as
+     * {@code pg_catalog.generate_series} included, names only what a source may
+     * be.
      */
     @ParameterizedTest
     @CsvSource(
         delimiter = '|',
         value = {
-            "MANY|SELECT u.id FROM unnest(:ids::bigint[]) AS u(id)|unnest",
+            "MANY|SELECT u.id FROM unnest(:ids::bigint[]) AS u(id)|unnest|rows",
             "MANY|SELECT u.id FROM users JOIN unnest(:ids::bigint[]) AS u(id)"
-                + " ON u.id = users.id|unnest",
-            "MANY|SELECT u.id FROM users, LATERAL unnest(:ids::bigint[]) AS u(id)|unnest",
-            "MANY|SELECT g.n FROM pg_catalog.generate_series(1, 3) AS g(n)"
-                + "|pg_catalog.generate_series",
+                + " ON u.id = users.id|unnest|rows",
+            "MANY|SELECT u.id FROM users, LATERAL unnest(:ids::bigint[]) AS u(id)|unnest|rows",
             "MANY|SELECT u.id FROM ROWS FROM (unnest(:ids::bigint[]), unnest(:names::text[]))"
-                + " AS u(id, name)|unnest",
-            "EXEC|INSERT INTO users (id) SELECT u.id FROM unnest(:ids::bigint[]) AS u(id)|unnest",
+                + " AS u(id, name)|unnest|rows",
+            "EXEC|INSERT INTO users (id) SELECT u.id FROM unnest(:ids::bigint[]) AS u(id)"
+                + "|unnest|rows",
             "EXEC|UPDATE users SET name = :name FROM unnest(:ids::bigint[]) AS u(id)"
-                + " WHERE users.id = u.id|unnest"
+                + " WHERE users.id = u.id|unnest|rows",
+            "MANY|SELECT g.n FROM generate_series(1, 3) AS g(n)|generate_series|series",
+            "MANY|SELECT g.n FROM users, LATERAL GENERATE_SERIES(1, 3) AS g(n)"
+                + "|GENERATE_SERIES|series",
+            "MANY|SELECT u.n FROM ROWS FROM (generate_series(1, 3), unnest(:ids::bigint[]))"
+                + " AS u(n, id)|generate_series|series",
+            "MANY|SELECT g.n FROM pg_catalog.generate_series(1, 3) AS g(n)"
+                + "|pg_catalog.generate_series|sources",
+            "MANY|SELECT j.id FROM jsonb_each(:doc::jsonb) AS j(id)|jsonb_each|sources",
+            "EXEC|UPDATE users SET name = :name FROM jsonb_each(:doc::jsonb) AS j(id)"
+                + " WHERE users.id = j.id|jsonb_each|sources"
         }
     )
-    void shouldRejectAFunctionSource(QueryType type, String sql, String function) {
+    void shouldRejectAFunctionSource(
+        QueryType type,
+        String sql,
+        String function,
+        String advice
+    ) {
         Query query = new Query("ReadRows", type, sql);
         ParsedSql parsedSql = parser.parse(sql);
 
@@ -14586,10 +14607,160 @@ class QueryAnalyzerTest {
         );
 
         assertEquals(
-            "%s(...) is a function source, which sqlcj does not model;".formatted(function)
-                + " insert many rows with a :batchexec INSERT ... VALUES query,"
-                + " or match a list with id = ANY(:ids).",
+            "%s(...) is a function source, which sqlcj does not model; ".formatted(function)
+                + switch (advice) {
+                    case "rows" -> "insert many rows with a :batchexec INSERT ... VALUES query,"
+                        + " or match a list with id = ANY(:ids).";
+                    case "series" -> "write the series as a recursive WITH query, such as"
+                        + " WITH RECURSIVE series (n) AS (SELECT 1::integer UNION ALL"
+                        + " SELECT (n + 1)::integer FROM series WHERE n < 10)"
+                        + " SELECT n FROM series.";
+                    case "sources" -> "a source must be a table, a view, a WITH query,"
+                        + " or a subquery.";
+                    default -> throw new IllegalArgumentException(advice);
+                },
             exception.getMessage()
+        );
+    }
+
+    /**
+     * The recursive {@code WITH} query the {@code generate_series} rejection
+     * names is a query sqlcj reads: the example is taken from the diagnostic
+     * itself, so the advice stays the form that works, and its one result
+     * column is the {@code integer} both terms state.
+     */
+    @Test
+    void shouldAnalyzeTheSeriesTheFunctionSourceRejectionNames() {
+        String rejected = "SELECT g.n FROM generate_series(1, 3) AS g(n)";
+        Query rejectedQuery = new Query("ListSeries", QueryType.MANY, rejected);
+        ParsedSql rejectedSql = parser.parse(rejected);
+
+        String message = assertThrows(
+            UnsupportedOperationException.class,
+            () -> analyzer.analyze(rejectedQuery, rejectedSql, joinSchema)
+        )
+            .getMessage();
+
+        String example = message.substring(message.indexOf("such as ") + "such as ".length());
+        String sql = example.substring(0, example.length() - 1);
+
+        assertEquals(
+            List.of(new QueryColumn("n", ColumnType.INTEGER, true)),
+            analyzer.analyze(
+                new Query("ListSeries", QueryType.MANY, sql),
+                parser.parse(sql),
+                joinSchema
+            )
+                .columns()
+        );
+    }
+
+    /**
+     * A top-level {@code SELECT} that projects a call of a built-in function
+     * PostgreSQL declares as returning {@code void} states that no result
+     * column holds it and names the read that works: the call cast to text
+     * under {@code :one}. The call and the alias are the query's own, with
+     * {@code <alias>} where it writes none, and the rejection runs before the
+     * annotation check, so it holds under every annotation, with and without
+     * {@code FROM}, inside parentheses, and beside a {@code WITH} list. The
+     * first matching item of the projection, in order, is the one named.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "EXEC|SELECT pg_advisory_lock(:key::bigint)"
+                + "|pg_advisory_lock(:key::bigint)|<alias>",
+            "BATCH_EXEC|SELECT pg_advisory_unlock_all()|pg_advisory_unlock_all()|<alias>",
+            "ONE|SELECT pg_advisory_xact_lock(:key::bigint) AS locked FROM users"
+                + "|pg_advisory_xact_lock(:key::bigint)|locked",
+            "OPTIONAL|(SELECT PG_SLEEP(0) AS \"Slept\")|PG_SLEEP(0)|\"Slept\"",
+            "MANY|WITH listed AS (SELECT id FROM users)"
+                + " SELECT pg_notify(:channel::text, :payload::text) FROM listed"
+                + "|pg_notify(:channel::text, :payload::text)|<alias>",
+            "MANY|SELECT pg_advisory_lock_shared(:key::bigint),"
+                + " pg_advisory_xact_lock_shared(:key::bigint)"
+                + "|pg_advisory_lock_shared(:key::bigint)|<alias>",
+            "MANY|SELECT id, pg_sleep(0) FROM users|pg_sleep(0)|<alias>"
+        }
+    )
+    void shouldRejectAProjectedVoidCall(QueryType type, String sql, String call, String alias) {
+        Query query = new Query("LockKey", type, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        assertEquals(
+            "%s returns void, which no result column holds;".formatted(call)
+                + " declare the query :one and select the call as text,"
+                + " such as %s::text AS %s".formatted(call, alias),
+            assertThrows(
+                UnsupportedOperationException.class,
+                () -> analyzer.analyze(query, parsedSql, schema)
+            )
+                .getMessage()
+        );
+    }
+
+    /**
+     * Every other form that writes one of those calls keeps the diagnostic it
+     * states today, because the rule reads the top-level statement's own
+     * projection and the call it writes directly: a qualified call and a set
+     * operation are checked against the annotation first, and a call in a
+     * {@code WITH} body is a computed projection.
+     */
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value = {
+            "EXEC|SELECT pg_catalog.pg_sleep(0)"
+                + "|SELECT queries must be declared as :one, :optional, or :many",
+            "EXEC|SELECT pg_sleep(0) UNION ALL SELECT pg_sleep(1)"
+                + "|SELECT queries must be declared as :one, :optional, or :many",
+            "MANY|WITH slept AS (SELECT pg_sleep(0)) SELECT * FROM slept"
+                + "|Cannot infer the type of pg_sleep(0) in SELECT; state it with a cast"
+                + " and an alias, such as pg_sleep(0)::<type> AS <alias>"
+        }
+    )
+    void shouldKeepTheDiagnosticOfEveryOtherVoidCallForm(
+        QueryType type,
+        String sql,
+        String message
+    ) {
+        Query query = new Query("LockKey", type, sql);
+        ParsedSql parsedSql = parser.parse(sql);
+
+        assertEquals(
+            message,
+            assertThrows(
+                UnsupportedOperationException.class,
+                () -> analyzer.analyze(query, parsedSql, schema)
+            )
+                .getMessage()
+        );
+    }
+
+    /**
+     * The read the {@code void}-call rejection names is analyzed: the call cast
+     * to text is one {@code TEXT} result column under the query's alias, and
+     * its cast placeholder argument is the one parameter of the query.
+     */
+    @Test
+    void shouldAnalyzeTheTextReadTheVoidCallRejectionNames() {
+        String sql = "SELECT pg_advisory_xact_lock(:key::bigint)::text AS locked";
+
+        QueryModel model = analyzer.analyze(
+            new Query("LockKey", QueryType.ONE, sql),
+            parser.parse(sql),
+            schema
+        );
+
+        assertEquals(
+            List.of(new QueryColumn("locked", ColumnType.TEXT, true)),
+            model.columns()
+        );
+
+        assertEquals(
+            List.of(new QueryParameter(1, "key", ColumnType.BIGINT)),
+            model.parameters()
         );
     }
 
