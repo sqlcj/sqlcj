@@ -408,7 +408,9 @@ final class SourceResolver {
         }
 
         Schema schema = view.schema();
-        Analysis analysis = new Analysis(parsedSql, schema, analyzer.toPlaceholders(parsedSql, schema));
+        Analysis analysis = new Analysis(
+            parsedSql, schema, analyzer.placeholderResolver.toPlaceholders(parsedSql, schema)
+        );
 
         List<org.sqlcj.schema.Column> columns = analyzer.renamedDerivedColumns(
             view.name(),
@@ -830,7 +832,7 @@ final class SourceResolver {
             Scope scope = new Scope(List.copyOf(group), commonTableExpressions, enclosing);
 
             resolveJoinConditionColumns(condition, scope);
-            analyzer.resolveParameters(condition, scope, analysis);
+            analyzer.placeholderResolver.resolveParameters(condition, scope, analysis);
         }
     }
 
