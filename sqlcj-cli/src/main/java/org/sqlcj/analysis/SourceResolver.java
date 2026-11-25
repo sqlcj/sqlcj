@@ -1110,7 +1110,7 @@ final class SourceResolver {
         org.sqlcj.schema.Column right
     ) {
         org.sqlcj.schema.Column leftColumn = left.column();
-        org.sqlcj.schema.Column resolved = analyzer.resolveCommonColumnType(leftColumn, right);
+        org.sqlcj.schema.Column resolved = analyzer.setOperationResolver.resolveCommonColumnType(leftColumn, right);
 
         if (resolved == null) {
             requireSupportedType(leftColumn);
@@ -1119,8 +1119,8 @@ final class SourceResolver {
             throw new UnsupportedOperationException(
                 JOIN_COLUMN_TYPE_REJECTION.formatted(
                     leftColumn.name(),
-                    analyzer.sqlType(leftColumn),
-                    analyzer.sqlType(right)
+                    analyzer.setOperationResolver.sqlType(leftColumn),
+                    analyzer.setOperationResolver.sqlType(right)
                 )
             );
         }
