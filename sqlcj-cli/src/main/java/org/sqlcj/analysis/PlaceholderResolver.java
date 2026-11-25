@@ -346,7 +346,7 @@ final class PlaceholderResolver {
             return null;
         }
 
-        CatalogueCall call = analyzer.catalogueCall(occurrence.call());
+        CatalogueCall call = analyzer.projectionResolver.catalogueCall(occurrence.call());
 
         return call == null
             ? null
@@ -704,15 +704,15 @@ final class PlaceholderResolver {
      */
     private org.sqlcj.schema.Column havingAggregateColumn(Expression aggregate, Scope scope) {
         if (aggregate instanceof Function function) {
-            return analyzer.leavesAggregateUntyped(function, scope, false)
+            return analyzer.projectionResolver.leavesAggregateUntyped(function, scope, false)
                 ? null
-                : analyzer.aggregateColumn(function, null, scope, true);
+                : analyzer.projectionResolver.aggregateColumn(function, null, scope, true);
         }
 
         if (aggregate instanceof AnalyticExpression analytic) {
             return leavesFilteredCountUntyped(analytic, scope)
                 ? null
-                : analyzer.filteredCountColumn(analytic, null, scope, true);
+                : analyzer.projectionResolver.filteredCountColumn(analytic, null, scope, true);
         }
 
         return null;
@@ -721,7 +721,7 @@ final class PlaceholderResolver {
     /**
      * Reports whether the filtered-{@code COUNT} rule states no type for one
      * compared analytic expression, which is a count of a reference the level
-     * in scope does not have, read as {@link QueryAnalyzer#leavesAggregateUntyped} reads the
+     * in scope does not have, read as {@link ProjectionResolver#leavesAggregateUntyped} reads the
      * same reference of a plain call written where nothing must resolve.
      *
      * <p>A {@code COUNT} never reads its argument's type, so only the reference
