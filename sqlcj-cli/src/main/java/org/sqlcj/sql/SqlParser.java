@@ -22,6 +22,10 @@ public final class SqlParser {
      * {@link CCJSqlParserUtil} hands a newly created parser to the consumer
      * again when it retries a source with complex parsing, so the last captured
      * parser owns the syntax tree of the returned statement.
+     *
+     * <p>Each parser is handed the words PostgreSQL does not reserve as names
+     * first, so a query over a {@code settings} or {@code day} column parses as
+     * PostgreSQL reads it; see {@link KeywordNames}.
      */
     public ParsedSql parse(String sql) {
         AtomicReference<CCJSqlParser> parser = new AtomicReference<>();
@@ -29,7 +33,7 @@ public final class SqlParser {
         Statement statement;
 
         try {
-            statement = CCJSqlParserUtil.parse(sql, parser::set);
+            statement = CCJSqlParserUtil.parse(sql, KeywordNames.queryNames(sql, parser::set));
         } catch (JSQLParserException e) {
             throw new SqlParseException(SqlParseReason.of(e, false), e);
         }

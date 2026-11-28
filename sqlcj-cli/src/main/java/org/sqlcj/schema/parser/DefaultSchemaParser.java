@@ -1,6 +1,7 @@
 package org.sqlcj.schema.parser;
 
 import net.sf.jsqlparser.JSQLParserException;
+import net.sf.jsqlparser.parser.CCJSqlParser;
 import net.sf.jsqlparser.parser.CCJSqlParserUtil;
 import net.sf.jsqlparser.statement.Statement;
 import net.sf.jsqlparser.statement.Statements;
@@ -18,11 +19,13 @@ import org.sqlcj.schema.EnumType;
 import org.sqlcj.schema.Schema;
 import org.sqlcj.schema.Table;
 import org.sqlcj.schema.View;
+import org.sqlcj.sql.KeywordNames;
 import org.sqlcj.sql.SqlParseReason;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
 public class DefaultSchemaParser implements SchemaParser {
@@ -138,7 +141,10 @@ public class DefaultSchemaParser implements SchemaParser {
         JSQLParserException failure = null;
 
         try {
-            parsed = CCJSqlParserUtil.parseStatements(statement.sql());
+            parsed = CCJSqlParserUtil.parseStatements(
+                statement.sql(),
+                keywordNames(statement.tokens(), statement.sql())
+            );
         } catch (JSQLParserException e) {
             failure = e;
         }
@@ -190,6 +196,9 @@ public class DefaultSchemaParser implements SchemaParser {
      * breaks and spaces that stand before it in the file. A second parse that
      * unexpectedly succeeds leaves the first reason, whose column names a
      * position within the statement, at the statement's own line.
+     *
+     * <p>The padded text is classified for names itself, so the second parse
+     * reads the same words as names as the first one did.
      */
     SchemaParseException unreadableStatement(
         SchemaSourceSplitter.SourceStatement statement,
@@ -202,7 +211,7 @@ public class DefaultSchemaParser implements SchemaParser {
         JSQLParserException located = failure;
 
         try {
-            CCJSqlParserUtil.parseStatements(padded);
+            CCJSqlParserUtil.parseStatements(padded, keywordNames(statement.tokens(), padded));
         } catch (JSQLParserException e) {
             located = e;
         }
@@ -214,6 +223,24 @@ public class DefaultSchemaParser implements SchemaParser {
             line > 0 ? line : statement.line(),
             located
         );
+    }
+
+    /**
+     * The parser consumer that hands one statement's parser the words
+     * PostgreSQL does not reserve as names; see {@link KeywordNames}.
+     *
+     * <p>Only a {@code CREATE}, {@code ALTER}, or {@code DROP TABLE} statement
+     * states a table or a column name this way. Every other statement is parsed
+     * exactly as it is without the pass, and is applied or ignored as it is
+     * today, which the {@code null} the parser reads as no configuration at all
+     * states.
+     */
+    private Consumer<CCJSqlParser> keywordNames(List<String> tokens, String sql) {
+        String opening = tableOrTypeOpening(tokens);
+
+        return opening != null && opening.endsWith("TABLE")
+            ? KeywordNames.tableStatementNames(sql, null)
+            : null;
     }
 
     /**
